@@ -99,6 +99,12 @@ An optional sysmodule plays the music outside Gatefold: on the HOME menu, during
 
 Open it with Ultrahand's combo (ZL + ZR + D-pad down unless you changed it).
 
+| Player | Queue, browse and volumes | Game actions | The queue |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/screenshots/overlay-player.webp" width="200" alt="Overlay: player"> | <img src="docs/screenshots/overlay-settings.webp" width="200" alt="Overlay: volumes"> | <img src="docs/screenshots/overlay-games.webp" width="200" alt="Overlay: game actions"> | <img src="docs/screenshots/overlay-playlist.webp" width="200" alt="Overlay: queue"> |
+
+<sub>The overlay on a real console, over the HOME menu.</sub>
+
 ---
 
 ## 🎮 Controls
