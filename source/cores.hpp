@@ -1,0 +1,32 @@
+/*
+ * Gatefold NX · cores.hpp
+ * Where each thread runs, and how urgently. Threads made with std::thread start on the process's
+ * default core at the lowest priority (0x3B), and Horizon does not share a core between threads of
+ * the same priority: whichever runs keeps the core until it waits. With every worker on one core at
+ * one priority, the track loader queued behind the tag reader and the overlay covers, and things
+ * appeared one at a time. So each worker has a core and a priority of its own (lower is sooner;
+ * the main thread is 0x2C on core 0, which an application may share with cores 1 and 2):
+ *
+ *   core 0: the overlay's covers (0x30): only the main thread's idle time, it waits for vsync most of a frame
+ *   core 1: audio (0x2A), the track loader (0x2C), file writing and sorting (0x2D), the waveform (0x2E)
+ *   core 2: tags and cover thumbnails (0x2E), on their own: a whole-track waveform no longer holds them up
+ */
+#pragma once
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
+namespace cores {
+struct Place { int core, priority; };
+constexpr Place Audio{ 1, 0x2A }, Loader{ 1, 0x2C }, Files{ 1, 0x2D }, Wave{ 1, 0x2E }, Meta{ 2, 0x2E }, Thumbs{ 0, 0x30 };
+
+/** Moves the calling thread there. Where that is not allowed it simply stays where it is. */
+inline void moveHere(Place p) {
+#ifdef __SWITCH__
+    svcSetThreadPriority(CUR_THREAD_HANDLE, u32(p.priority));
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, p.core, 1u << p.core);
+#else
+    (void)p;
+#endif
+}
+}  // namespace cores

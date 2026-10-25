@@ -1,0 +1,226 @@
+/*
+ * Gatefold NX · bgclient.cpp
+ * The IPC calls to the background player. The PC preview has no sysmodule: there, connect()
+ * simply fails and Gatefold plays on its own, as it does on a console without the sysmodule.
+ */
+#include "bgclient.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
+#ifdef __SWITCH__
+#include <switch.h>
+
+#include "gfbg.h"
+
+namespace {
+Service srv;
+}
+
+bool BgClient::connect() {
+    if (connected_) return true;
+    connected_ = R_SUCCEEDED(gfbgOpen(&srv, GfbgClient_Gatefold));
+    pcm_.assign(GFBG_PCM, 0.f);
+    return connected_;
+}
+
+void BgClient::disconnect() {
+    if (connected_) serviceClose(&srv);
+    connected_ = false;
+}
+
+bool BgClient::poll(double now) {
+    if (!connected_) return false;
+    GfbgState s;
+    if (R_FAILED(gfbgGetState(&srv, &s))) { disconnect(); return false; }
+    st_.status = int(s.status);
+    st_.pos = s.pos;
+    st_.track = s.track;
+    st_.trackGen = s.trackGen;
+    st_.queueGen = s.queueGen;
+    st_.errorGen = s.errorGen;
+    st_.trackBy = s.trackBy;
+    st_.queueBy = s.queueBy;
+    st_.queueCount = s.queueCount;
+    st_.queueBytes = s.queueBytes;
+    st_.mode = int(s.mode);
+    st_.stopAfter = s.stopAfter != 0;
+    st_.autoPaused = s.autoPaused != 0;
+    st_.position = s.position;
+    st_.duration = s.duration;
+    st_.volume = s.volume;
+    st_.gain = s.gain;
+    st_.sampleRate = int(s.sampleRate);
+    st_.channels = int(s.channels);
+    st_.codec = int(s.codec);
+    st_.bitrate = int(s.bitrate);
+    st_.appState = int(s.appState);
+    st_.heapFree = s.heapFree;
+    if (now < expectUntil_) {
+        if (expectStatus_ >= 0) st_.status = expectStatus_;
+        if (expectPos_ >= 0) st_.position = expectPos_;
+    } else {
+        expectStatus_ = -1;
+        expectPos_ = -1;
+    }
+    polledAt_ = now;
+    return true;
+}
+
+double BgClient::position(double now) const {
+    double p = st_.position;
+    if (st_.status == BgState::Playing) p += std::clamp(now - polledAt_, 0.0, 0.25);
+    return st_.duration > 0 ? std::min(p, st_.duration) : p;
+}
+
+bool BgClient::setQueue(const BgQueue& q) {
+    if (!connected_) return false;
+    size_t pathBytes = 0;
+    for (const auto& p : q.paths) pathBytes += p.size() + 1;
+    std::vector<u8> buf(sizeof(GfbgQueueHeader) + q.order.size() * 4 + pathBytes);
+    GfbgQueueHeader h = {};
+    h.count = u32(q.paths.size());
+    h.pos = q.pos;
+    h.mode = u32(q.mode);
+    h.flags = GfbgQueue_KeepCurrent;
+    h.pathBytes = u32(pathBytes);
+    memcpy(h.name, q.name.c_str(), std::min(q.name.size(), sizeof h.name - 1));
+    memcpy(buf.data(), &h, sizeof h);
+    for (size_t i = 0; i < q.order.size(); i++) {
+        const s32 o = q.order[i];
+        memcpy(buf.data() + sizeof h + i * 4, &o, 4);
+    }
+    u8* p = buf.data() + sizeof h + q.order.size() * 4;
+    for (const auto& s : q.paths) { memcpy(p, s.c_str(), s.size() + 1); p += s.size() + 1; }
+    if (R_FAILED(gfbgSetQueue(&srv, buf.data(), buf.size()))) { disconnect(); return false; }
+    return true;
+}
+
+bool BgClient::getQueue(BgQueue& q) {
+    if (!connected_ || st_.queueBytes < sizeof(GfbgQueueHeader)) return false;
+    std::vector<u8> buf(st_.queueBytes + 4096);   // room in case it grew since the poll
+    if (R_FAILED(gfbgGetQueue(&srv, buf.data(), buf.size()))) return false;
+    GfbgQueueHeader h;
+    memcpy(&h, buf.data(), sizeof h);
+    if (sizeof h + size_t(h.count) * 4 + h.pathBytes > buf.size()) return false;
+    q.name.assign(h.name, strnlen(h.name, sizeof h.name));
+    q.pos = h.pos;
+    q.mode = int(h.mode);
+    q.order.resize(h.count);
+    for (u32 i = 0; i < h.count; i++) {
+        s32 o;
+        memcpy(&o, buf.data() + sizeof h + i * 4, 4);
+        q.order[i] = o;
+    }
+    q.paths.clear();
+    const char* p = reinterpret_cast<const char*>(buf.data() + sizeof h + size_t(h.count) * 4);
+    const char* end = p + h.pathBytes;
+    while (p < end && q.paths.size() < h.count) {
+        const size_t n = strnlen(p, size_t(end - p));
+        q.paths.emplace_back(p, n);
+        p += n + 1;
+    }
+    return q.paths.size() == h.count;
+}
+
+void BgClient::playAt(int pos, bool paused, double start) {
+    if (!connected_) return;
+    gfbgPlayAt(&srv, pos, paused, start);
+    expectStatus_ = paused ? BgState::Paused : BgState::Playing;
+    expectPos_ = start;
+    expectUntil_ = polledAt_ + 0.3;
+}
+
+void BgClient::toggle(double now) {
+    if (!connected_) return;
+    gfbgTransport(&srv, GfbgOp_Toggle);
+    expectStatus_ = st_.status == BgState::Playing ? BgState::Paused : BgState::Playing;
+    expectUntil_ = now + 0.3;
+}
+
+void BgClient::pause(double now) {
+    if (!connected_) return;
+    gfbgTransport(&srv, GfbgOp_Pause);
+    expectStatus_ = BgState::Paused;
+    expectUntil_ = now + 0.3;
+}
+
+void BgClient::stop() {
+    if (connected_) gfbgTransport(&srv, GfbgOp_Stop);
+}
+
+void BgClient::seek(double t, double now) {
+    if (!connected_) return;
+    gfbgSeek(&srv, t);
+    expectPos_ = t;
+    expectUntil_ = now + 0.3;
+    st_.position = t;
+    polledAt_ = now;
+}
+
+void BgClient::setVolume(float v) {
+    if (!connected_ || std::fabs(v - sentVolume_) < 0.0005f) return;
+    sentVolume_ = v;
+    gfbgSetVolume(&srv, v);
+}
+
+void BgClient::setStopAfter(bool on) {
+    if (connected_) gfbgSetStopAfter(&srv, on);
+}
+
+bool BgClient::pcm(float* out, int n) {
+    if (!connected_ || n > GFBG_PCM) return false;
+    u32 serial = 0;
+    if (R_FAILED(gfbgGetPcm(&srv, pcm_.data(), &serial)) || serial == pcmSerial_) return false;
+    pcmSerial_ = serial;
+    memcpy(out, pcm_.data() + (GFBG_PCM - n), size_t(n) * sizeof(float));
+    return true;
+}
+
+bool BgClient::config(BgConfig& out) {
+    GfbgConfig c;
+    if (!connected_ || R_FAILED(gfbgGetConfig(&srv, &c))) return false;
+    out.onOpen = c.onOpen;
+    out.onHome = c.onHome;
+    out.onClose = c.onClose;
+    out.onReturn = c.onReturn;
+    out.fadeOut = c.fadeOut;
+    out.fadeIn = c.fadeIn;
+    return true;
+}
+
+void BgClient::setConfig(const BgConfig& in) {
+    if (!connected_) return;
+    GfbgConfig c = {};
+    if (R_FAILED(gfbgGetConfig(&srv, &c))) return;   // keeps what Gatefold does not show (the game volume)
+    c.onOpen = u8(in.onOpen);
+    c.onHome = u8(in.onHome);
+    c.onClose = u8(in.onClose);
+    c.onReturn = u8(in.onReturn);
+    c.fadeOut = in.fadeOut;
+    c.fadeIn = in.fadeIn;
+    gfbgSetConfig(&srv, &c);
+}
+
+#else  // the PC preview: no sysmodule
+
+bool BgClient::connect() { return false; }
+void BgClient::disconnect() {}
+bool BgClient::poll(double) { return false; }
+double BgClient::position(double) const { return 0; }
+bool BgClient::setQueue(const BgQueue&) { return false; }
+bool BgClient::getQueue(BgQueue&) { return false; }
+void BgClient::playAt(int, bool, double) {}
+void BgClient::toggle(double) {}
+void BgClient::pause(double) {}
+void BgClient::stop() {}
+void BgClient::seek(double, double) {}
+void BgClient::setVolume(float) {}
+void BgClient::setStopAfter(bool) {}
+bool BgClient::pcm(float*, int) { return false; }
+bool BgClient::config(BgConfig&) { return false; }
+void BgClient::setConfig(const BgConfig&) {}
+
+#endif

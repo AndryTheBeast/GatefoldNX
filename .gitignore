@@ -1,0 +1,26 @@
+# Build output (binaries are attached to releases, not committed)
+build/
+*.elf
+*.nacp
+*.nro
+*.nso
+*.nsp
+*.npdm
+*.ovl
+*.map
+*.lst
+*.d
+*.o
+
+# The SD-card layout keeps its small files; the binaries are copied in by hand after a build
+dist/switch/
+dist/atmosphere/contents/4200000047464E58/exefs.nsp
+
+# Downloaded sources, toolchains and test libraries
+sysmodule/deps/
+tools/preview/deps/
+tools/preview/out/
+
+# Developer notes and reference images
+docs/NEXT_SESSION.md
+docs/next-session/
