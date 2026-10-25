@@ -31,8 +31,8 @@ By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0<br>
 | ![Tracks](docs/screenshots/library-tracks.webp) | ![Artists](docs/screenshots/artists.webp) |
 | **Settings** | **The track menu** |
 | ![Settings](docs/screenshots/settings.webp) | ![Track menu](docs/screenshots/track-menu.webp) |
-| **From the cover, on a light background** | |
-| ![Light](docs/screenshots/now-playing-light.webp) | |
+| **From the cover, on a light background** | **The cover's palette: its colours and the role each plays** |
+| ![Light](docs/screenshots/now-playing-light.webp) | ![Palette](docs/screenshots/palette.webp) |
 
 <sub>The screenshots come from the PC preview (see below). The artists and albums are made up, and the covers are Gatefold's own test images (MIT licence).</sub>
 
