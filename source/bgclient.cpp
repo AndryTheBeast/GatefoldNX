@@ -11,12 +11,21 @@
 #include <cstring>
 
 #ifdef __SWITCH__
+#include <SDL2/SDL.h>
 #include <switch.h>
 
 #include "gfbg.h"
 
 namespace {
 Service srv;
+
+/**
+ * One clock for every timestamp here. Callers passed two: the app's frame clock (polls) and SDL's
+ * (seeks, play/pause from Player). The app's starts at launch's end and stands still while Gatefold
+ * waits on the HOME menu, so a seek's 0.3 s "trust what was asked for" lasted seconds, even minutes,
+ * and the position read frozen: the lyrics stopped following after a tap on a line.
+ */
+double bgClock() { return SDL_GetTicks64() / 1000.0; }
 }
 
 bool BgClient::connect() {
@@ -31,7 +40,8 @@ void BgClient::disconnect() {
     connected_ = false;
 }
 
-bool BgClient::poll(double now) {
+bool BgClient::poll(double) {
+    const double now = bgClock();
     if (!connected_) return false;
     GfbgState s;
     if (R_FAILED(gfbgGetState(&srv, &s))) { disconnect(); return false; }
@@ -69,7 +79,8 @@ bool BgClient::poll(double now) {
     return true;
 }
 
-double BgClient::position(double now) const {
+double BgClient::position(double) const {
+    const double now = bgClock();
     double p = st_.position;
     if (st_.status == BgState::Playing) p += std::clamp(now - polledAt_, 0.0, 0.25);
     return st_.duration > 0 ? std::min(p, st_.duration) : p;
@@ -133,14 +144,16 @@ void BgClient::playAt(int pos, bool paused, double start) {
     expectUntil_ = polledAt_ + 0.3;
 }
 
-void BgClient::toggle(double now) {
+void BgClient::toggle(double) {
+    const double now = bgClock();
     if (!connected_) return;
     gfbgTransport(&srv, GfbgOp_Toggle);
     expectStatus_ = st_.status == BgState::Playing ? BgState::Paused : BgState::Playing;
     expectUntil_ = now + 0.3;
 }
 
-void BgClient::pause(double now) {
+void BgClient::pause(double) {
+    const double now = bgClock();
     if (!connected_) return;
     gfbgTransport(&srv, GfbgOp_Pause);
     expectStatus_ = BgState::Paused;
@@ -151,7 +164,8 @@ void BgClient::stop() {
     if (connected_) gfbgTransport(&srv, GfbgOp_Stop);
 }
 
-void BgClient::seek(double t, double now) {
+void BgClient::seek(double t, double) {
+    const double now = bgClock();
     if (!connected_) return;
     gfbgSeek(&srv, t);
     expectPos_ = t;
