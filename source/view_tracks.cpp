@@ -210,7 +210,6 @@ bool App::trackTile(Id id, int track, float x, float y, float w, float cover) {
     const bool playing = now.track == track && player.loaded();
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float cx = x + 8, cy = y + 8;
-    g.roundRect(cx + 2, cy + 10, cover - 4, cover - 6, 12, { 0, 0, 0 }, 0.3f);   // 0 14px 28px -18px
     coverBox(track, cx, cy, cover, 12);
     if (playing) {
         g.roundRect(cx, cy, cover, cover, 12, { 0, 0, 0 }, 0.38f);

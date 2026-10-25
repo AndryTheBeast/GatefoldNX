@@ -204,7 +204,6 @@ bool App::folderTile(Id id, int folder, float x, float y, float w, float cover) 
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float cx = x + 8, cy = y + 8;
-    g.roundRect(cx + 2, cy + 10, cover - 4, cover - 6, 12, { 0, 0, 0 }, 0.3f);
     std::vector<int> inside;
     for (int i = fo.first; i < fo.last && i < fo.first + 400; i++) inside.push_back(i);
     if (inside.empty()) {

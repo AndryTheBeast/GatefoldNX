@@ -47,7 +47,7 @@ struct Store {
     int libTab = 1;            // 0 Albums, 1 Tracks, 2 Folders
     int tracksSort = 0;        // by artist, title, album, year, genre, length
     bool tracksDesc = false;
-    int theme = 0;                  // 0 from the cover, 1 Dark, 2 Grey, 3 Light (theme.js FIXED), 4 Custom
+    int theme = 0;                  // 0 from the cover, 1 Dark, 3 Light (theme.js FIXED), 4 Custom; 2 was Grey, read as Dark
     int brightness = 0;             // From the cover: 0 dark, 1 light (palette-core.js opts.mode)
     float saturation = 1;           // opts.intensity, 0..1.5
     float colourTransition = 1.1f;  // seconds the colours take to follow a new cover (Gatefold's --tx)

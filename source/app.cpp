@@ -1100,7 +1100,7 @@ Palette App::customPalette() const {
     return paletteCustom(c);
 }
 
-/** Settings → Appearance: From the cover (dark or light, any saturation), Dark, Grey, Light, or Custom. */
+/** Settings → Appearance: From the cover (dark or light, any saturation), Dark, Light, or Custom. */
 void App::applyTheme() {
     const PaletteOpts o = paletteOpts();
     paletteSetDefaults(o);   // the album pages' palettes, made on the metadata thread

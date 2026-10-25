@@ -34,7 +34,7 @@ bool App::tile(Id id, int coverTrack, float x, float y, float w, bool round, con
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float rad = round ? cover / 2 : 10;
-    g.roundRect(x + 12, y + 18, cover - 4, cover - 6, rad, { 0, 0, 0 }, 0.28f);   // 0 10px 24px -14px rgb(0 0 0 / .6)
+    // Gatefold's shadow under the cover (0 10px 24px -14px) is left out at the user's request, as on Now playing
     coverBox(coverTrack, x + 10, y + 10, cover, rad);
     g.roundStroke(x + 10, y + 10, cover, cover, rad, 1, pal.text, 0.09f);
     if (hot && !round) {

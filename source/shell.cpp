@@ -492,7 +492,7 @@ bool App::backgroundJob(Job& j) {
     if (thumbs.running()) {
         int made = 0, left = 0;
         thumbs.progress(made, left);
-        if (left > 0) { j = { "Covers for the overlay", made, made + left, 1 }; return true; }
+        if (left > 0) { j = { "Overlay covers", made, made + left, 1 }; return true; }
     }
     return false;
 }

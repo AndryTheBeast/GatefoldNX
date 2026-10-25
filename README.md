@@ -13,7 +13,7 @@ By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0<br>
 
 ## ✨ Highlights
 
-- 🎨 **Colours from the cover.** The whole interface takes its palette from the album playing, with Gatefold's own algorithm (`palette-core.js`, ported line for line and verified to give identical colours on Gatefold's test covers). Or pick a fixed Dark, Light or Grey theme, or your own.
+- 🎨 **Colours from the cover.** The whole interface takes its palette from the album playing, with Gatefold's own algorithm (`palette-core.js`, ported line for line and verified to give identical colours on Gatefold's test covers). Or pick a fixed Dark or Light theme, or your own.
 - 🎤 **Synced lyrics.** From `.lrc` files or the lyrics tag, in Now playing and in the full-screen Canvas. They follow the music, scroll by hand, and an instrumental break shows Gatefold's three pulsing dots.
 - 🖼️ **Canvas.** A full-screen Now playing with Cover, Lyrics and Minimal layouts. When nothing is touched, the controls fade away and the progress line grows into a spectrum.
 - 🎧 **Background player.** An optional sysmodule keeps the music going on the HOME menu, during games and after Gatefold closes, with no gap. An Ultrahand overlay controls it from anywhere.
@@ -67,7 +67,7 @@ By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0<br>
 
 ## 🎨 Appearance
 
-- 🌈 Themes: **From the cover** (on a dark or a light background), **Dark**, **Light**, **Grey**, or **Custom** (your background and two accents).
+- 🌈 Themes: **From the cover** (on a dark or a light background), **Dark**, **Light**, or **Custom** (your background and two accents).
 - 🎛️ Saturation, colour transition time, and the cover's palette.
 - 🧱 A collapsible sidebar, and every tab but Now playing can be hidden.
 - 📈 Visualizer settings: sensitivity, smoothing, number of bars (for Now playing and the Canvas separately), peak caps and the cover's bass pulse.

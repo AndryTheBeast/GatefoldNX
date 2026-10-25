@@ -146,18 +146,18 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    } });
     }
     {
-        // Interface colours: Gatefold's five cards, four a row (From the cover, Dark, Light, Grey; Custom)
+        // Interface colours: Gatefold's cards in one row (From the cover, Dark, Light, Custom). Grey is left out at the
+        // user's request, to keep the page shorter; a saved Grey reads as Dark (Store::load).
         Row themes;
-        themes.blockH = 150 * 2 + 12;
+        themes.blockH = 150;
         themes.block = [this](float bx, float by, float bw) {
             struct Opt { const char* name; int id; Palette p; };
             const Palette custom = store.theme == 4 ? target : customPalette();
-            const Opt opts[5] = { { "From the cover", 0, coverPal }, { "Dark", 1, paletteFixed(FixedTheme::Dark) },
-                                  { "Light", 3, paletteFixed(FixedTheme::Light) }, { "Grey", 2, paletteFixed(FixedTheme::Gray) },
-                                  { "Custom", 4, custom } };
+            const Opt opts[4] = { { "From the cover", 0, coverPal }, { "Dark", 1, paletteFixed(FixedTheme::Dark) },
+                                  { "Light", 3, paletteFixed(FixedTheme::Light) }, { "Custom", 4, custom } };
             const float gap = 12, cw = (bw - gap * 3) / 4, ch = 150;
-            for (int i = 0; i < 5; i++) {
-                const float cx = bx + (i % 4) * (cw + gap), cy = by + (i / 4) * (ch + gap);
+            for (int i = 0; i < 4; i++) {
+                const float cx = bx + i * (cw + gap), cy = by;
                 const Id id = uid("set.theme", opts[i].id);
                 if (ui.item(id, { cx, cy, cw, ch }, 14)) { store.theme = opts[i].id; applyTheme(); persistSoon(0.3f); }
                 const bool on = store.theme == opts[i].id, hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
@@ -187,7 +187,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         static const std::vector<std::string> brightNames = { "Dark", "Light" };
         const Row brightness = segRow("Brightness",
                                       store.theme == 0 ? "From the cover, on a dark or a light background"
-                                                       : "For From the cover; Dark, Light and Grey keep their own",
+                                                       : "For From the cover; Dark and Light keep their own",
                                       "set.bright", brightNames, store.brightness, [this](int i) { store.brightness = i; applyTheme(); });
         const Row saturation = sliderRow("Saturation", std::to_string(int(std::lround(store.saturation * 100))) + "%", "How strongly the cover tints the interface",
                                          "set.sat", satShown, [this] { store.saturation = std::round(satShown * 1.5f * 100) / 100; applyTheme(); });
