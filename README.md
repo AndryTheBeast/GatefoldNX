@@ -2,12 +2,12 @@
 <h1 align="center">Gatefold NX</h1>
 <p align="center"><b>Gatefold, the foobar2000 interface, as a native music player for the Nintendo Switch.</b><br>
 Your own music folder, synced lyrics, colours from every cover, and music that keeps playing on the HOME menu and in games.<br>
-By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0<br>
+By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a> · version 1.0.0<br>
 <a href="../../releases/latest"><b>⬇️ Download the latest release</b></a></p>
 
 ![Now playing](docs/screenshots/now-playing.webp)
 
-[Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000) is a modern interface for foobar2000 on Windows, written in HTML and JavaScript. **Gatefold NX** is not a port: it is a native rewrite in C++ (devkitPro, libnx, SDL2) that recreates it as closely as the console allows. Layout values come straight from Gatefold's CSS, and CSS pixels map 1:1 onto the Switch's 1280×720 screen. Its icons, typeface and colour algorithm are Gatefold's own.
+[Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), by [DEVIROYrus](https://github.com/DEVIROYrus), is a modern interface for foobar2000 on Windows, written in HTML and JavaScript. **Gatefold NX** is not a port: it is a native rewrite in C++ (devkitPro, libnx, SDL2) that recreates it as closely as the console allows. Layout values come straight from Gatefold's CSS, and CSS pixels map 1:1 onto the Switch's 1280×720 screen. Its icons, typeface and colour algorithm are Gatefold's own.
 
 ---
 
@@ -211,7 +211,7 @@ Gatefold NX's own code (the app, the background player and the tools) is under t
 
 ## 🙏 Credits and licences
 
-- 🎨 **[Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000):** the design, palette algorithm, icons and app icon. © Gatefold contributors, MIT licence (`LICENSE-gatefold`).
+- 🎨 **[Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000)** by **[DEVIROYrus](https://github.com/DEVIROYrus)**: the original foobar2000 interface this app recreates, with its design, palette algorithm, icons and app icon. © Gatefold contributors, MIT licence (`LICENSE-gatefold`).
 - 🔤 **Inter:** the typeface. © The Inter Project Authors, SIL Open Font Licence (`romfs/fonts/OFL.txt`).
 - 🎞️ **FFmpeg** (LGPL 2.1), **SDL 2** with SDL_mixer, SDL_ttf and SDL_image (zlib), **libFLAC**, **mpg123**, **Opus**, **Tremor** and **libjpeg-turbo**, through devkitPro's portlibs.
 - 🧰 **libnx and devkitPro:** the Switch homebrew toolchain (ISC).
@@ -222,4 +222,5 @@ Gatefold NX is an unofficial homebrew project, not affiliated with Nintendo or f
 
 ## 👥 Authors
 
-**AndryTheBeast** & **DEVIROYrus**
+- **[AndryTheBeast](https://github.com/AndryTheBeast)**: Gatefold NX, the Switch app, background player and overlay.
+- **[DEVIROYrus](https://github.com/DEVIROYrus)**: [Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), the foobar2000 interface on PC that Gatefold NX is built on.
