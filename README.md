@@ -2,7 +2,8 @@
 <h1 align="center">Gatefold NX</h1>
 <p align="center"><b>Gatefold, the foobar2000 interface, as a native music player for the Nintendo Switch.</b><br>
 Your own music folder, synced lyrics, colours from every cover, and music that keeps playing on the HOME menu and in games.<br>
-By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0</p>
+By <b>AndryTheBeast</b> &amp; <b>DEVIROYrus</b> · version 1.0.0<br>
+<a href="../../releases/latest"><b>⬇️ Download the latest release</b></a></p>
 
 ![Now playing](docs/screenshots/now-playing.webp)
 
@@ -123,7 +124,7 @@ Open it with Ultrahand's combo (ZL + ZR + D-pad down unless you changed it).
 
 You need a Switch running **Atmosphère**, and **Ultrahand** for the overlay.
 
-Copy the files to the SD card:
+Download `GatefoldNX-<version>.zip` from [Releases](../../releases/latest) and unzip it onto the root of the SD card. It holds:
 
 | Path | What |
 |---|---|
@@ -197,6 +198,10 @@ Run `gatefold-preview.exe` with the variables described at the top of `tools/pre
 - **Not ported:** Gatefold's sound analysis (AI moods and radio), YouTube, and online cover and lyrics lookup.
 - **Scripts:** CJK text uses the console's own fonts; scripts outside them will not render.
 - **MP3 durations:** VBR MP3s without a Xing header get an estimated duration.
+
+## 📜 Licence
+
+Gatefold NX's own code (the app, the background player and the tools) is under the **MIT licence** (`LICENSE`), like Gatefold itself. The **overlay** (`overlay/`) is under the **GPL 2**, because it is built on sys-tune and libultrahand (`overlay/LICENSE-sys-tune`). The third-party code and assets listed below keep their own licences.
 
 ## 🙏 Credits and licences
 
