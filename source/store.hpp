@@ -43,7 +43,7 @@ struct Store {
     bool resume = true;
     bool background = true;   // play through the background player (sysmodule) when it is installed
     // The list views (ListMode) of the playlists, Folders and Library → Tracks, and the Library's tab
-    int viewPlaylist = 1, viewFolders = 2, viewTracks = 1;
+    int viewPlaylist = 1, viewFolders = 2, viewTracks = 1, viewGenre = 1;   // viewGenre: a genre's or an artist's Tracks tab
     int libTab = 1;            // 0 Albums, 1 Tracks, 2 Folders
     int tracksSort = 0;        // by artist, title, album, year, genre, length
     bool tracksDesc = false;

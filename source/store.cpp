@@ -139,6 +139,7 @@ void Store::load() {
         else if (k == "viewPlaylist") viewPlaylist = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewFolders") viewFolders = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewTracks") viewTracks = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "viewGenre") viewGenre = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "libTab") libTab = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "tracksSort") tracksSort = std::clamp(atoi(v.c_str()), 0, 5);
         else if (k == "tracksDesc") tracksDesc = v == "1";
@@ -243,7 +244,7 @@ void Store::save() const {
             double(colourTransition), customBg, customAccent, customAccent2);
     appendf(f, "viewPlaylist=%d\nviewFolders=%d\nviewTracks=%d\nlibTab=%d\ntracksSort=%d\ntracksDesc=%d\n", viewPlaylist, viewFolders, viewTracks, libTab,
             tracksSort, tracksDesc);
-    appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\n", double(pointerSpeed), pointerAccel, frameTimes);
+    appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\nviewGenre=%d\n", double(pointerSpeed), pointerAccel, frameTimes, viewGenre);
     if (!musicRoot.empty()) appendf(f, "musicRoot=%s\n", musicRoot.c_str());
     writer().put(path("settings.txt"), std::move(f), false);
 

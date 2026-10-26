@@ -5,6 +5,7 @@
  * folder layout is.
  */
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 
 #include "app.hpp"
@@ -145,6 +146,24 @@ void App::drawArtists(float x, float y, float w, float h, bool genre) {
     ui.popArea();
 }
 
+/** The artists with tracks in a genre, by name, with how many of those tracks are theirs. */
+const std::vector<std::pair<int, int>>& App::genreArtists(int gi) {
+    if (gi == genreArtistsFor_ && indexGen == genreArtistsGen_) return genreArtists_;
+    genreArtistsFor_ = gi;
+    genreArtistsGen_ = indexGen;
+    genreArtists_.clear();
+    std::unordered_map<int, int> count;   // index into artists → tracks in this genre
+    for (int t : genres[gi].tracks) {
+        std::string key = lib.tracks[t].artist.empty() ? "Unknown artist" : lib.tracks[t].artist;
+        for (char& c : key) c = char(tolower((unsigned char)c));
+        if (auto it = artistByKey.find(key); it != artistByKey.end()) count[it->second]++;
+    }
+    for (const auto& [a, n] : count) genreArtists_.push_back({ a, n });
+    // artists is sorted by name already, so its index orders them
+    std::sort(genreArtists_.begin(), genreArtists_.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    return genreArtists_;
+}
+
 void App::drawArtist(float x, float y, float w, float h, bool genre) {
     const int ai = genre ? routeGenre() : routeArtist();
     if (ai < 0) { viewHead(genre ? "Genre" : "Artist", route.query, "Not in the library", x, y, w); return; }
@@ -153,11 +172,21 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
     const GridLayout gl = gridFor(x, w);
     const float heroH = 26 + 220 + 22;
-    const int rows = (int(ar.albums.size()) + gl.cols - 1) / gl.cols;
-    const float gridH = ar.albums.empty() ? 0 : 10 + rows * gl.tileH;
+    // One tab at a time under a switch, as in Library: a genre has Albums, Artists and Tracks, an artist Albums and
+    // Tracks. Tabs are numbered alike (0 Albums, 1 Artists, 2 Tracks); with no albums, Albums is greyed and Tracks shows.
+    int& chosen = genre ? genreTab : artistTab;
+    int tab = std::clamp(chosen, 0, 2);
+    if (!genre && tab == 1) tab = 0;
+    if (ar.albums.empty() && tab == 0) tab = 2;
+    const std::vector<std::pair<int, int>>* inGenre = tab == 1 ? &genreArtists(ai) : nullptr;
+    const float switchH = 56;   // the switch's row
+    const int gridItems = tab == 1 ? int(inGenre->size()) : int(ar.albums.size());
+    const int rows = (gridItems + gl.cols - 1) / gl.cols;
+    const float gridH = (tab == 2 || gridItems == 0) ? 0 : 10 + rows * gl.tileH;
+    const float songsH = (tab == 0 || tab == 1) ? 0 : 46 + 30 + 8 + ar.tracks.size() * RowH;
     ScrollArea& sa = area(genre ? "genre" : "artist", int(uid(ar.name) & 0x7fffffff));
     sa.view = { x, y, w, h };
-    sa.content = heroH + gridH + 46 + 30 + 8 + ar.tracks.size() * RowH + 24;
+    sa.content = heroH + switchH + gridH + songsH + 24;
     ui.pushArea(&sa);
     const float oy = y - sa.y;
 
@@ -186,25 +215,58 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
 
     g.clip(x, y, w, h);
     float gy = oy + heroH + 10;
-    for (int i = 0; i < int(ar.albums.size()); i++) {
-        const Album& al = lib.albums[ar.albums[i]];
-        const std::string sub = al.year.empty() ? std::to_string(al.tracks.size()) + " tracks" : al.year;
-        const float ty2 = gy + (i / gl.cols) * gl.tileH;
-        if (ty2 + gl.tileH < y - gl.tileH || ty2 > y + h + gl.tileH) continue;
-        if (tile(uid("ar.tile", int(uid(al.key) & 0x7fffffff)), al.tracks[0], gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, false, al.title, sub))
-            openAlbum(ar.albums[i]);
+    {
+        // .seg as in Library (Albums | Tracks | Folders): what this page holds, one view at a time
+        const float sy = oy + heroH + 22;
+        std::string count;
+        if (tab == 0) count = std::to_string(ar.albums.size()) + (ar.albums.size() == 1 ? " album" : " albums");
+        else if (tab == 1) count = std::to_string(inGenre->size()) + (inGenre->size() == 1 ? " artist" : " artists");
+        else count = std::to_string(ar.tracks.size()) + (ar.tracks.size() == 1 ? " track" : " tracks");
+        g.textC(count, { css::Lg, Weight::Bold }, x + 30, sy, pal.text);
+        // On Tracks the four list views (as in Library → Tracks) take the right edge and the switch sits left of them
+        float rx = x + w - 30;
+        if (tab == 2) {
+            int mode = store.viewGenre;
+            rx -= viewSwitch(genre ? "gen.view" : "ar.view", rx, sy, mode) + 10;
+            store.viewGenre = mode;
+        }
+        int picked = -1;
+        const std::vector<std::string> names = genre ? std::vector<std::string>{ "Albums", "Artists", "Tracks" } : std::vector<std::string>{ "Albums", "Tracks" };
+        const int shown = genre ? tab : (tab == 2 ? 1 : 0);
+        segmented(uid(genre ? "gen.tab" : "ar.tab"), rx, sy, names, shown, &picked, ar.albums.empty() ? 1u : 0u);
+        if (picked >= 0 && picked != shown) chosen = genre ? picked : (picked == 1 ? 2 : 0);
+        gy = oy + heroH + switchH;
+    }
+    if (tab == 1) {
+        // Artists: round, as in the Artists tab; the count is their tracks in this genre
+        for (int i = 0; i < int(inGenre->size()); i++) {
+            const Artist& p = artists[(*inGenre)[i].first];
+            const int n = (*inGenre)[i].second;
+            const float ty2 = gy + (i / gl.cols) * gl.tileH;
+            if (ty2 + gl.tileH < y - gl.tileH || ty2 > y + h + gl.tileH) continue;
+            const int cover = p.albums.empty() ? p.tracks[0] : lib.albums[p.albums[0]].tracks[0];
+            if (tile(uid("gen.artist", int(uid(p.name) & 0x7fffffff)), cover, gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, true, p.name,
+                     std::to_string(n) + (n == 1 ? " track here" : " tracks here")))
+                openArtist(p.name);
+        }
+    } else if (tab != 2) {
+        for (int i = 0; i < int(ar.albums.size()); i++) {
+            const Album& al = lib.albums[ar.albums[i]];
+            const std::string sub = al.year.empty() ? std::to_string(al.tracks.size()) + " tracks" : al.year;
+            const float ty2 = gy + (i / gl.cols) * gl.tileH;
+            if (ty2 + gl.tileH < y - gl.tileH || ty2 > y + h + gl.tileH) continue;
+            if (tile(uid("ar.tile", int(uid(al.key) & 0x7fffffff)), al.tracks[0], gl.x0 + (i % gl.cols) * gl.tileW, ty2, gl.tileW, false, al.title, sub))
+                openAlbum(ar.albums[i]);
+        }
     }
 
-    // Songs: everything by this artist, also tracks that belong to no album
-    float sy = oy + heroH + gridH + 16;
-    g.text("Songs", { css::Lg, Weight::Bold }, x + 30, sy, pal.text);
-    sy += 30;
-    listHead(x, sy, w, true);
-    const float top = sy + 30 + 8;
-    for (int i = 0; i < int(ar.tracks.size()); i++) {
-        const float ry = top + i * RowH;
-        if (ry + RowH < y - RowH || ry > y + h + RowH) continue;
-        if (trackRow(uid("row", i), ar.tracks[i], i + 1, x + 14, ry, w - 28, RowH, true)) playTracks(ar.tracks, i, ar.name);
+    // The Tracks tab: the same list as Library → Tracks, in the view chosen beside the switch
+    if (tab == 2) {
+        const float top = oy + heroH + switchH;
+        // false: a playlist's columns (no Genre column on a genre's own page)
+        const float bodyH = drawTrackBody(genre ? "gen" : "ar", ar.tracks, x, top, w, y, h, ListMode(store.viewGenre), false,
+                                          [&](int i) { playTracks(ar.tracks, i, ar.name); });
+        sa.content = heroH + switchH + bodyH + 24;
     }
     g.unclip();
     ui.popArea();

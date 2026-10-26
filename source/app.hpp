@@ -350,6 +350,14 @@ private:
     void drawLibrary(float x, float y, float w, float h);
     void drawArtists(float x, float y, float w, float h, bool genre = false);
     void drawArtist(float x, float y, float w, float h, bool genre = false);
+    // A genre's page shows one of Albums, Artists or Tracks at a time (kept while the app runs); its artists are
+    // worked out once per genre and index: (artist, tracks of theirs in the genre), by name
+    int genreTab = 0;    // 0 Albums, 1 Artists, 2 Tracks
+    int artistTab = 0;   // an artist's page: 0 Albums, 2 Tracks (the same numbers, no Artists)
+    std::vector<std::pair<int, int>> genreArtists_;
+    int genreArtistsFor_ = -1;
+    unsigned genreArtistsGen_ = ~0u;
+    const std::vector<std::pair<int, int>>& genreArtists(int genre);
     /** quad: the four covers of these tracks' first albums (a genre), as Folders shows a folder. */
     bool tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub,
               const std::vector<int>* quad = nullptr);
