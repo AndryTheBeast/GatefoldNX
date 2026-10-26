@@ -44,7 +44,7 @@ DATA		:=	data
 INCLUDES	:=	source sysmodule/include
 APP_TITLE	:=	Gatefold
 APP_AUTHOR	:=	AndryTheBeast & DEVIROYrus
-APP_VERSION	:=	1.0.0
+APP_VERSION	:=	1.1.0
 ROMFS	:=	romfs
 
 #---------------------------------------------------------------------------------
@@ -56,6 +56,13 @@ CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION=\"$(APP_VERSION)\"
+
+# Dev builds (the default) keep what is only for testing: the sleep timer's 1-minute choice and
+# Settings → About → Frame times. A release is `make clean && make DEV=0` (make does not notice a changed flag).
+DEV	?=	1
+ifeq ($(DEV),1)
+CFLAGS	+=	-DGF_DEV
+endif
 
 CXXFLAGS	:= $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 

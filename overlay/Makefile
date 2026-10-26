@@ -39,7 +39,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 # Gatefold NX overlay: Gatefold.ovl for Ultrahand (switch/.overlays/). Built on sys-tune 2.1's
 # overlay (GPL-2, see LICENSE-sys-tune) and libultrahand, talking to Gatefold's background player.
-VERSION		?=	1.0.0
+VERSION		?=	1.1.0
 API_VERSION	?=	4
 APP_TITLE	:=	Gatefold
 APP_AUTHOR	:=	AndryTheBeast & DEVIROYrus

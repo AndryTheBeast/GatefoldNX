@@ -166,6 +166,13 @@ void Store::load() {
         else if (k == "pointerSpeed") pointerSpeed = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "pointerAccel") pointerAccel = v == "1";
         else if (k == "frameTimes") frameTimes = v == "1";
+        else if (k == "keepAwake") keepAwake = v == "1";
+        else if (k == "levelMode") levelMode = std::clamp(atoi(v.c_str()), 0, 3);
+        else if (k == "levelTarget") levelTarget = std::clamp(atoi(v.c_str()), -23, -6);
+        else if (k == "batteryPercent") batteryPercent = v == "1";
+        else if (k == "batteryEstimate") batteryEstimate = v == "1";
+        else if (k == "dimAfter") dimAfter = std::clamp(atoi(v.c_str()), 0, 60);
+        else if (k == "sleepConsole") sleepConsole = std::clamp(atoi(v.c_str()), 0, 300);
         else if (k == "musicRoot") musicRoot = v;
     }
     playlists.clear();
@@ -245,6 +252,9 @@ void Store::save() const {
     appendf(f, "viewPlaylist=%d\nviewFolders=%d\nviewTracks=%d\nlibTab=%d\ntracksSort=%d\ntracksDesc=%d\n", viewPlaylist, viewFolders, viewTracks, libTab,
             tracksSort, tracksDesc);
     appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\nviewGenre=%d\n", double(pointerSpeed), pointerAccel, frameTimes, viewGenre);
+    appendf(f, "keepAwake=%d\ndimAfter=%d\nsleepConsole=%d\n", keepAwake, dimAfter, sleepConsole);
+    appendf(f, "batteryPercent=%d\nbatteryEstimate=%d\n", batteryPercent, batteryEstimate);
+    appendf(f, "levelMode=%d\nlevelTarget=%d\n", levelMode, levelTarget);
     if (!musicRoot.empty()) appendf(f, "musicRoot=%s\n", musicRoot.c_str());
     writer().put(path("settings.txt"), std::move(f), false);
 

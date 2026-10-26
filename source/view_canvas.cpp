@@ -362,7 +362,11 @@ void App::drawCanvas() {
     float segW = 6;
     for (const char* l : layouts) segW += g.measure(l, segF) + 28;
     const float volW = 42 + 4 + 120 + 12;   // mute, gap, range, padding (the thumb travels inside the range)
-    const float totalW = segW + 8 + volW + 8 + 42 + 8 + 42;
+    // The sleep timer's moon: a pill with the time left while it runs.
+    const double sleepLeftNow = sleepLeft();
+    const Font sleepF{ 13, Weight::SemiBold };
+    const float sleepW = sleepLeftNow > 0 ? 42 + g.measure("88:88", sleepF) + 4 : 42;
+    const float totalW = segW + 8 + volW + 8 + sleepW + 8 + 42 + 8 + 42;
     float x = mid - totalW / 2;
     const float cy = toolsCy + slide;
     g.roundRect(x, cy - 19, segW, 38, 19, pal.text, 0.08f * ctlA);
@@ -409,6 +413,15 @@ void App::drawCanvas() {
         g.circle(tx, cy, 7, pal.text, ctlA);
     }
     x += volW + 8;
+    {
+        const Id sid = uid("cv.sleep");
+        if (live && ui.item(sid, { x, cy - 21, sleepW, 42 }, 21)) openSleep();
+        const bool hot = ui.pressed(sid) || (ui.focused(sid) && ui.showFocusRing());
+        g.roundRect(x, cy - 21, sleepW, 42, 21, pal.text, (hot ? 0.16f : 0.08f) * ctlA);
+        g.icon(ICON_MOON, x + 21, cy, 18, sleepLeftNow > 0 ? pal.accentInk : pal.text, ctlA);
+        if (sleepLeftNow > 0) g.textC(fmtTime(std::ceil(sleepLeftNow)), sleepF, x + 38, cy, pal.accentInk, ctlA);
+    }
+    x += sleepW + 8;
     // The lyrics switch, greyed while the track has none (nothing it could show or hide)
     const bool noLyrics = now.track >= 0 && !now.loading && now.lyrics.empty();
     if (cvBtn(uid("cv.lyrics"), ICON_QUOTE, x + 21, cy, 42, false, store.canvasLyrics, noLyrics)) { store.canvasLyrics = !store.canvasLyrics; store.save(); }

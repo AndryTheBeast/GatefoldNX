@@ -32,6 +32,7 @@ HidAnalogStickState padGetStickPos(const PadState*, u32);
 
 bool appletMainLoop();
 inline Result appletSetMediaPlaybackState(bool) { return 0; }
+inline Result appletSetAutoSleepTimeAndDimmingTimeEnabled(bool) { return 0; }
 enum AppletHookType { AppletHookType_OnFocusState = 0, AppletHookType_OnOperationMode, AppletHookType_OnPerformanceMode, AppletHookType_OnExitRequest };
 enum AppletFocusState { AppletFocusState_InFocus = 1, AppletFocusState_OutOfFocus = 2, AppletFocusState_Background = 3 };
 typedef void (*AppletHookFn)(AppletHookType hook, void* param);
@@ -55,6 +56,20 @@ inline Result plGetSharedFontByType(PlFontData*, PlSharedFontType) { return 1; }
 inline Result psmInitialize() { return 0; }
 inline void psmExit() {}
 inline Result psmGetBatteryChargePercentage(u32* p) { *p = 76; return 0; }
+// The battery moves with the frame clock (hostshim.cpp): down 0.5 % a minute, or up 1 % with GF_CHARGING=1.
+enum PsmChargerType { PsmChargerType_Unconnected = 0, PsmChargerType_EnoughPower = 1, PsmChargerType_LowPower = 2, PsmChargerType_NotSupported = 3 };
+Result psmGetChargerType(PsmChargerType* out);
+Result psmGetRawBatteryChargePercentage(double* out);
+
+// Docked with GF_DOCKED=1. Sleeping and the backlight only print what the console would do.
+enum AppletOperationMode { AppletOperationMode_Handheld = 0, AppletOperationMode_Console = 1 };
+AppletOperationMode appletGetOperationMode();
+Result appletRequestToSleep();
+inline Result lblInitialize() { return 0; }
+inline void lblExit() {}
+Result lblGetCurrentBrightnessSetting(float* out);
+Result lblSetCurrentBrightnessSetting(float brightness);
+inline Result lblApplyCurrentBrightnessSettingToBacklight() { return 0; }
 
 struct SwkbdConfig { int unused; };
 inline Result swkbdCreate(SwkbdConfig*, s32) { return 0; }

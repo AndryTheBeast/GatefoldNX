@@ -34,6 +34,7 @@ public:
     void setVolume(float v);
     void setMode(u32 mode, u32 by);
     void setStopAfter(bool on);
+    void setSleep(float seconds);
     u32 pcm(float* out);
     GfbgConfig config();
     void setConfig(const GfbgConfig& c);
@@ -75,6 +76,11 @@ private:
     bool tailFlushed_ = false;  // the resampler's tail is out: the track is really over
     bool flush_ = false;        // drop the buffers audout holds (a seek, a track picked by hand)
     std::string playing_;      // the path loaded now
+    // Play statistics: a track heard long enough (Gatefold's Stats::threshold) is counted once per
+    // play, and the watch thread appends it to bg-plays.txt for Gatefold to take in.
+    u64 heardFrames_ = 0;
+    bool counted_ = false;
+    std::vector<std::string> plays_;
     std::string coverPath_;    // the folder's cover image, when the file has none
     s16 decBuf_[1024 * 2];
     float mix_[2048 * 2];
@@ -94,6 +100,20 @@ private:
     void saveGameVolumes();
     u64 gatefoldPid_ = 0;
     u32 appState_ = GfbgApp_None;
+
+    // ---- volume levelling: Gatefold's measured gains (GFBG_GAINS), the mode in cfg_.reserved[0]
+    std::vector<GfbgGain> gains_;   // sorted by hash
+    u32 gainsGen_ = 0;
+    float lvl_ = 1, lvlTarget_ = 1;   // linear; eased towards the target, set at once when a track loads
+    float levelFor(const std::string& path) const;   // m_ held
+    void watchGains();                                // the watch thread, without the lock
+
+    // ---- the sleep timer: the music fades out over its last seconds (SleepFade) and pauses
+    static constexpr double SleepFade = 10;
+    u64 sleepAt_ = 0;          // nowMs() when it runs out, 0 off
+    bool sleepFading_ = false;
+    u32 sleepGen_ = 0;
+    void watchSleep(u64 now);  // the watch thread, without the lock
 
     // ---- persistence
     bool dirty_ = false;
@@ -128,5 +148,6 @@ private:
     // files
     void loadFiles();
     void saveSession();
+    void writePlays();   // the watch thread, without the lock
     void saveConfig();
 };

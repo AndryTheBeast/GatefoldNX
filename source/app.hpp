@@ -18,6 +18,7 @@
 
 #include "bgclient.hpp"
 #include "gfx.hpp"
+#include "levels.hpp"
 #include "library.hpp"
 #include "loader.hpp"
 #include "metacache.hpp"
@@ -25,6 +26,7 @@
 #include "palette.hpp"
 #include "player.hpp"
 #include "spectrum.hpp"
+#include "stats.hpp"
 #include "store.hpp"
 #include "thumbs.hpp"
 #include "ui.hpp"
@@ -53,9 +55,12 @@ struct Artist {
 
 /** The track menu (+ on a track): its page and what it is working on. */
 struct Sheet {
-    enum Page { Closed, Menu, Tags, Cover, Delete, Info, Lists };
+    // NewList, Smart and SmartForm (view_smart.cpp) belong to no track: + in the sidebar opens them.
+    enum Page { Closed, Menu, Tags, Cover, Delete, Info, Lists, NewList, Smart, SmartForm, Sleep };
     Page page = Closed;
     int track = -1;
+    int queuePos = -1;      // opened on a queue row: its position in play order
+    bool upNext = false;    // … in Now playing's Up next
     Id returnFocus = 0;
     std::map<std::string, std::string> draft;   // Tags: the fields as they are being edited
     std::string dir;                            // Cover: the folder being browsed
@@ -64,6 +69,9 @@ struct Sheet {
     std::string previewPath;                    // Cover: the image shown in the header
     SDL_Texture* preview = nullptr;
     TrackInfo info;                             // Info
+    int recipe = -1;                            // SmartForm: the recipe (view_smart.cpp), its setting, the name
+    std::string arg, name;
+    bool nameTouched = false;
 };
 
 class App {
@@ -125,6 +133,63 @@ private:
     } q;
     bool stopAfterCurrent = false;
 
+    // ---------------- volume levelling (levels.hpp): measured here, applied here and by the background player
+    Levels levels;
+    std::vector<std::string> levelFirst, levelAll;   // what was last asked to be measured first, and the library
+    unsigned levelEpoch = ~0u, levelGenUsed = ~0u;
+    int levelModeSent = -1, levelTargetUsed = 0;
+    double levelsSavedAt = 0, gainsWrittenAt = -100;
+    bool gainsDirty = false;
+    unsigned gainsGen = 0;
+    std::unordered_set<std::string> gainsHave;   // the paths in gains.bin as last written
+    /** The gain for a track in dB, for a mode (GfbgLevel; −1: the one set) and the target (0: not measured, or off). */
+    double levelDb(int track, int mode = -1) const;
+    void updateLevels();
+    void writeGains();
+
+    // ---------------- the sleep timer: the background player keeps it when it plays, else Gatefold (sleepUntil)
+    double sleepUntil = 0;        // App::time it runs out, 0 off (Gatefold's own playback)
+    bool sleepFading = false;
+    unsigned sleepGenSeen = 0;    // the background player's sleepGen last seen
+    int sleepChoice = 0;          // the choice last made (Settings' segmented control), 0 off
+    bool sleepReleased = false;   // the timer ran out: the console may dim and sleep again until music plays
+    bool awakeHeld = false;       // keepAwake as applied (appletSetAutoSleepTimeAndDimmingTimeEnabled)
+    double sleepLeft() const;     // seconds, 0 off
+    void setSleep(double seconds, int choice);
+    void updateSleep();
+    /** seen: it ran out while Gatefold watched, so the card that puts the console to sleep may follow. */
+    void sleepEnded(bool seen);
+    double sleepSeenAt = 0;       // steady-clock seconds the background player's timer was last seen running
+    // The card after the timer: the console goes to sleep (appletRequestToSleep) unless you stay awake.
+    double sleepPromptAt = 0;     // App::time it appeared, 0 none
+    void drawSleepPrompt();
+    void closeSleepPrompt();
+
+    // ---------------- Keep the console awake → Dim the screen: after store.dimAfter minutes without input
+    double idleFor = 0;           // seconds without input
+    int dimmed = 0;               // 0 no, 1 the backlight lowered (handheld), 2 a veil (docked: the TV is not ours)
+    float dimSaved = 1;           // the brightness to put back
+    float veilA = 0;              // the docked veil, eased
+    void setDimmed(bool on);
+
+    // ---------------- the battery: charging, and how long to full or to empty
+    struct Battery {
+        std::vector<std::pair<double, double>> samples;   // App::time, raw percentage
+        double lastAt = -100;
+        long long lastWall = 0;   // std::time of the last sample: a gap means the app was suspended
+        int charging = -1;
+        std::string est;          // "2 h 10", "full in 45 min", "" while unknown
+    } battery;
+    void sampleBattery();
+
+    // ---------------- play statistics (stats.hpp): Gatefold counts what it plays itself; the background player its own
+    Stats stats;
+    double statHeard = 0;       // seconds of the current track heard here
+    bool statCounted = false;   // … and already counted
+    double statsSavedAt = 0;
+    unsigned statsEpoch = ~0u;  // the scan whose files were asked for their dates (libEpoch)
+    void saveStats();
+
     // ---------------- the background player: what Gatefold sent it last, and what it has seen of it
     struct BgSync {
         std::vector<int> tracks, order;
@@ -148,6 +213,7 @@ private:
     int npTab = 0;
     Id listJump = 0;   // "Current track": the row to focus once the list has scrolled to it
     View libFrom = View::Library;   // which tab an album page was opened from, for the sidebar's highlight
+    View folderFrom = View::Folders;   // … and a folder page: Library when opened from its Folders tab (App::navigate)
     int librarySort = 0;   // 0 artist, 1 title, 2 year, 3 folder
     bool canvas = false;
     float canvasIdle = 0;    // seconds without input; the Canvas controls fade away
@@ -268,6 +334,20 @@ private:
     void setOrder(Order o);
     std::vector<int> upNext(int n) const;
     int currentQueuePos() const;
+    // Editing the queue, by position in play order (q.order). Without Shuffle the list itself is
+    // kept in play order (queueNormalize), so turning Shuffle off and on never loses an edit.
+    std::vector<int> queueInPlayOrder() const;
+    void queueNormalize();
+    void queueEdited();
+    void queueAdd(int track, bool next);
+    void queueRemove(int pos);
+    void queueMove(int from, int to);
+    void queuePlayNext(int pos);
+    void queueClear();
+    // A queue row picked up with the track menu's Move: the D-pad moves it, A or B puts it down.
+    struct Grab { int pos = -1; bool upNext = false; int cols = 1; } grab;
+    void grabStep(int d);
+    void grabDrop();
     void applyLoaded(TrackLoader::Result& r);
     void applyCover(TrackLoader::Result& r);
     TrackLoader::Result coverWait_;   // a loaded cover kept for the frame after its tags (one thing at a time)
@@ -372,6 +452,9 @@ private:
     float listRowY(const std::vector<ListEntry>& layout, int index) const;
     float drawTrackBody(const char* key, const std::vector<int>& tracks, float x, float top, float w, float clipY, float clipH, ListMode mode,
                         bool extended, const std::function<void(int)>& play);
+    int bodyFocus = -1;   // drawTrackBody: the index of the row or tile under focus, −1 when none
+    int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
+    int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
     float viewSwitch(const char* key, float rx, float cy, int& mode);
     void coverQuad(const std::vector<int>& tracks, float x, float y, float size, float rad, float alpha = 1);
     void listColumns(float x, float y, float w, ListMode mode, bool extended);
@@ -406,9 +489,23 @@ private:
     // ================= view_sheet.cpp: the track menu
     Sheet sheet;
     int hoverTrack = -1, hoverTrackShown = -1;   // the track row under focus this frame / last frame
-    void openTrackMenu(int track);
+    int hoverQueue = -1, hoverQueueShown = -1;   // its position in the queue, on the Playlist view and Up next
+    bool hoverUpNext = false, hoverUpNextShown = false;
+    /** queuePos ≥ 0: opened on a row of the queue, which adds Remove, Move and Play next for that row. */
+    void openTrackMenu(int track, int queuePos = -1, bool upNext = false);
     void closeSheet();
     void sheetBack();
+
+    // ================= view_smart.cpp: smart playlists
+    void openNewList();
+    void openSleep();
+    void drawSmartSheet();
+    /** The tracks of a "smart:…" spec, worked out again when the library or the statistics change. */
+    const std::vector<int>& smartTracks(const std::string& spec) const;
+    const char* smartIcon(const std::string& spec) const;
+    std::string smartSummary(const std::string& spec) const;
+    struct SmartCache { unsigned statsGen = ~0u, indexGen = ~0u; int64_t day = -1; std::vector<int> tracks; };
+    mutable std::unordered_map<std::string, SmartCache> smartCache_;
     void drawSheet();
     void applyEdits(Track& t);
     void editTag(const char* field, const char* label);

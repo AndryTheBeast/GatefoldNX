@@ -14,7 +14,7 @@
 #include "icons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "1.0.0"
+#define GF_VERSION "1.1.0"
 #endif
 
 namespace {
@@ -124,6 +124,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                           } };
     };
     auto pct = [](float v) { return std::to_string(int(std::lround(v * 100))) + "%"; };
+    auto oneDecimal = [](double v) { char b[16]; snprintf(b, sizeof b, "%.1f", v); return std::string(b); };
 
     std::vector<Section> sections;
     static float satShown, trShown;   // Saturation 0..100% and Colour transition 0..3 s, as the slider's 0..1
@@ -246,6 +247,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion) } });
         cards.push_back({ "Sidebar", sidebarRows });
+        cards.push_back({ "Title bar",
+                          { toggleRow("Battery percentage", "Beside the battery, top right", "set.batpct", store.batteryPercent),
+                            toggleRow("Battery time", "How long to empty, or to full while charging; shown after a minute, steadier as it goes",
+                                      "set.batest", store.batteryEstimate) } });
         sections.push_back({ "Appearance", ICON_SPARKLE, cards });
     }
 
@@ -324,8 +329,53 @@ void App::drawSettings(float x, float y, float w, float h) {
                                  slider(uid("set.vol"), rx - 180, cy, 180, volumeShown, &v);
                                  if (v != volumeShown) { volumeShown = v; player.setVolume(v); }
                              } } } },
+                { "Volume levelling",
+                  { segRow("Volume levelling", "Every track about as loud as the next. Measured here; the files are not changed",
+                           "set.level", { "Off", "Track", "Album", "Auto" }, store.levelMode,
+                           [this](int i) { store.levelMode = i; persistSoon(0.3f); }),
+                    segRow("Target loudness", "Quiet tracks are raised only as far as their peaks allow", "set.lvltarget",
+                           { "−18", "−14", "−11 LUFS" }, store.levelTarget <= -16 ? 0 : store.levelTarget <= -12 ? 1 : 2,
+                           [this](int i) {
+                               static const int t[] = { -18, -14, -11 };
+                               store.levelTarget = t[i];
+                               persistSoon(0.3f);
+                           },
+                           store.levelMode ? 0u : 0x7u),
+                    infoRow("Measured", store.levelMode == 0 ? "Starts once levelling is on, with the track playing first"
+                                        : levels.secondsPerTrack() > 0
+                                            ? "In the background while Gatefold is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
+                                            : "In the background while Gatefold is open, the track playing first",
+                            std::to_string(std::min(levels.count(), lib.tracks.size())) + " of " + std::to_string(lib.tracks.size())) } },
                 { "Startup", { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track",
                                          "set.resume", store.resume) } },
+                { "Sleep",
+                  { segRow("Sleep timer", "The music fades out and pauses; also the moon in the player bar", "set.sleep",
+                           { "Off", "15", "30", "45", "60", "90 min" }, sleepLeft() > 0 ? sleepChoice : 0,
+                           [this](int i) {
+                               static const int mins[] = { 0, 15, 30, 45, 60, 90 };
+                               setSleep(mins[i] * 60.0, i);
+                           }),
+                    segRow("Then sleep the console", "When the timer ends with Gatefold open, a card counts down; Stay awake keeps it on",
+                           "set.sleepcon", { "Off", "10 s", "30 s", "1 min" },
+                           store.sleepConsole <= 0 ? 0 : store.sleepConsole <= 10 ? 1 : store.sleepConsole <= 30 ? 2 : 3,
+                           [this](int i) {
+                               static const int secs[] = { 0, 10, 30, 60 };
+                               store.sleepConsole = secs[i];
+                               persistSoon(0.3f);
+                           }),
+                    toggleRow("Keep the console awake", "While Gatefold is open the screen does not dim and the console does not sleep by "
+                                                        "itself. After a sleep timer ends, it may again.",
+                              "set.awake", store.keepAwake),
+                    segRow("Dim the screen", store.keepAwake ? "After this long without input; any button brings it back"
+                                                             : "With Keep the console awake on; otherwise the console dims by itself",
+                           "set.dim", { "Never", "1", "2", "5", "10 min" },
+                           store.dimAfter <= 0 ? 0 : store.dimAfter <= 1 ? 1 : store.dimAfter <= 2 ? 2 : store.dimAfter <= 5 ? 3 : 4,
+                           [this](int i) {
+                               static const int mins[] = { 0, 1, 2, 5, 10 };
+                               store.dimAfter = mins[i];
+                               persistSoon(0.3f);
+                           },
+                           store.keepAwake ? 0u : 0x1Fu) } },
                 { "Background player", bgRows } } });
     }
 
@@ -491,10 +541,12 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back(
             { "About", ICON_INFO,
               { { "", { head } },
+#ifdef GF_DEV   // dev builds only (the Makefile's DEV)
                 { "Diagnostics",
                   { toggleRow("Frame times", "A graph of the last two seconds of frames: green is on time, red took longer than a "
                                              "sixtieth of a second, the white part is the app's own work",
                               "set.frametimes", store.frameTimes) } },
+#endif
                 { "Credits",
                   { infoRow("Gatefold", "The design, colours, icons and app icon. © Gatefold contributors, MIT licence"),
                     infoRow("Inter", "The typeface. © The Inter Project Authors, SIL Open Font Licence"),

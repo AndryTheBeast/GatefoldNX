@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <strings.h>
 
 #include "app.hpp"
@@ -188,6 +189,7 @@ void App::deleteTrack(int track) {
         return;
     }
     std::erase(store.liked, t.path);
+    stats.forget(t.path);
     store.edits.erase(t.path);
     store.covers.erase(t.path);
     store.saveEdits();
@@ -199,12 +201,14 @@ void App::deleteTrack(int track) {
 
 // ------------------------------------------------------------------ the sheet
 
-void App::openTrackMenu(int track) {
+void App::openTrackMenu(int track, int queuePos, bool upNext) {
     if (track < 0 || track >= int(lib.tracks.size())) return;
     if (sheet.preview) SDL_DestroyTexture(sheet.preview);
     sheet = Sheet{};
     sheet.page = Sheet::Menu;
     sheet.track = track;
+    sheet.queuePos = queuePos;
+    sheet.upNext = upNext && queuePos >= 0;
     sheet.returnFocus = ui.focusedId();
     area("sheet", int(Sheet::Menu)).target = area("sheet", int(Sheet::Menu)).y = 0;
     ui.focusDefault();
@@ -219,13 +223,19 @@ void App::closeSheet() {
 }
 
 void App::sheetBack() {
-    if (sheet.page == Sheet::Menu) { closeSheet(); return; }
+    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep) { closeSheet(); return; }
+    if (sheet.page == Sheet::Smart || sheet.page == Sheet::SmartForm) {   // the recipe → the recipes → the choice
+        sheet.page = sheet.page == Sheet::SmartForm ? Sheet::Smart : Sheet::NewList;
+        ui.focusDefault();
+        return;
+    }
     sheet.page = Sheet::Menu;   // every page goes back to the menu ("Up one folder" climbs in the picker)
     ui.focusDefault();
 }
 
 void App::drawSheet() {
     if (sheet.page == Sheet::Closed) return;
+    if (sheet.page >= Sheet::NewList) { drawSmartSheet(); return; }   // no track: view_smart.cpp
     if (sheet.track < 0 || sheet.track >= int(lib.tracks.size())) { closeSheet(); return; }
     ui.region(Region::Modal);
     const int t = sheet.track;
@@ -242,24 +252,43 @@ void App::drawSheet() {
     struct Item { const char* icon; std::string label, detail; std::function<void()> act; bool danger = false; float h = 46; bool text = false; };
     std::vector<Item> items;
     const bool liked = store.isLiked(tr.path);
-    if (page == Sheet::Menu) {
+    // Opened on a row of the queue (the Playlist view, Up next): still that row, unless the queue changed meanwhile.
+    const int qp = sheet.queuePos >= 0 && sheet.queuePos < int(q.order.size()) && q.tracks[q.order[sheet.queuePos]] == t ? sheet.queuePos : -1;
+    if (page == Sheet::Menu && qp >= 0) {
+        if (qp != q.pos)
+            items.push_back({ ICON_NEXT, "Play next", "", [this, qp] {
+                                  queuePlayNext(qp);
+                                  toast("Plays next");
+                                  closeSheet();
+                              } });
+        // In Up next, a row wrapped round from the start (Repeat) cannot move: it lies before the track playing.
+        if (q.order.size() > 1 && (!sheet.upNext || qp > q.pos))
+            items.push_back({ ICON_SORT_DOWN, "Move", "", [this, qp, upNext = sheet.upNext] {
+                                  closeSheet();
+                                  grab = Grab{ qp, upNext, 1 };
+                                  ui.focus(upNext ? uid("np.next", qp - q.pos - 1) : uid("pl.r", qp));
+                                  ui.setPadMode(true);
+                                  toast("Move it with the D-pad, then press A");
+                              } });
+        if (qp != q.pos)
+            items.push_back({ ICON_X, "Remove from the playlist", "", [this, qp] {
+                                  queueRemove(qp);
+                                  toast("Removed from the playlist");
+                                  closeSheet();
+                              } });
+    } else if (page == Sheet::Menu) {
         items.push_back({ ICON_NEXT, "Play next", "", [this, t] {
-                              if (q.order.empty()) playTracks({ t }, 0, "Queue");
-                              else {
-                                  q.tracks.push_back(t);
-                                  q.order.insert(q.order.begin() + std::min(q.pos + 1, int(q.order.size())), int(q.tracks.size()) - 1);
-                              }
-                              persistSoon(0.5f);
+                              queueAdd(t, true);
                               toast("Plays next");
                               closeSheet();
                           } });
         items.push_back({ ICON_QUEUE, "Add to the end of the playlist", "", [this, t] {
-                              if (q.order.empty()) playTracks({ t }, 0, "Queue");
-                              else { q.tracks.push_back(t); q.order.push_back(int(q.tracks.size()) - 1); }
-                              persistSoon(0.5f);
+                              queueAdd(t, false);
                               toast("Added to the playlist");
                               closeSheet();
                           } });
+    }
+    if (page == Sheet::Menu) {
         items.push_back({ ICON_LIST, "Add to a playlist…", "", [this] { sheet.page = Sheet::Lists; ui.focusDefault(); } });
         // On one of your own playlists, the track can leave it.
         if (route.view == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].own()) {
@@ -376,6 +405,30 @@ void App::drawSheet() {
         info("Cover", store.covers.count(tr.path) ? "Yours, kept by Gatefold" : !in.cover.empty() ? "In the file" : "From the folder, or none");
         info("Lyrics", !readSidecarLyrics(tr.path).empty() ? ".lrc file" : !in.lyrics.empty() ? "In the tags" : "None");
         info("Your edits", store.edits.count(tr.path) ? "Yes, kept by Gatefold; the file is unchanged" : "");
+        // Volume levelling (levels.hpp)
+        if (const Level* lv = levels.find(tr.path); lv && !std::isnan(lv->lufs)) {
+            char b[64];
+            snprintf(b, sizeof b, "%.1f LUFS, peak %.1f dBTP", double(lv->lufs), 20 * std::log10(std::max(1e-6, double(lv->peak))));
+            std::string v = b;
+            if (store.levelMode) {
+                snprintf(b, sizeof b, " · %+.1f dB here", levelDb(t));
+                v += b;
+            }
+            info("Loudness", v);
+        } else {
+            info("Loudness", lv ? "Could not be measured" : "Not measured yet");
+        }
+        // Play statistics (stats.hpp)
+        auto when = [](int64_t t) {
+            char buf[32];
+            const std::time_t tt = std::time_t(t);
+            std::strftime(buf, sizeof buf, "%d %b %Y", std::localtime(&tt));
+            return std::string(buf);
+        };
+        const PlayStat* ps = stats.find(tr.path);
+        info("Plays", ps && ps->plays ? std::to_string(ps->plays) : "Not played yet");
+        if (ps && ps->last) info("Last played", when(ps->last));
+        if (ps && ps->added) info("Added", when(ps->added));
         info("File", tr.path);
     }
 

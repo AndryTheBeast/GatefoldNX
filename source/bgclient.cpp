@@ -68,6 +68,8 @@ bool BgClient::poll(double) {
     st_.bitrate = int(s.bitrate);
     st_.appState = int(s.appState);
     st_.heapFree = s.heapFree;
+    st_.sleepLeft = s.sleepLeft;
+    st_.sleepGen = s.sleepGen;
     if (now < expectUntil_) {
         if (expectStatus_ >= 0) st_.status = expectStatus_;
         if (expectPos_ >= 0) st_.position = expectPos_;
@@ -184,6 +186,18 @@ void BgClient::setStopAfter(bool on) {
     if (connected_) gfbgSetStopAfter(&srv, on);
 }
 
+void BgClient::setLevelMode(int mode) {
+    if (!connected_) return;
+    GfbgConfig c = {};
+    if (R_FAILED(gfbgGetConfig(&srv, &c)) || c.reserved[0] == u32(mode)) return;
+    c.reserved[0] = u32(mode);
+    gfbgSetConfig(&srv, &c);
+}
+
+void BgClient::setSleep(float seconds) {
+    if (connected_) gfbgSetSleep(&srv, seconds);
+}
+
 bool BgClient::pcm(float* out, int n) {
     if (!connected_ || n > GFBG_PCM) return false;
     u32 serial = 0;
@@ -233,6 +247,8 @@ void BgClient::stop() {}
 void BgClient::seek(double, double) {}
 void BgClient::setVolume(float) {}
 void BgClient::setStopAfter(bool) {}
+void BgClient::setLevelMode(int) {}
+void BgClient::setSleep(float) {}
 bool BgClient::pcm(float*, int) { return false; }
 bool BgClient::config(BgConfig&) { return false; }
 void BgClient::setConfig(const BgConfig&) {}

@@ -255,6 +255,14 @@ float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float 
                          bool extended, const std::function<void(int)>& play) {
     const std::vector<ListEntry> layout = listLayout(tracks, w, mode);
     const Tiles tl = tilesFor(w);
+    bodyFocus = -1;
+    bodyCols = mode == ListMode::Grid ? tl.cols : 1;
+    // A row picked up to be moved: lifted, with the accent around it, so it reads as held.
+    auto lifted = [&](int i, float rx, float ry, float rw, float rh, float rad) {
+        if (i != bodyGrab) return;
+        g.roundRect(rx, ry, rw, rh, rad, pal.accent, 0.14f);
+        g.roundStroke(rx, ry, rw, rh, rad, 2, pal.accent, 0.95f);
+    };
     float height = 0;
     for (const auto& e : layout) {
         height = std::max(height, e.y + e.h);
@@ -265,15 +273,20 @@ float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float 
         case ListEntry::GroupHead: groupHead(key, e.index, tracks[e.index], x + 14, ey, w - 28); break;
         case ListEntry::Row: {
             const Id id = uid(std::string(key) + ".r", e.index);
+            lifted(e.index, x + 14, ey, w - 28, mode == ListMode::Covers ? e.h - 4 : e.h, mode == ListMode::Covers ? 10 : 8);
             const bool hit = mode == ListMode::Covers ? coverRow(id, tracks[e.index], e.index + 1, x + 14, ey, w - 28, e.h, extended)
                                                       : trackRow(id, tracks[e.index], e.index + 1, x + 14, ey, w - 28, e.h, true);
+            if (ui.focused(id)) bodyFocus = e.index;
             if (hit) play(e.index);
             break;
         }
         case ListEntry::TileRow:
             for (int c = 0; c < tl.cols && e.index + c < int(tracks.size()); c++) {
                 const int i = e.index + c;
-                if (trackTile(uid(std::string(key) + ".r", i), tracks[i], x + 16 + c * tl.w, ey, tl.w, tl.cover)) play(i);
+                const Id id = uid(std::string(key) + ".r", i);
+                lifted(i, x + 16 + c * tl.w, ey, tl.w, 8 + tl.cover + 10 + 20 + 18 + 6, 14);
+                if (trackTile(id, tracks[i], x + 16 + c * tl.w, ey, tl.w, tl.cover)) play(i);
+                if (ui.focused(id)) bodyFocus = i;
             }
             break;
         }

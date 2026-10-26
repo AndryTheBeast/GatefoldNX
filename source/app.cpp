@@ -8,8 +8,10 @@
 #include <SDL2/SDL_image.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <random>
 #include <strings.h>
 #include <sys/stat.h>
@@ -48,6 +50,7 @@ bool App::init() {
     romfsInit();
     plInitialize(PlServiceType_User);
     psmInitialize();
+    lblInitialize();   // Dim the screen: the handheld backlight (failing is fine: a veil instead)
     metadataInit();
     startMark("sys");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) return false;
@@ -61,6 +64,8 @@ bool App::init() {
     startMark("sdl");
 
     store.load();
+    stats.start(Store::Dir);
+    levels.start(Store::Dir);
     sideW = store.sidebarCollapsed ? css::SideWCollapsed : css::SideW;
     applyTheme();
     pal = target;
@@ -177,8 +182,11 @@ void App::rescan(const std::vector<std::string>* given) {
 }
 
 void App::shutdown() {
+    setDimmed(false);
     persistNow();
     Store::flush();
+    stats.stop();
+    levels.stop();
     appletUnhook(&appletCookie_);
     appletSetMediaPlaybackState(false);
     wave.cancel();
@@ -195,6 +203,7 @@ void App::shutdown() {
     if (window_) SDL_DestroyWindow(window_);
     IMG_Quit();
     SDL_Quit();
+    lblExit();
     psmExit();
     plExit();
     romfsExit();
@@ -204,6 +213,7 @@ void App::shutdown() {
 void App::appletEvent(AppletHookType type, void* self) {
     auto* app = static_cast<App*>(self);
     if (type == AppletHookType_OnExitRequest || (type == AppletHookType_OnFocusState && appletGetFocusState() != AppletFocusState_InFocus)) {
+        app->setDimmed(false);   // the backlight is the system's again outside Gatefold
         app->persistNow();
         if (type == AppletHookType_OnExitRequest) Store::flush();
     }
@@ -213,6 +223,12 @@ void App::persistSoon(float delay) {
     if (persistAt == 0 || time + delay < persistAt) persistAt = time + delay;
 }
 
+void App::saveStats() {
+    statsSavedAt = time;
+    if (stats.loaded() && stats.dirty()) store.writeFile("stats.tsv", stats.serialise());
+    if (levels.loaded() && levels.dirty()) store.writeFile("loudness.tsv", levels.serialise());
+}
+
 /** Writes the settings and the session (sessionOnly: just the session, the 20 s save while playing). The files are written on a thread. */
 void App::persistNow(bool sessionOnly) {
     if (!sessionOnly) persistAt = 0;
@@ -220,6 +236,7 @@ void App::persistNow(bool sessionOnly) {
     sessionAt = time;
     store.volume = volumeShown;
     if (!sessionOnly) store.save();
+    saveStats();
     if (!store.resume) return;
     Session s;
     s.name = q.name;
@@ -251,6 +268,7 @@ void App::restoreSession() {
     }
     q.pos = 0;
     for (int i = 0; i < int(q.order.size()); i++) if (q.order[i] == cur) q.pos = i;
+    queueNormalize();   // an older queue may hold a "Play next" outside the list's order
     if (cur < 0) return;   // the track that was playing is gone: keep the queue, start nothing
     loadTrack(q.tracks[q.order[q.pos]], true);
     if (player.loaded() && s.position > 1) player.seek(s.position);
@@ -304,18 +322,25 @@ void App::input() {
     }
 
     padUpdate(&pad_);
-    const u64 down = padGetButtonsDown(&pad_);
+    u64 down = padGetButtonsDown(&pad_);
     const u64 held = padGetButtons(&pad_);
     // Any input brings the Canvas controls back.
     canvasIdle = (down || touched) ? 0 : canvasIdle + dt;
+    // ... and the screen out of its dimming. That first press only wakes it: it does nothing else.
+    {
+        const HidAnalogStickState l0 = padGetStickPos(&pad_, 0), r0 = padGetStickPos(&pad_, 1);
+        const bool any = down || touched || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
+        idleFor = any ? 0 : idleFor + dt;
+        if (any && dimmed) { setDimmed(false); down = 0; }
+    }
 
     // + opens the track menu for the focused track (or the one playing); HOME closes the app, so + no longer exits.
-    const bool notice = coverNotice == 1;   // the overlay covers' modal (drawCoverNotice)
+    const bool notice = coverNotice == 1 || sleepPromptAt > 0;   // the overlay covers' modal (drawCoverNotice), the sleep card
     if ((down & HidNpadButton_Plus) && !notice) {
         if (sheet.page != Sheet::Closed) closeSheet();
         else {
             const int t = hoverTrackShown >= 0 ? hoverTrackShown : (route.view == View::Now || canvas) ? now.track : -1;
-            if (t >= 0) openTrackMenu(t);
+            if (t >= 0) openTrackMenu(t, hoverTrackShown >= 0 ? hoverQueueShown : -1, hoverUpNextShown);
             else toast("Select a track, then press +");
         }
     }
@@ -353,6 +378,15 @@ void App::input() {
         if (pointer.down) ui.touchMove(pointer.x, pointer.y);
         else ui.point(ui.itemAt(pointer.x, pointer.y));
     }
+    // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
+    // finger, the pointer or leaving the page put it down too.
+    if (grab.pos >= 0) {
+        const View gv = grab.upNext ? View::Now : View::Queue;
+        if ((down & (HidNpadButton_A | HidNpadButton_B)) || touched || pointerMoved || modal || canvas || route.view != gv) {
+            grabDrop();
+            down &= ~u64(HidNpadButton_A | HidNpadButton_B);
+        }
+    }
     if (pointing && (down & HidNpadButton_A)) {
         ui.touchDown(pointer.x, pointer.y);
         ui.setPadMode(true);
@@ -364,7 +398,7 @@ void App::input() {
         ui.activate();
     }
     // B puts a picked-up slider down before it goes back.
-    if (down & HidNpadButton_B) ui.anyEngaged() ? ui.disengage() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
+    if (down & HidNpadButton_B) ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
     if (down & HidNpadButton_X) togglePlay();
     if (!modal && (down & HidNpadButton_Y)) openSearch();
     if (down & HidNpadButton_L) prev();
@@ -376,8 +410,15 @@ void App::input() {
     const bool dn = held & HidNpadButton_Down;
     const bool lf = held & HidNpadButton_Left;
     const bool rt = held & HidNpadButton_Right;
-    if (rUp.step(up, dt)) ui.navigate(0, -1);
-    if (rDown.step(dn, dt)) ui.navigate(0, 1);
+    if (grab.pos >= 0) {
+        if (rUp.step(up, dt)) grabStep(-grab.cols);
+        if (rDown.step(dn, dt)) grabStep(grab.cols);
+        if (rLeft.step(lf, dt) && grab.cols > 1) grabStep(-1);
+        if (rRight.step(rt, dt) && grab.cols > 1) grabStep(1);
+    } else {
+        if (rUp.step(up, dt)) ui.navigate(0, -1);
+        if (rDown.step(dn, dt)) ui.navigate(0, 1);
+    }
     const bool slider = ui.focusIsSlider();
     // Settings: → from the category list goes to the top of its options (spatially the title bar's search
     // field was nearer than the controls at the far right of the rows); B comes back (App::back).
@@ -391,8 +432,10 @@ void App::input() {
         ui.setPadMode(true);
         return true;
     };
-    if (rLeft.step(lf, dt)) slider ? ui.slide(-1) : ui.navigate(-1, 0);
-    if (rRight.step(rt, dt)) { if (slider) ui.slide(1); else if (!intoSettingsPane()) ui.navigate(1, 0); }
+    if (grab.pos < 0) {
+        if (rLeft.step(lf, dt)) slider ? ui.slide(-1) : ui.navigate(-1, 0);
+        if (rRight.step(rt, dt)) { if (slider) ui.slide(1); else if (!intoSettingsPane()) ui.navigate(1, 0); }
+    }
 
     // Right stick scrolls whatever list has focus.
     const HidAnalogStickState rs = padGetStickPos(&pad_, 1);
@@ -410,6 +453,30 @@ void App::update() {
     else if (TrackLoader::Result r; loader.take(r)) applyLoaded(r);
     bgUpdate();
     if (player.takeFinished()) next(true);
+
+    // Play statistics. Gatefold counts what it plays itself; while the background player plays, it
+    // counts (bg-plays.txt) and Gatefold only takes its counts in.
+    stats.poll();
+    stats.setBackground(player.remote());
+    if (stats.loaded() && statsEpoch != libEpoch && !lib.tracks.empty()) {
+        statsEpoch = libEpoch;
+        std::vector<std::string> paths;
+        paths.reserve(lib.tracks.size());
+        for (const Track& t : lib.tracks) paths.push_back(t.path);
+        stats.wantDates(paths);
+    }
+    if (!player.remote() && isPlaying() && now.track >= 0 && !statCounted) {
+        statHeard += dt;
+        const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
+        if (statHeard >= Stats::threshold(dur)) {
+            statCounted = true;
+            stats.countPlay(lib.tracks[now.track].path, int64_t(std::time(nullptr)));
+        }
+    }
+    if (stats.dirty() && time - statsSavedAt > 15) saveStats();
+    updateSleep();
+    sampleBattery();
+    updateLevels();
 
     // Gatefold crossfades the palette over --tx (1.1 s) with an ease-out curve.
     pal = store.colourTransition < 0.05f ? target : paletteMix(pal, target, 1 - std::exp(-dt / (store.colourTransition / 3.6f)));
@@ -618,6 +685,7 @@ int App::currentQueuePos() const { return q.pos >= 0 && q.pos < int(q.order.size
 
 void App::playTracks(const std::vector<int>& tracks, int startPos, const std::string& name, bool shuffle) {
     if (tracks.empty()) return;
+    grabDrop();   // a new queue: the row held belonged to the old one
     q.tracks = tracks;
     q.name = name;
     q.failed = 0;
@@ -664,7 +732,7 @@ void App::next(bool natural) {
             appletSetMediaPlaybackState(false);
             return;
         }
-        if (store.order == Order::Shuffle) std::shuffle(q.order.begin(), q.order.end(), rng);
+        if (store.order == Order::Shuffle) { grabDrop(); std::shuffle(q.order.begin(), q.order.end(), rng); }
         p = 0;
     }
     playAt(p);
@@ -693,8 +761,261 @@ void App::seekBy(double d) {
     player.seek(std::max(0.0, p));
 }
 
+// ------------------------------------------------------------ volume levelling
+
+namespace {
+
+/** gfbgHash (FNV-1a 64) of a path: gains.bin's key, as the background player computes it. */
+uint64_t pathHash(const std::string& s) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (unsigned char c : s) { h ^= c; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+/** The gain to the target, limited so the true peak stays under −1 dBTP, in dB. */
+double gainTo(double lufs, double peak, int target) {
+    double g = target - lufs;
+    if (peak > 0) g = std::min(g, -1.0 - 20 * std::log10(peak));
+    return std::clamp(g, -24.0, 12.0);
+}
+
+}  // namespace
+
+double App::levelDb(int track, int mode) const {
+    if (mode < 0) mode = store.levelMode;
+    if (mode == 0 || track < 0 || track >= int(lib.tracks.size())) return 0;
+    const Level* l = levels.find(lib.tracks[track].path);
+    if (!l || std::isnan(l->lufs)) return 0;
+    // Auto: the album's gain, but the track's while shuffling (foobar2000's "by playback order").
+    const bool album = mode == 2 || (mode == 3 && store.order != Order::Shuffle);
+    const int a = lib.tracks[track].albumIdx;
+    if (!album || a < 0) return gainTo(l->lufs, l->peak, store.levelTarget);
+    // The album: the power mean of its measured tracks, weighted by their gated blocks; its loudest peak.
+    double p = 0, n = 0, peak = 0;
+    for (int t : lib.albums[a].tracks) {
+        const Level* m = levels.find(lib.tracks[t].path);
+        if (!m || std::isnan(m->lufs) || m->blocks <= 0) continue;
+        p += m->blocks * std::pow(10, (m->lufs + 0.691) / 10);
+        n += m->blocks;
+        peak = std::max(peak, double(m->peak));
+    }
+    if (n <= 0) return gainTo(l->lufs, l->peak, store.levelTarget);
+    return gainTo(-0.691 + 10 * std::log10(p / n), peak, store.levelTarget);
+}
+
+/** gains.bin for the background player (gfbg.h, GFBG_GAINS): every measured track's track and album gain. */
+void App::writeGains() {
+    gainsDirty = false;
+    gainsWrittenAt = time;
+    gainsHave.clear();
+    struct Entry { uint64_t hash; float track, album; };   // GfbgGain
+    std::vector<Entry> out;
+    out.reserve(lib.tracks.size());
+    for (int t = 0; t < int(lib.tracks.size()); t++) {
+        const Level* l = levels.find(lib.tracks[t].path);
+        if (!l || std::isnan(l->lufs)) continue;
+        out.push_back({ pathHash(lib.tracks[t].path), float(levelDb(t, 1)), float(levelDb(t, 2)) });
+        gainsHave.insert(lib.tracks[t].path);
+    }
+    std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
+    // A new generation each time, also across restarts: the player reloads when it differs.
+    gainsGen = std::max(gainsGen + 1, unsigned(std::time(nullptr)));
+    const uint32_t header[4] = { 0x564C4647u, uint32_t(out.size()), gainsGen, 0 };   // GfbgGainsHeader, "GFLV"
+    std::string data(reinterpret_cast<const char*>(header), sizeof header);
+    data.append(reinterpret_cast<const char*>(out.data()), out.size() * sizeof(Entry));
+    store.writeFile("gains.bin", std::move(data));
+}
+
+/** Every frame: what to measure next, the gains file, and the gain here. */
+void App::updateLevels() {
+    const bool changed = levels.poll();
+    if (store.levelMode == 0) {
+        if (!levelFirst.empty() || !levelAll.empty()) {
+            levelFirst.clear();
+            levelAll.clear();
+            levelEpoch = ~0u;
+            levels.want({}, {});
+        }
+    } else {
+        // First the track playing and the next three, then the whole library in its order.
+        std::vector<std::string> first;
+        if (now.track >= 0) first.push_back(lib.tracks[now.track].path);
+        for (int t : upNext(3)) first.push_back(lib.tracks[t].path);
+        const bool libChanged = levelEpoch != libEpoch && !lib.tracks.empty();
+        if (libChanged) {
+            levelEpoch = libEpoch;
+            levelAll.clear();
+            levelAll.reserve(lib.tracks.size());
+            for (const Track& t : lib.tracks) levelAll.push_back(t.path);
+        }
+        if (libChanged || first != levelFirst) {
+            levelFirst = first;
+            levels.want(first, levelAll);
+        }
+    }
+    // The gains: new measurements or a new target. Soon when a track asked for first has its value now
+    // (it is about to play, or plays), else at most every 20 s while the library is measured.
+    if (changed || store.levelTarget != levelTargetUsed) { levelTargetUsed = store.levelTarget; gainsDirty = true; }
+    if (gainsDirty && levels.loaded()) {
+        bool soon = false;
+        for (const auto& p : levelFirst)
+            if (levels.find(p) && !gainsHave.count(p)) soon = true;
+        if ((soon && time - gainsWrittenAt > 1) || time - gainsWrittenAt > 20) writeGains();
+    }
+    if (levels.dirty() && time - levelsSavedAt > 30) {
+        levelsSavedAt = time;
+        store.writeFile("loudness.tsv", levels.serialise());
+    }
+    if (player.remote()) {
+        if (store.levelMode != levelModeSent) { bg.setLevelMode(store.levelMode); levelModeSent = store.levelMode; }
+    } else {
+        player.setLevel(float(std::pow(10, levelDb(now.track) / 20)));   // eased: a value measured mid-track comes in gently
+    }
+}
+
+// ------------------------------------------------------------ the sleep timer
+
+double App::sleepLeft() const {
+    if (player.remote()) return bg.state().sleepLeft;
+    return sleepUntil > 0 ? std::max(0.0, sleepUntil - time) : 0;
+}
+
+/** seconds 0: off. choice: what Settings' control shows (0 off, 1… the minutes in order). */
+void App::setSleep(double seconds, int choice) {
+    sleepChoice = seconds > 0 ? choice : 0;
+    if (sleepFading) player.setVolume(volumeShown);   // turned off or moved during the fade: back up
+    sleepFading = false;
+    sleepUntil = seconds > 0 ? time + seconds : 0;
+    if (player.remote()) {
+        bg.setSleep(float(seconds));
+        sleepUntil = 0;   // the background player keeps it: it carries on with Gatefold closed
+    }
+}
+
+/** Every frame. Gatefold's own timer fades the volume over the last 10 s and pauses; the background player's is only watched. */
+void App::updateSleep() {
+    if (player.remote()) {
+        const BgState& s = bg.state();
+        // Seen as it happened when the timer was seen running a moment ago (the player reports 0 left for up
+        // to a quarter second before it bumps sleepGen, so not "last frame"): an end that came while Gatefold
+        // was in the background is not followed by the sleep card. A steady clock: App::time stops while suspended.
+        const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (s.sleepLeft > 0) sleepSeenAt = wall;
+        if (s.sleepGen != sleepGenSeen) { sleepGenSeen = s.sleepGen; sleepEnded(sleepSeenAt > 0 && wall - sleepSeenAt < 5); }
+    } else if (sleepUntil > 0) {
+        const double left = sleepUntil - time;
+        if (left <= 0) {
+            sleepUntil = 0;
+            if (isPlaying()) { player.togglePause(); appletSetMediaPlaybackState(false); }
+            if (sleepFading) player.setVolume(volumeShown);
+            sleepFading = false;
+            sleepEnded(true);
+        } else if (left <= 10 && isPlaying()) {
+            sleepFading = true;
+            player.setVolume(volumeShown * float(left / 10));
+        }
+    }
+    // Settings → Playback → Keep the console awake: no dimming or auto-sleep while Gatefold is open, until
+    // a sleep timer ends; then the console may sleep by itself again, until music plays once more.
+    if (isPlaying()) sleepReleased = false;
+    const bool want = store.keepAwake && !sleepReleased;
+    if (want != awakeHeld) {
+        awakeHeld = want;
+        appletSetAutoSleepTimeAndDimmingTimeEnabled(!want);
+    }
+    // ... and Dim the screen, after store.dimAfter minutes without input (only then: else the system dims).
+    const bool dim = want && store.dimAfter > 0 && idleFor >= store.dimAfter * 60.0 && sleepPromptAt == 0;
+    if (dim != (dimmed != 0)) setDimmed(dim);
+    veilA += ((dimmed == 2 ? 0.78f : 0.f) - veilA) * (1 - std::exp(-dt / 0.35f));
+
+    // The sleep card's count: at 0 the console goes to sleep.
+    if (sleepPromptAt > 0 && time - sleepPromptAt >= store.sleepConsole) {
+        closeSleepPrompt();
+        appletRequestToSleep();
+    }
+}
+
+void App::sleepEnded(bool seen) {
+    sleepChoice = 0;
+    sleepReleased = true;
+    // Then the console sleeps, after a card that lets you stay awake; only Gatefold in front can ask for that.
+    if (seen && store.sleepConsole > 0 && appletGetFocusState() == AppletFocusState_InFocus) {
+        if (sheet.page != Sheet::Closed) closeSheet();
+        sleepPromptAt = time;
+        idleFor = 0;
+        if (dimmed) setDimmed(false);
+        ui.setPadMode(true);
+        return;
+    }
+    toast("Sleep timer: the music is paused");
+}
+
+void App::closeSleepPrompt() {
+    sleepPromptAt = 0;
+    ui.focusDefault();
+}
+
+/** Handheld: the backlight goes down, and back up to what it was; docked: a veil (veilA), as the TV is not ours. */
+void App::setDimmed(bool on) {
+    if (on && !dimmed) {
+        if (appletGetOperationMode() == AppletOperationMode_Handheld && R_SUCCEEDED(lblGetCurrentBrightnessSetting(&dimSaved)) &&
+            R_SUCCEEDED(lblSetCurrentBrightnessSetting(std::min(dimSaved, 0.04f)))) {
+            lblApplyCurrentBrightnessSettingToBacklight();
+            dimmed = 1;
+        } else {
+            dimmed = 2;
+        }
+    } else if (!on && dimmed) {
+        if (dimmed == 1) {
+            lblSetCurrentBrightnessSetting(dimSaved);
+            lblApplyCurrentBrightnessSettingToBacklight();
+        }
+        dimmed = 0;
+    }
+}
+
+/** Every 10 s: the charge, and from how fast it moved over the last 10 minutes, how long to full or to empty.
+ *  The raw charge has decimals, so a minute of samples already gives a rate; it steadies as more come. */
+void App::sampleBattery() {
+    if (time - battery.lastAt < 10) return;
+    battery.lastAt = time;
+    double pct = 0;
+    PsmChargerType ct = PsmChargerType_Unconnected;
+    if (R_FAILED(psmGetRawBatteryChargePercentage(&pct)) || R_FAILED(psmGetChargerType(&ct))) return;
+    const int charging = ct != PsmChargerType_Unconnected;
+    const long long wall = (long long)std::time(nullptr);
+    // A charger in or out, or a gap (the app was suspended, its clock stopped): the old samples no longer tell the rate.
+    if (charging != battery.charging || (battery.lastWall && wall - battery.lastWall > 120)) battery.samples.clear();
+    battery.charging = charging;
+    battery.lastWall = wall;
+    auto& sm = battery.samples;
+    sm.push_back({ time, pct });
+    while (sm.size() > 2 && time - sm.front().first > 10 * 60) sm.erase(sm.begin());
+    battery.est.clear();
+    if (charging && pct >= 99.5) { battery.est = "charged"; return; }
+    if (sm.size() < 6 || time - sm.front().first < 60) return;   // too soon to tell
+    // The rate: a line fitted through the samples (per second).
+    double mt = 0, mp = 0;
+    for (const auto& [t, p] : sm) { mt += t; mp += p; }
+    mt /= double(sm.size());
+    mp /= double(sm.size());
+    double num = 0, den = 0;
+    for (const auto& [t, p] : sm) { num += (t - mt) * (p - mp); den += (t - mt) * (t - mt); }
+    if (den <= 0) return;
+    const double rate = num / den;
+    if (charging ? rate <= 1e-5 : rate >= -1e-5) return;   // not moving the way it should: no guess
+    const double secs = charging ? (100 - pct) / rate : pct / -rate;
+    if (secs > 24 * 3600) return;
+    const int mins = std::max(5, int(std::lround(secs / 60 / 5)) * 5);
+    char b[32];
+    if (mins >= 60) snprintf(b, sizeof b, "%d h %02d", mins / 60, mins % 60);
+    else snprintf(b, sizeof b, "%d min", mins);
+    battery.est = charging ? std::string("full in ") + b : std::string(b);
+}
+
 void App::setOrder(Order o) {
     const int cur = currentQueuePos();
+    grabDrop();
     store.order = o;
     persistSoon(0.5f);
     if (q.order.empty()) return;
@@ -722,6 +1043,97 @@ std::vector<int> App::upNext(int n) const {
     }
     return out;
 }
+
+// ------------------------------------------------------------ editing the queue
+
+/** The queue as it will play: what the Playlist view shows, so it agrees with Up next. */
+std::vector<int> App::queueInPlayOrder() const {
+    std::vector<int> out;
+    out.reserve(q.order.size());
+    for (int o : q.order) out.push_back(q.tracks[o]);
+    return out;
+}
+
+/** Without Shuffle the list is rewritten in play order and the order becomes 0, 1, 2…: setOrder
+ *  resets the order to the list's, which would otherwise undo a move or a "Play next". */
+void App::queueNormalize() {
+    if (store.order == Order::Shuffle) return;
+    q.tracks = queueInPlayOrder();
+    for (int i = 0; i < int(q.order.size()); i++) q.order[i] = i;
+}
+
+void App::queueEdited() {
+    queueNormalize();
+    persistSoon(0.5f);
+    // bgSyncQueue sends it next frame with the new pos; until the player's state shows that, its
+    // old pos must not be taken for a track change (bgUpdate).
+    if (player.remote()) bgs.awaitUntil = std::max(bgs.awaitUntil, time + 1.0);
+}
+
+void App::queueAdd(int track, bool next) {
+    if (q.order.empty()) { playTracks({ track }, 0, "Queue"); return; }
+    q.tracks.push_back(track);
+    const int at = next ? std::min(q.pos + 1, int(q.order.size())) : int(q.order.size());
+    q.order.insert(q.order.begin() + at, int(q.tracks.size()) - 1);
+    queueEdited();
+}
+
+void App::queueRemove(int pos) {
+    if (pos < 0 || pos >= int(q.order.size()) || pos == q.pos) return;   // the track playing stays
+    const int idx = q.order[pos];
+    q.order.erase(q.order.begin() + pos);
+    q.tracks.erase(q.tracks.begin() + idx);
+    for (int& o : q.order) if (o > idx) o--;
+    if (pos < q.pos) q.pos--;
+    queueEdited();
+}
+
+/** Moves the row at play position from so that it ends up at to; the playing track keeps playing. */
+void App::queueMove(int from, int to) {
+    const int n = int(q.order.size());
+    if (from < 0 || from >= n) return;
+    to = std::clamp(to, 0, n - 1);
+    if (from == to) return;
+    const int v = q.order[from];
+    q.order.erase(q.order.begin() + from);
+    q.order.insert(q.order.begin() + to, v);
+    if (q.pos == from) q.pos = to;
+    else if (from < q.pos && to >= q.pos) q.pos--;
+    else if (from > q.pos && to <= q.pos) q.pos++;
+    queueEdited();
+}
+
+/** "Play next" on a row already in the queue moves it rather than adding a copy. */
+void App::queuePlayNext(int pos) {
+    if (pos == q.pos) return;
+    queueMove(pos, pos < q.pos ? q.pos : q.pos + 1);
+}
+
+/** Clear keeps the track playing, so the music does not stop. */
+void App::queueClear() {
+    const int cur = currentQueuePos();
+    if (cur < 0) { q.tracks.clear(); q.order.clear(); q.pos = -1; persistSoon(0.5f); return; }
+    q.tracks = { q.tracks[cur] };
+    q.order = { 0 };
+    q.pos = 0;
+    queueEdited();
+}
+
+void App::grabStep(int d) {
+    const int n = int(q.order.size());
+    if (grab.pos < 0 || grab.pos >= n) { grabDrop(); return; }
+    // In Up next the row stays after the track playing (what lies before it has been played),
+    // and within the 15 rows Up next shows.
+    const int lo = grab.upNext ? q.pos + 1 : 0, hi = grab.upNext ? std::min(n - 1, q.pos + 15) : n - 1;
+    const int to = std::clamp(grab.pos + d, lo, hi);
+    if (to == grab.pos) return;
+    queueMove(grab.pos, to);
+    grab.pos = to;
+    ui.focus(grab.upNext ? uid("np.next", to - q.pos - 1) : uid("pl.r", to));
+    ui.setPadMode(true);
+}
+
+void App::grabDrop() { grab = Grab{}; }
 
 // ============================================================ track loading
 
@@ -751,6 +1163,9 @@ void App::loadTrack(int trackIdx, bool paused, bool start) {
         now.synced = false;
     }
     now.loading = true;
+    statHeard = 0;   // a new play of it, also when Repeat track plays it again
+    statCounted = false;
+    player.setLevel(float(std::pow(10, levelDb(trackIdx) / 20)), true);   // from its first sample (levelling)
     TrackLoader::Request r;
     r.gen = ++loadGen;
     r.path = t.path;
@@ -788,6 +1203,8 @@ void App::bgConnect() {
     // The overlay may have changed the volume since Gatefold last ran: the player's is the one heard.
     bgs.volume = s.volume;
     volumeShown = store.volume = s.volume;
+    sleepGenSeen = s.sleepGen;   // a timer that ran out before Gatefold opened is not news
+    levelModeSent = -1;          // tell it the levelling mode again
     bgs.cfgRead = bg.config(bgs.cfg);
 }
 
@@ -802,6 +1219,7 @@ bool App::bgAdoptQueue() {
         if (it != pathIndex.end()) tracks.push_back(it->second);
     }
     if (tracks.empty()) return false;
+    grabDrop();
     q.tracks = tracks;
     q.name = bq.name;
     q.failed = 0;
@@ -815,6 +1233,7 @@ bool App::bgAdoptQueue() {
                         ? keep[bq.order[bq.pos]] : -1;
     q.pos = 0;
     for (int i = 0; i < int(q.order.size()); i++) if (q.order[i] == cur) q.pos = i;
+    queueNormalize();   // an older queue may hold a "Play next" outside the list's order
     store.order = Order(std::clamp(bq.mode, 0, 3));
     // Remembered as sent, so it is not sent straight back; unless files were dropped, which it should hear about.
     bgs.tracks = q.tracks.size() == bq.paths.size() ? q.tracks : std::vector<int>{};
@@ -1054,6 +1473,9 @@ ScrollArea& App::area(const char* key, int ref) { return areas[uid(key, ref)]; }
 
 void App::navigate(View v, int ref, const std::string& query, bool push) {
     canvas = false;
+    // Into the folder pages: from Library → Folders they stay Library's in the sidebar; moving between
+    // folders keeps whichever it was.
+    if (v == View::Folders && route.view != View::Folders) folderFrom = route.view == View::Library ? View::Library : View::Folders;
     if (push && !(route.view == v && route.ref == ref && route.query == query)) {
         route.focus = ui.focusedId();
         history.push_back(route);
@@ -1188,7 +1610,7 @@ void App::toast(const std::string& s) {
 std::vector<int> App::listTracks(View v, int ref, const std::string&) const {
     std::vector<int> out;
     switch (v) {
-    case View::Queue: return q.tracks;
+    case View::Queue: return queueInPlayOrder();   // as it will play, like Up next
     case View::Search: return searchResults;
     case View::Album:
         if (ref >= 0 && ref < int(lib.albums.size())) out = lib.albums[ref].tracks;
@@ -1211,6 +1633,8 @@ std::vector<int> App::listTracks(View v, int ref, const std::string&) const {
             if (p.own()) {
                 for (const auto& path : p.tracks)
                     if (auto it = pathIndex.find(path); it != pathIndex.end()) out.push_back(it->second);
+            } else if (p.smart()) {
+                out = smartTracks(p.path);
             } else {
                 out = lib.tracksUnder(lib.folderByPath(p.path));
             }

@@ -178,6 +178,24 @@ void Player::postMix(void* self, unsigned char* stream, int len) {
     const bool ffPlaying = p->ffActive_ && !p->ffPaused_ && !p->ffEnded_;
     if (!sdlPlaying && !ffPlaying) return;
     const int frames = len / p->frameBytes_;
+    // Volume levelling: here, after both paths (SDL_mixer's music and the FFmpeg hook) are mixed. Eased
+    // per buffer towards the target; a gain above 1 is clamped (the peak limit keeps that rare).
+    {
+        float lv = p->level_.load();
+        const float want = p->levelTarget_.load();
+        lv += (want - lv) * std::min(1.f, frames / (0.4f * p->rate_));
+        p->level_ = lv;
+        if (std::fabs(lv - 1.f) > 0.001f) {
+            const int n = frames * p->channels_;
+            if (p->float32_) {
+                auto* s = reinterpret_cast<float*>(stream);
+                for (int i = 0; i < n; i++) s[i] = std::clamp(s[i] * lv, -1.f, 1.f);
+            } else {
+                auto* s = reinterpret_cast<int16_t*>(stream);
+                for (int i = 0; i < n; i++) s[i] = int16_t(std::clamp(int(std::lround(s[i] * lv)), -32768, 32767));
+            }
+        }
+    }
     if (sdlPlaying) p->frames_ += frames;   // the FFmpeg hook counts its own frames
     // Mono copy for the spectrum. Mix_OpenAudio asked for S16, but read what was granted.
     unsigned w = p->written_.load();

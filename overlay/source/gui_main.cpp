@@ -544,6 +544,20 @@ tsl::elm::Element* SettingsGui::createUI() {
     {
         GfbgState st{};
         gfState(&st);
+        // Sleep Timer (as Gatefold's moon): A steps through Off and the minutes; the value counts down.
+        m_sleep_item = new tsl::elm::ListItem("Sleep Timer", "Off");
+        m_sleep_item->setClickListener([this](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            static const int mins[] = { 0, 15, 30, 45, 60, 90 };
+            GfbgState now{};
+            gfState(&now);
+            if (now.sleepLeft <= 0) m_sleep_step = 0;   // ran out, or turned off from Gatefold
+            m_sleep_step = (m_sleep_step + 1) % 6;
+            gfSetSleep(float(mins[m_sleep_step] * 60));
+            m_sleep_shown = ~0ull;
+            return true;
+        });
+        m_list->addItem(m_sleep_item);
         auto stop_after = new tsl::elm::ToggleListItem("Stop After This Track", st.stopAfter != 0, "On", "Off");
         stop_after->setStateChangedListener([](bool v) { gfSetStopAfter(v); });
         m_list->addItem(stop_after);
@@ -594,6 +608,19 @@ void SettingsGui::update() {
     //static u8 tick = 0;
     //if ((++tick % 15) == 0)
     play_ctx::poll();
+
+    // The sleep timer's time left, m:ss as Gatefold's player bar shows it.
+    if (m_sleep_item) {
+        GfbgState st{};
+        gfState(&st);
+        const u64 left = st.sleepLeft > 0 ? u64(st.sleepLeft + 0.999f) : 0;
+        if (left != m_sleep_shown) {
+            m_sleep_shown = left;
+            char b[16];
+            std::snprintf(b, sizeof b, "%u:%02u", unsigned(left / 60), unsigned(left % 60));
+            m_sleep_item->setValue(left == 0 ? std::string("Off") : std::string(b), left == 0);
+        }
+    }
 
     // Re-check the running title every tick (cheap — just reads globals set by
     // pm::getCurrentPidTid which was already called recently by play_ctx::poll).

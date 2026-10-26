@@ -2,7 +2,7 @@
 <h1 align="center">Gatefold NX</h1>
 <p align="center"><b>Gatefold, the foobar2000 interface, as a native music player for the Nintendo Switch.</b><br>
 Your own music folder, synced lyrics, colours from every cover, and music that keeps playing on the HOME menu and in games.<br>
-By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a> · version 1.0.0<br>
+By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a> · version 1.1.0<br>
 <a href="../../releases/latest"><b>⬇️ Download the latest release</b></a></p>
 
 ![Now playing](docs/screenshots/now-playing.webp)
@@ -17,6 +17,9 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 - 🎤 **Synced lyrics.** From `.lrc` files or the lyrics tag, in Now playing and in the full-screen Canvas. They follow the music, scroll by hand, and an instrumental break shows Gatefold's three pulsing dots.
 - 🖼️ **Canvas.** A full-screen Now playing with Cover, Lyrics and Minimal layouts. When nothing is touched, the controls fade away and the progress line grows into a spectrum.
 - 🎧 **Background player.** An optional sysmodule keeps the music going on the HOME menu, during games and after Gatefold closes, with no gap. An Ultrahand overlay controls it from anywhere.
+- 📊 **Play statistics and smart playlists.** Plays are counted, also by the background player, and smart playlists such as Most played, Recently added or Forgotten favourites fill themselves.
+- 🌙 **A sleep timer.** The music fades out and pauses, then the console can go to sleep by itself.
+- 🔊 **Volume levelling.** Every track about as loud as the next, measured on the console: your files are never changed.
 - 📁 **Your music, however it is organised.** One flat folder of 3,000 files, Artist/Album folders, or folders used as playlists: albums, artists and genres come from the tags, never from the layout.
 - ⚡ **Fast on the console.** Launches in about a second with a 3,000-track library. Covers and the file list are cached, and background work runs on the console's spare cores.
 
@@ -33,6 +36,10 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 | ![Settings](docs/screenshots/settings.webp) | ![Track menu](docs/screenshots/track-menu.webp) |
 | **From the cover, on a light background** | **The cover's palette: its colours and the role each plays** |
 | ![Light](docs/screenshots/now-playing-light.webp) | ![Palette](docs/screenshots/palette.webp) |
+| **Smart playlists** | **Editing the queue: a track picked up to move** |
+| ![Smart playlists](docs/screenshots/smart-playlists.webp) | ![Editing the queue](docs/screenshots/queue-edit.webp) |
+| **The sleep timer** | **Volume levelling and sleep in Settings** |
+| ![Sleep timer](docs/screenshots/sleep-timer.webp) | ![Playback settings](docs/screenshots/settings-playback.webp) |
 
 <sub>The screenshots come from the PC preview (see below). The artists and albums are made up, and the covers are Gatefold's own test images (MIT licence).</sub>
 
@@ -45,7 +52,7 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 - ❤️ Add to Liked, Album, Artist, Folder and the ⋯ track menu.
 - 📊 A live spectrum, ported from Gatefold's `viz.js` and `spectrum-worker.js`.
 - 📑 Three tabs: **Up next**, **Lyrics** and **Palette** (the cover's colours and the roles they play).
-- 🎚️ The player bar has the playback order (default, repeat playlist, repeat track, shuffle), previous / play / next, stop after this track, a waveform seek bar, volume and the Canvas button.
+- 🎚️ The player bar has the playback order (default, repeat playlist, repeat track, shuffle), previous / play / next, stop after this track, a waveform seek bar, the sleep timer, volume and the Canvas button.
 
 ## 🖼️ Canvas
 
@@ -54,6 +61,7 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 - 🌫️ A drifting blurred backdrop, with an optional slow float and Ken Burns zoom on the cover.
 - 💤 After a few seconds without input the controls fade away and the progress line rises into a spectrum. Any button brings them back.
 - 📜 Lyrics scroll by touch or the right stick. After four seconds they return to the line playing.
+- 🌙 The sleep timer's moon is there too, with the time left.
 
 ## 📚 Library
 
@@ -62,14 +70,31 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 - 🗂️ **Folders**: browse the music folder as a tree, then play or shuffle any folder, or add it to the sidebar as a playlist that follows the folder.
 - 📋 **Four list views**, as in Gatefold 1.4.2: by album, with covers, as tiles, or as a plain list. Every list remembers its own.
 - 🎶 **Your own playlists**, made with + in the sidebar or from the track menu. They can be renamed and deleted.
+- ✨ **Smart playlists** (+ in the sidebar → Smart playlist…), as in Gatefold 1.4: Recently added, Most played, Recently played, Forgotten favourites, Never played, a genre, a decade, long tracks. Each has one setting, shows how many tracks match before you create it, and keeps itself up to date.
+- 📊 **Play statistics.** A track counts as played after a minute (or nearly all of a shorter one), in Gatefold and in the background player. Plays, last played and date added show in the track's Details. They are kept by Gatefold; your files are not changed.
+- 🧾 **Editing the queue.** On the Playlist view and in Up next, the track menu has Play next, Move (the row is picked up and the D-pad moves it) and Remove, and Clear empties the queue but for the track playing.
 - 🔍 **Search** with the console keyboard (Y): title, artist, album and path.
 - 🔄 **Resume where you left off**: the queue comes back after a restart, paused at the same place.
+
+## 🌙 Sleep timer
+
+- ⏲️ 15, 30, 45, 60 or 90 minutes, or the end of the track: from the moon in the player bar, the Canvas or Settings → Playback, and as Sleep Timer in the overlay.
+- 🌫️ The music fades out over its last ten seconds and pauses where you were. The background player keeps the time, so it works with Gatefold closed too.
+- 😴 With Gatefold open, a card then counts down and puts the console to sleep, unless you stay awake (or turn it off in Settings).
+- 🔆 **Keep the console awake:** while Gatefold is open the screen does not dim and the console does not sleep by itself, with an optional dimming of the screen after a few minutes without input.
+
+## 🔊 Volume levelling
+
+- 📏 Every track's loudness is measured on the console as ITU-R BS.1770 / EBU R128 measure it (ported from Gatefold 1.4's own meter), with its true peak.
+- 🎚️ Off (the default), Track, Album, or Auto (album, but track while shuffling), to a target of −18, −14 or −11 LUFS. Quiet tracks are raised only as far as their peaks allow.
+- ⏳ It runs in the background while Gatefold is open, the track playing and the next ones first, then the whole library, once. The results are kept by Gatefold; the background player levels with them too.
 
 ## 🎨 Appearance
 
 - 🌈 Themes: **From the cover** (on a dark or a light background), **Dark**, **Light**, or **Custom** (your background and two accents).
 - 🎛️ Saturation, colour transition time, and the cover's palette.
 - 🧱 A collapsible sidebar, and every tab but Now playing can be hidden.
+- 🔋 The battery in the title bar shows when it is charging, and how long to full or to empty (each can be hidden).
 - 📈 Visualizer settings: sensitivity, smoothing, number of bars (for Now playing and the Canvas separately), peak caps and the cover's bass pulse.
 
 ## ✏️ Track menu
@@ -78,7 +103,7 @@ Press **+** on any track, or ⋯ on Now playing:
 
 - ▶️ Play next, add to the queue, add to a playlist, like.
 - 🏷️ **Edit tags** (title, artist, album, album artist, genre, year, track number) and **change the cover** with any image on the SD card, for one track or the whole album. Your changes are kept by Gatefold in `sdmc:/config/gatefold-nx/` and can be undone. Your music files are never modified.
-- 🧭 Go to the album, artist, genre or folder, show the details, or delete the file (after asking).
+- 🧭 Go to the album, artist, genre or folder, show the details (with plays and loudness), or delete the file (after asking).
 
 ## 🎧 Background player
 
@@ -88,6 +113,7 @@ An optional sysmodule plays the music outside Gatefold: on the HOME menu, during
 - 🎮 **Game actions.** For *Game Opens*, *HOME Menu*, *Back to the Game* and *Game Closes*, choose Nothing, Play (a random folder of your music, shuffled), Resume or Pause, each with a fade. A fresh launch and a return from HOME are told apart, so going HOME and back never reshuffles.
 - 🔊 **Per-game volume.** The game running now keeps its own music volume, and every other game shares one.
 - 💾 **The queue is kept** across restarts (`bg-session.txt`).
+- 📊 It counts plays and keeps the sleep timer while Gatefold is closed, and levels the volume with Gatefold's measurements.
 - 🖼️ **Covers for the overlay.** Gatefold makes small copies at the overlay's exact size, because an overlay cannot decode large JPEGs. They are made for every queue sent to the player, or for the whole library at once. If many are missing, Gatefold offers to make them, and a card in the sidebar shows the progress.
 
 ## 🧩 Overlay
@@ -95,7 +121,7 @@ An optional sysmodule plays the music outside Gatefold: on the HOME menu, during
 `Gatefold.ovl` for **Ultrahand**, in the style of sys-tune 2.1, on which it is built:
 
 - **Player page:** the cover, title and artist, a seek bar (A picks it up, so the D-pad never scrubs by accident), and shuffle / previous / play / next / repeat.
-- **Settings page** (D-pad right): Gatefold's queue, browse and play a folder, the music volume, the running game's volume (shown under the game's own name), the volume for every other game, the game actions and their fades, and stop after this track.
+- **Settings page** (D-pad right): Gatefold's queue, browse and play a folder, the music volume, the running game's volume (shown under the game's own name), the volume for every other game, the game actions and their fades, the sleep timer, and stop after this track. With shuffle on, a folder played or added is shuffled.
 
 Open it with Ultrahand's combo (ZL + ZR + D-pad down unless you changed it).
 
@@ -174,6 +200,7 @@ dkp-pacman -S switch-dev switch-sdl2 switch-sdl2_mixer switch-sdl2_ttf switch-sd
 
 ```bash
 make                     # the app: Gatefold.nro (fonts and icons ship inside it, in RomFS)
+make clean && make DEV=0 # the app as released, without the testing extras (a 1-minute sleep timer, Frame times)
 make -C sysmodule        # the background player: gatefold-bg.nsp
 make -C overlay          # the overlay: Gatefold.ovl
 ```
@@ -197,6 +224,8 @@ Run `gatefold-preview.exe` with the variables described at the top of `tools/pre
 - `GF_ROOT=<demo-root>` points it at the fake SD card.
 - `GF_SHOW=1` opens a window you drive with the keyboard.
 - `GF_SCRIPT=<file>` replays scripted input and takes screenshots.
+
+The preview is a dev build; `DEV=0` before `bash tools/preview/build.sh` builds it as a release looks, as for the screenshots above.
 
 ## ⚠️ Known limits
 

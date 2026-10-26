@@ -168,6 +168,9 @@ void Ui::navigate(int dx, int dy) {
         }
         float score = std::max(primary, -8.f) + ortho * 2.5f;
         if (c.region != f->region) score += 40;   // stay within a region when there is a choice
+        // ... and within a scrolled list: a row further down that does not line up (Settings' controls of
+        // different widths) beats the player bar's button just under the visible part.
+        if (f->area && c.area != f->area) score += 200;
         if (score < bestScore) { bestScore = score; best = &c; }
     }
     if (!best) {

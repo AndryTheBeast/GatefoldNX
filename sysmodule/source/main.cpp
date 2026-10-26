@@ -37,6 +37,7 @@ void __appInit(void) {
     if (R_FAILED(fsInitialize())) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
     fsdevMountSdmc();
     pmdmntInitialize();
+    timeInitialize();     // the clock for play statistics (bg-plays.txt); without it plays are dated by Gatefold
     pdmqryInitialize();   // failing is fine: then "in front" just means "running"
     if (hosversionAtLeast(11, 0, 0)) audaInitialize();   // game volume
     else audoutaInitialize();
@@ -48,6 +49,7 @@ void __appExit(void) {
     audaExit();
     audoutaExit();
     pmdmntExit();
+    timeExit();
     fsdevUnmountAll();
     fsExit();
     smExit();
@@ -162,6 +164,13 @@ bool handle(Session& s) {
     }
     case GfbgCmd_SetMode: engine.setMode(u, s.kind); reply(base, 0); break;
     case GfbgCmd_SetStopAfter: engine.setStopAfter(u != 0); reply(base, 0); break;
+    case GfbgCmd_SetSleep: {
+        float v;
+        memcpy(&v, arg, sizeof v);
+        engine.setSleep(v);
+        reply(base, 0);
+        break;
+    }
     case GfbgCmd_GetPcm: {
         size_t n = 0;
         u8* p = recvBuf(n);

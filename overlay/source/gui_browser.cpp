@@ -609,13 +609,9 @@ void BrowserGui::buildList() {
                         // exact shuffled position — no queue reload needed.
                         play_ctx::startByPath(full_path);
                     } else {
-                        // Different folder OR shuffle off: always disable shuffle
-                        // so m_playlist stays sorted and matches m_folder_songs.
-                        // This ensures next/prev match the visual list on re-entry.
-                        if (shuffleMode != TuneShuffleMode_Off) {
-                            tuneSetShuffleMode(TuneShuffleMode_Off);
-                            config::set_shuffle(TuneShuffleMode_Off);
-                        }
+                        // Different folder, or shuffle off. Shuffle stays as it is: with it on, the
+                        // new queue is shuffled with this track first (tune_gfbg.cpp, shuffleFresh),
+                        // and the list above follows the queue's order when the folder is shown again.
                         if (!play_ctx::switchToFolder(m_cwd, m_folder_songs, sorted_idx)) {
                             if (tsl::notification)
                                 tsl::notification->showNow("Failed to switch to folder.");

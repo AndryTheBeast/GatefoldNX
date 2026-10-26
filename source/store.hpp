@@ -8,12 +8,15 @@
 #include <unordered_map>
 #include <vector>
 
-/** A playlist in the sidebar: a folder kept in sync with the library, or your own list of tracks. */
+/** A playlist in the sidebar: a folder kept in sync with the library, your own list of tracks, or a smart one. */
 struct FolderPlaylist {
     std::string name;
-    std::string path;                  // a folder playlist: every track below this folder; empty for your own
+    std::string path;                  // a folder playlist: every track below this folder; empty for your own;
+                                       // "smart:<recipe>:<setting>" for a smart one (view_smart.cpp)
     std::vector<std::string> tracks;   // your own: track paths, in your order
     bool own() const { return path.empty(); }
+    bool smart() const { return path.rfind("smart:", 0) == 0; }
+    bool folder() const { return !own() && !smart(); }
 };
 
 enum class Order { Default, RepeatAll, RepeatOne, Shuffle };
@@ -70,6 +73,13 @@ struct Store {
     float pointerSpeed = 0.5f;
     bool pointerAccel = true;
     bool frameTimes = false;        // Settings → About: the frame-time graph
+    bool keepAwake = false;         // while Gatefold is open: no dimming and no auto-sleep (until a sleep timer ends)
+    int dimAfter = 5;               // … but dim the screen after this many minutes without input; 0 never
+    bool batteryPercent = true;     // the title bar: the battery's percentage
+    bool batteryEstimate = true;    // ... and how long to full or to empty
+    int sleepConsole = 30;
+    int levelMode = 0;              // volume levelling: 0 off (the default: the user chooses), 1 track, 2 album, 3 auto (GfbgLevel)
+    int levelTarget = -14;          // ... to this loudness, LUFS          // seconds of the "going to sleep" card after the sleep timer ends; 0: do not sleep the console
 
     // Your changes, kept by Gatefold with the music files untouched (the console's FFmpeg cannot write files):
     std::unordered_map<std::string, std::map<std::string, std::string>> edits;   // track path → tag field → value

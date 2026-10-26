@@ -36,6 +36,8 @@ struct Queue {
     u32 gen = 0;
     bool valid = false;   // matches the player's queueGen
     bool dirty = false;   // changed here, not sent yet
+    bool fresh = false;   // emptied here and filled again (a folder, Add all, the saved playlist), not played yet
+    bool sent = false;    // … and already sent to the player (shown in the overlay's queue) since it was emptied
 } q;
 
 /** strnlen, which the overlay's strict -std=c++26 hides. */
@@ -56,6 +58,7 @@ void ensureQueue() {
     if (!open || q.dirty) return;
     const GfbgState s = state();
     if (q.valid && q.gen == s.queueGen) { q.pos = s.pos; q.mode = s.mode; return; }
+    if (s.queueBy != GfbgClient_Overlay) q.fresh = false;   // someone else's queue now (Gatefold's, the player's)
     std::vector<u8> buf(s.queueBytes + 4096);
     if (s.queueBytes < sizeof(GfbgQueueHeader) || R_FAILED(gfbgGetQueue(&srv, buf.data(), buf.size()))) return;
     GfbgQueueHeader h;
@@ -78,9 +81,37 @@ void ensureQueue() {
     q.valid = q.paths.size() == h.count;
 }
 
+bool shuffleOn(u32 mode) { return mode == GfbgMode_Shuffle; }
+
+u64 rnd(u64 n) {
+    static u64 seed = armGetSystemTick() | 1;
+    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    return seed % n;
+}
+
+/**
+ * The player takes the order it is sent, and a queue built here was in the order it was added: with
+ * Shuffle on, a folder (Browse, or Add all) played in order until Shuffle was switched off and on.
+ * So with Shuffle on every track added goes in at a random place (tuneEnqueue): anywhere in a queue
+ * being filled from empty, after the current track in one that plays. The queue shows shuffled at
+ * once. A fresh queue's first start may put the track picked in front (path index; −1 none).
+ */
+void startFresh(s32 first) {
+    if (!q.fresh) return;
+    q.fresh = false;
+    if (first < 0 || q.order.size() < 2 || !shuffleOn(state().mode)) return;
+    const auto it = std::find(q.order.begin(), q.order.end(), first);
+    if (it == q.order.end() || it == q.order.begin()) return;
+    q.order.erase(it);
+    q.order.insert(q.order.begin(), first);
+    q.pos = 0;
+    q.dirty = true;
+}
+
 /** Sends the local edits as one SetQueue. */
 void flush() {
     if (!open || !q.dirty) return;
+    if (q.fresh) q.sent = true;
     q.dirty = false;
     q.valid = false;
     size_t bytes = 0;
@@ -89,7 +120,7 @@ void flush() {
     GfbgQueueHeader h{};
     h.count = u32(q.paths.size());
     h.pos = q.order.empty() ? -1 : std::clamp(q.pos, 0, s32(q.order.size()) - 1);
-    h.mode = q.mode;
+    h.mode = q.mode = state().mode;   // the player's own: ours may be from before a Shuffle switch
     h.flags = GfbgQueue_KeepCurrent;
     h.pathBytes = u32(bytes);
     // A list built here (a folder from Browse) is named after its folder, as Gatefold names its lists.
@@ -113,8 +144,6 @@ const char* bare(const std::string& p) { return p.c_str() + (p.rfind("sdmc:/", 0
 /** And back: what the player opens and Gatefold finds in its library. */
 std::string mounted(const char* p) { return p[0] == '/' ? std::string("sdmc:") + p : std::string(p); }
 
-bool shuffleOn(u32 mode) { return mode == GfbgMode_Shuffle; }
-
 TuneRepeatMode repeatOf(u32 mode) {
     if (mode == GfbgMode_RepeatOne) return TuneRepeatMode_One;
     if (mode == GfbgMode_RepeatAll || mode == GfbgMode_Shuffle) return TuneRepeatMode_All;
@@ -131,6 +160,7 @@ void gfSetConfig(const GfbgConfig& c) { if (open) gfbgSetConfig(&srv, &c); }
 bool gfGameVolume(GfbgGameVolume* out) { return open && R_SUCCEEDED(gfbgGetGameVolume(&srv, out)); }
 bool gfState(GfbgState* out) { if (!open) return false; flush(); return R_SUCCEEDED(gfbgGetState(&srv, out)); }
 void gfSetStopAfter(bool on) { if (open) gfbgSetStopAfter(&srv, on); }
+void gfSetSleep(float seconds) { if (open) gfbgSetSleep(&srv, seconds); }
 void gfFlush() { flush(); }
 
 bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb) {
@@ -183,10 +213,10 @@ Result tuneGetStatus(bool* status) {
     return 0;
 }
 
-Result tunePlay() { flush(); return gfbgTransport(&srv, GfbgOp_Resume); }
+Result tunePlay() { startFresh(-1); flush(); return gfbgTransport(&srv, GfbgOp_Resume); }
 Result tunePause() { flush(); return gfbgTransport(&srv, GfbgOp_Pause); }
-Result tuneNext() { flush(); return gfbgTransport(&srv, GfbgOp_Next); }
-Result tunePrev() { flush(); return gfbgTransport(&srv, GfbgOp_Prev); }
+Result tuneNext() { startFresh(-1); flush(); return gfbgTransport(&srv, GfbgOp_Next); }
+Result tunePrev() { startFresh(-1); flush(); return gfbgTransport(&srv, GfbgOp_Prev); }
 
 Result tuneGetVolume(float* out) { *out = state().volume; return 0; }
 Result tuneSetVolume(float volume) { return gfbgSetVolume(&srv, volume); }
@@ -267,6 +297,8 @@ Result tuneClearQueue() {
     q.pos = -1;
     q.name.clear();
     q.dirty = true;
+    q.fresh = true;
+    q.sent = false;
     return 0;
 }
 
@@ -283,6 +315,17 @@ Result tuneMoveQueueItem(u32 src, u32 dst) {
 }
 
 Result tuneSelect(u32 index) {
+    // A fresh queue: picked before it was ever sent (Browse plays a folder: clear, add each file, then the
+    // file's place in the folder), the index is a track as added, and it goes first. Picked from the queue
+    // as shown, it is the place shown.
+    if (q.fresh && index < q.order.size()) {
+        if (q.sent) startFresh(-1);
+        else {
+            const s32 picked = s32(index);
+            startFresh(picked);
+            index = u32(std::find(q.order.begin(), q.order.end(), picked) - q.order.begin());
+        }
+    }
     flush();
     const GfbgState s = state();
     if (index >= s.queueCount) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
@@ -295,9 +338,13 @@ Result tuneEnqueue(const char* path, TuneEnqueueType type) {
     ensureQueue();
     const s32 idx = s32(q.paths.size());
     q.paths.push_back(mounted(path));
-    // Front: right after the track playing now (Gatefold's "Play next").
+    // Front: right after the track playing now (Gatefold's "Play next"). With Shuffle on, a random place
+    // (startFresh says why): anywhere while the queue is filled from empty, else among those still to come.
     if (type == TuneEnqueueType_Front && q.pos >= 0) q.order.insert(q.order.begin() + q.pos + 1, idx);
-    else q.order.push_back(idx);
+    else if (shuffleOn(state().mode) && (q.fresh || q.pos >= 0)) {
+        const size_t lo = q.fresh ? 0 : std::min(q.order.size(), size_t(q.pos) + 1);
+        q.order.insert(q.order.begin() + lo + size_t(rnd(q.order.size() - lo + 1)), idx);
+    } else q.order.push_back(idx);
     if (q.pos < 0) q.pos = 0;
     q.dirty = true;
     return 0;

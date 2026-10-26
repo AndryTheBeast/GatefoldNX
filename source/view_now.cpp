@@ -225,8 +225,13 @@ void App::drawUpNext(float x, float y, float w, float h) {
         meta.wantTags(t);
         // .up-row: 40 px cover | title + artist · album | duration
         const Id id = uid("np.next", i);
-        if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8)) playAt((q.pos + 1 + i) % int(q.order.size()));
-        if (ui.focused(id)) hoverTrack = t;
+        const int pos = (q.pos + 1 + i) % int(q.order.size());   // in play order (wrapped round with Repeat)
+        if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8)) playAt(pos);
+        if (ui.focused(id)) { hoverTrack = t; hoverQueue = pos; hoverUpNext = true; }
+        if (grab.upNext && grab.pos == pos) {   // picked up with the track menu's Move
+            g.roundRect(x - 8, ry, w + 16, 52, 8, pal.accent, 0.14f);
+            g.roundStroke(x - 8, ry, w + 16, 52, 8, 2, pal.accent, 0.95f);
+        }
         if (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing())) g.roundRect(x - 8, ry, w + 16, 52, 8, pal.text, 0.065f);
         coverBox(t, x, ry + 6, 40, 6);
         const std::string dur = tr.duration > 0 ? fmtTime(tr.duration) : "";

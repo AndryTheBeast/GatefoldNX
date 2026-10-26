@@ -13,7 +13,7 @@
 
 #define GFBG_SERVICE    "gatefold"           // sm name, 8 characters at most
 #define GFBG_PROGRAM_ID 0x4200000047464E58ULL // "GFNX" in the homebrew range
-#define GFBG_PROTOCOL   3
+#define GFBG_PROTOCOL   4   // 4: the sleep timer (SetSleep, GfbgState.sleepLeft/sleepGen)
 #define GFBG_PCM        4096                  // mono samples GetPcm returns, at 48 kHz (Spectrum::N)
 #define GFBG_RATE       48000
 
@@ -38,6 +38,7 @@ typedef enum {
     GfbgCmd_GetTrackInfo = 13,  // out buffer GfbgTrackInfo
     GfbgCmd_GetGameVolume = 14, // → GfbgGameVolume
     GfbgCmd_SetGameVolume = 15, // in float: the game in front's volume, remembered for that game
+    GfbgCmd_SetSleep     = 16,  // in float seconds until the music fades out and pauses; 0 turns the timer off
 } GfbgCmd;
 
 typedef enum { GfbgClient_Gatefold = 1, GfbgClient_Overlay = 2 } GfbgClient;
@@ -89,6 +90,8 @@ typedef struct {
     u32 trackBy;       // who caused the last trackGen bump: 0 the player itself, else a GfbgClient
     u32 queueBy;       // the same for queueGen
     u32 heapFree;      // bytes, for the About page
+    float sleepLeft;   // seconds until the sleep timer pauses the music, 0 when it is off (protocol 4)
+    u32 sleepGen;      // bumps when the sleep timer runs out
 } GfbgState;
 
 typedef struct {
@@ -147,6 +150,18 @@ typedef struct {
  * so it is drawn 1:1. GFBG_THUMBS/map.tsv lists one track per line as
  * "<gfbgHash of its path, 16 hex digits> TAB <file name>".
  */
+/**
+ * Volume levelling (protocol 4, no new command): Gatefold measures each track's loudness and writes
+ * GFBG_GAINS, a GfbgGainsHeader then `count` GfbgGain sorted by hash (gfbgHash of the path). The
+ * player reads the header every couple of seconds and the whole file when `gen` changes. The mode
+ * is GfbgConfig.reserved[0]: GfbgLevel_*. Auto: the album gain, but the track gain while shuffling.
+ */
+#define GFBG_GAINS "sdmc:/config/gatefold-nx/gains.bin"
+#define GFBG_GAINS_MAGIC 0x564C4647u   // "GFLV"
+typedef enum { GfbgLevel_Off = 0, GfbgLevel_Track = 1, GfbgLevel_Album = 2, GfbgLevel_Auto = 3 } GfbgLevel;
+typedef struct { u32 magic, count, gen, reserved; } GfbgGainsHeader;
+typedef struct { u64 hash; float track, album; } GfbgGain;   // dB, the peak limit already in
+
 #define GFBG_ART    307
 #define GFBG_THUMBS "sdmc:/config/gatefold-nx/thumbs"
 
@@ -202,6 +217,7 @@ static inline Result gfbgSeek(Service* s, double t) { return serviceDispatchIn(s
 static inline Result gfbgSetVolume(Service* s, float v) { return serviceDispatchIn(s, GfbgCmd_SetVolume, v); }
 static inline Result gfbgSetMode(Service* s, u32 mode) { return serviceDispatchIn(s, GfbgCmd_SetMode, mode); }
 static inline Result gfbgSetStopAfter(Service* s, bool on) { const u32 v = on; return serviceDispatchIn(s, GfbgCmd_SetStopAfter, v); }
+static inline Result gfbgSetSleep(Service* s, float seconds) { return serviceDispatchIn(s, GfbgCmd_SetSleep, seconds); }
 
 static inline Result gfbgGetPcm(Service* s, float* out, u32* serial) {
     return serviceDispatchOut(s, GfbgCmd_GetPcm, *serial, .buffer_attrs = { SfBufferAttr_HipcMapAlias | SfBufferAttr_Out },

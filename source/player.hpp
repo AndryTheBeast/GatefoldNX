@@ -35,6 +35,8 @@ public:
 
     /** 0..1, applied to music playback. */
     void setVolume(float v);
+    /** Volume levelling (levels.hpp): a linear gain on everything played here, eased over ~0.4 s, or at once. */
+    void setLevel(float gain, bool now = false) { levelTarget_ = gain; if (now) level_ = gain; }
 
     /** Newest n mono samples of what was mixed; false when nothing new since the last call. */
     bool latestPcm(float* out, int n);
@@ -67,4 +69,5 @@ private:
     int channels_ = 2;
     bool float32_ = false;
     std::atomic<float> volume_{ 1.f };
+    std::atomic<float> level_{ 1.f }, levelTarget_{ 1.f };
 };

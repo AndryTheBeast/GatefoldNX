@@ -54,6 +54,7 @@ struct Step {
 std::multimap<long, Step> script;
 bool scriptLoaded = false;
 long frame = 0;
+float backlight = 0.6f;
 bool quitting = false;
 std::map<std::string, long> holdUntil;
 float stickX = 0, stickY = 0;   // the left stick, −1..1
@@ -215,4 +216,29 @@ void hostPresent(SDL_Renderer* r) {
     }
     SDL_RenderPresent(r);
     frame++;
+}
+
+// ---- battery, dock, sleep and backlight (switch.h)
+Result psmGetChargerType(PsmChargerType* out) {
+    *out = getenv("GF_CHARGING") ? PsmChargerType_EnoughPower : PsmChargerType_Unconnected;
+    return 0;
+}
+Result psmGetRawBatteryChargePercentage(double* out) {
+    const double minutes = frame / 60.0 / 60.0;
+    const double v = getenv("GF_CHARGING") ? 40 + minutes : 76 - minutes * 0.5;   // windows.h's min/max macros: no std::min here
+    *out = v > 100 ? 100 : v < 1 ? 1 : v;
+    return 0;
+}
+AppletOperationMode appletGetOperationMode() { return getenv("GF_DOCKED") ? AppletOperationMode_Console : AppletOperationMode_Handheld; }
+Result appletRequestToSleep() {
+    printf("[frame %ld] the console goes to sleep\n", frame);
+    fflush(stdout);
+    return 0;
+}
+Result lblGetCurrentBrightnessSetting(float* out) { *out = backlight; return 0; }
+Result lblSetCurrentBrightnessSetting(float b) {
+    backlight = b;
+    printf("[frame %ld] backlight %.2f\n", frame, double(b));
+    fflush(stdout);
+    return 0;
 }

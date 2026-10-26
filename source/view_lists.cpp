@@ -32,14 +32,16 @@ void App::drawTrackList(float x, float y, float w, float h) {
         title = playName = "Liked";
         placeholder = ICON_HEART;
     } else if (route.ref < int(store.playlists.size())) {
-        const bool own = store.playlists[route.ref].own();
-        kick = own ? "Playlist" : "Folder playlist";
-        title = playName = store.playlists[route.ref].name;
-        placeholder = own ? ICON_LIST : ICON_FOLDER;
+        const FolderPlaylist& p = store.playlists[route.ref];
+        kick = p.own() ? "Playlist" : p.smart() ? "Smart playlist" : "Folder playlist";
+        title = playName = p.name;
+        placeholder = p.own() ? ICON_LIST : p.smart() ? smartIcon(p.path) : ICON_FOLDER;
     }
     sub = fmtTotal(tracks);
-    if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && !store.playlists[route.ref].own())
-        sub = store.playlists[route.ref].path + "  ·  " + sub;
+    if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && !store.playlists[route.ref].own()) {
+        const FolderPlaylist& p = store.playlists[route.ref];
+        sub = (p.smart() ? smartSummary(p.path) : p.path) + "  ·  " + sub;
+    }
 
     ScrollArea& sa = area(v == View::Search ? "search" : "list", int(v) * 1000 + route.ref);
     const float headH = 18 + 120 + 14;
@@ -69,7 +71,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     if (clicked && !tracks.empty()) playTracks(tracks, 0, playName, true);
     if (v == View::Queue) {
         bx += button(uid("pl.jump"), ICON_DISC, "Current track", bx, by, false, &clicked) + 8;
-        const int cur = currentQueuePos();
+        const int cur = q.pos;   // the list is in play order
         if (clicked && cur >= 0) {
             // Gatefold's "Current track": the list glides there (the row need not exist yet, it is
             // only drawn once on screen) and the focus lands on it when it arrives.
@@ -77,10 +79,18 @@ void App::drawTrackList(float x, float y, float w, float h) {
             sa.clamp();
             listJump = uid("pl.r", cur);
         }
+        if (tracks.size() > 1) {
+            bx += button(uid("pl.clear"), ICON_X, "Clear", bx, by, false, &clicked) + 8;
+            if (clicked) {
+                grabDrop();
+                queueClear();
+                toast(currentQueuePos() >= 0 ? "Cleared, apart from the track playing" : "Cleared the playlist");
+            }
+        }
     } else if (v == View::Search) {
         bx += button(uid("pl.search"), ICON_SEARCH, "New search", bx, by, false, &clicked) + 8;
         if (clicked) openSearch();
-    } else if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].own()) {
+    } else if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && !store.playlists[route.ref].folder()) {
         bx += button(uid("pl.rename"), ICON_TAG, "Rename", bx, by, false, &clicked) + 8;
         if (clicked) {
             std::string name = store.playlists[route.ref].name;
@@ -121,18 +131,22 @@ void App::drawTrackList(float x, float y, float w, float h) {
     if (tracks.empty()) {
         listColumns(x, ly, w, mode == ListMode::Grid ? ListMode::List : mode, false);
         const char* msg = v == View::Search ? "No tracks match" : v == View::Queue ? "Play something from the library or a folder"
-                        : route.ref < 0 ? "Tracks you like appear here" : "This playlist has no tracks";
+                        : route.ref < 0 ? "Tracks you like appear here"
+                        : route.ref < int(store.playlists.size()) && store.playlists[route.ref].smart() ? "Nothing matches yet"
+                                                                                                         : "This playlist has no tracks";
         g.textC(msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + 90, pal.text2, 1, Align::Center);
     }
     g.clip(x, y, w, h);
+    bodyGrab = v == View::Queue && !grab.upNext ? grab.pos : -1;
     const float bodyH = drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
-        if (v == View::Queue) {
-            const int k = int(std::find(q.order.begin(), q.order.end(), i) - q.order.begin());
-            playAt(k);
-        } else {
-            playTracks(tracks, i, playName);
-        }
+        if (v == View::Queue) playAt(i);   // i is the position in play order
+        else playTracks(tracks, i, playName);
     });
+    bodyGrab = -1;
+    if (v == View::Queue) {
+        if (bodyFocus >= 0) hoverQueue = bodyFocus;
+        if (grab.pos >= 0 && !grab.upNext) grab.cols = bodyCols;
+    }
     sa.content = headH + bodyH;
     g.unclip();
     if (listJump && ui.hasItem(listJump) && std::fabs(sa.y - sa.target) < RowH) {

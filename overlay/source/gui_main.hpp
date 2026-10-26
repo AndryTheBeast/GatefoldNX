@@ -74,6 +74,9 @@ public:
 private:
     // m_frame is owned by Tesla, do NOT delete.
     tsl::elm::List      *m_list         = nullptr;
+    tsl::elm::ListItem  *m_sleep_item   = nullptr;   // Sleep Timer: its time left, refreshed in update()
+    int                  m_sleep_step   = 0;         // the choice last made: 0 off, then 15/30/45/60/90 min
+    u64                  m_sleep_shown  = ~0ull;     // the minutes shown last
     SysTuneOverlayFrame *m_frame        = nullptr;
 
     // If set, createUI() calls m_list->jumpToItem(m_jump_to) at the end.

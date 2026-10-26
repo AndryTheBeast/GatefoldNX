@@ -26,12 +26,18 @@ float ease(float t) {
 void App::draw() {
     hoverTrackShown = hoverTrack;
     hoverTrack = -1;
-    ui.setModal(sheet.page != Sheet::Closed || (coverNotice == 1 && !canvas));
+    hoverQueueShown = hoverQueue;
+    hoverQueue = -1;
+    hoverUpNextShown = hoverUpNext;
+    hoverUpNext = false;
+    ui.setModal(sheet.page != Sheet::Closed || (coverNotice == 1 && !canvas) || sleepPromptAt > 0);
     if (canvas) {
         drawCanvas();
         profMark(2);
         drawSheet();
+        drawSleepPrompt();
         drawToast();
+        if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
         drawFocusRing();
         drawPointer();
         drawFrameTimes();
@@ -71,7 +77,9 @@ void App::draw() {
     profMark(4);
     drawCoverNotice();
     drawSheet();
+    drawSleepPrompt();
     drawToast();
+    if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);   // Dim the screen, docked
     drawFocusRing();
     drawPointer();
     drawFrameTimes();
@@ -82,6 +90,9 @@ void App::draw() {
 
 /** Settings → About → Frame times: the last 120 frames as bars (interval, and the work before the present inside), 16.7 and 33.3 ms marked. */
 void App::drawFrameTimes() {
+#ifndef GF_DEV
+    return;   // dev builds only: a release has no Diagnostics card, so a setting saved by a dev build stays hidden
+#endif
     if (!store.frameTimes) return;
     const float w = 120 * 3, h = 70, x = css::W - w - 16, y = 56;
     const std::vector<std::string> launch = g.wrap(startStats_, { 11 }, int(w), 3);   // the launch line wraps: it was cut off
@@ -217,9 +228,20 @@ void App::drawTitlebar() {
         const float bw = 24, bh = 12, bx = rx - bw - 3, by = cy - bh / 2;
         g.roundStroke(bx, by, bw, bh, 3, 1.5f, pal.text2);
         g.roundRect(bx + bw + 1, cy - 3, 2, 6, 1, pal.text2);
-        g.roundRect(bx + 2.5f, by + 2.5f, (bw - 5) * pct / 100.f, bh - 5, 1.5f, pct <= 15 ? Rgb{ 0.9f, 0.38f, 0.31f } : pal.text2);
+        const bool charging = battery.charging == 1;
+        g.roundRect(bx + 2.5f, by + 2.5f, (bw - 5) * pct / 100.f, bh - 5, 1.5f, pct <= 15 && !charging ? Rgb{ 0.9f, 0.38f, 0.31f } : pal.text2);
+        // Charging: the bolt over the fill, with a dark edge so it reads on the fill and off it.
+        if (charging) {
+            g.icon(ICON_BOLT, bx + bw / 2 + 0.5f, cy + 0.5f, 13, { 0, 0, 0 }, 0.55f);
+            g.icon(ICON_BOLT, bx + bw / 2, cy, 12, pal.text);
+        }
         rx = bx - 10;
-        rx -= g.textC(std::to_string(pct) + "%", { css::Sm }, rx, cy, pal.text3, 1, Align::Right) + 14;
+        // How long to full or to empty, once the charge has moved long enough to tell (App::sampleBattery).
+        // Settings → Appearance → Title bar can hide either.
+        std::string label = store.batteryPercent ? std::to_string(pct) + "%" : "";
+        if (store.batteryEstimate && !battery.est.empty()) label += (label.empty() ? "" : "  ·  ") + battery.est;
+        if (!label.empty()) rx -= g.textC(label, { css::Sm }, rx, cy, pal.text3, 1, Align::Right) + 14;
+        else rx -= 4;
     }
     g.textC(clock, { css::Sm, Weight::SemiBold }, rx, cy, pal.text2, 1, Align::Right);
 }
@@ -276,10 +298,15 @@ void App::drawSidebar() {
         navigate(View::Artists);
     if (!(hide & 4) && navItem("nav.genres", ICON_TAG, "Genres", v == View::Genres || v == View::Genre, std::to_string(genres.size()), 38, navFont))
         navigate(View::Genres);
-    if (!(hide & 16) && navItem("nav.folders", ICON_FOLDER, "Folders", v == View::Folders,
-                                std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), 38, navFont))
+    // A folder page lights the tab it belongs to: Folders, or Library when opened from its Folders tab
+    // (or when the Folders tab is hidden, so something stays lit).
+    const bool folderInLibrary = v == View::Folders && (folderFrom == View::Library || (hide & 16));
+    if (!(hide & 16) && navItem("nav.folders", ICON_FOLDER, "Folders", v == View::Folders && !folderInLibrary,
+                                std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), 38, navFont)) {
         navigate(View::Folders, lib.rootFolders.empty() ? -1 : lib.rootFolders[0]);
-    if (!(hide & 8) && navItem("nav.library", ICON_GRID, "Library", v == View::Library || (v == View::Album && libFrom == View::Library),
+        folderFrom = View::Folders;   // the tab itself, even when clicked from Library
+    }
+    if (!(hide & 8) && navItem("nav.library", ICON_GRID, "Library", v == View::Library || (v == View::Album && libFrom == View::Library) || folderInLibrary,
                                std::to_string(lib.tracks.size()), 38, navFont)) {
         libFrom = View::Library;
         navigate(View::Library);
@@ -291,7 +318,7 @@ void App::drawSidebar() {
     y += 11;
     if (!collapsed) {
         kicker("Playlists", x0 + 12, y + 12, pal.text3, 0.08f);
-        if (iconButton(uid("nav.newpl"), ICON_PLUS, x0 + w - 12, y + 12, false, 24, 14)) newPlaylist(-1);
+        if (iconButton(uid("nav.newpl"), ICON_PLUS, x0 + w - 12, y + 12, false, 24, 14)) openNewList();   // your own, or a smart one
         y += 28;
     }
 
@@ -313,9 +340,9 @@ void App::drawSidebar() {
         navigate(View::List, -1);
     for (int i = 0; i < int(store.playlists.size()); i++) {
         const FolderPlaylist& p = store.playlists[i];
-        const int f = p.own() ? -1 : lib.folderByPath(p.path);
-        const int count = p.own() ? int(p.tracks.size()) : f >= 0 ? lib.folders[f].last - lib.folders[f].first : 0;
-        if (navItem("nav.pl", ICON_LIST, p.name, v == View::List && route.ref == i, std::to_string(count), 32, plFont, i, q.name == p.name && isPlaying()))
+        const int f = p.folder() ? lib.folderByPath(p.path) : -1;
+        const int count = p.own() ? int(p.tracks.size()) : p.smart() ? int(smartTracks(p.path).size()) : f >= 0 ? lib.folders[f].last - lib.folders[f].first : 0;
+        if (navItem("nav.pl", p.smart() ? smartIcon(p.path) : ICON_LIST, p.name, v == View::List && route.ref == i, std::to_string(count), 32, plFont, i, q.name == p.name && isPlaying()))
             navigate(View::List, i);
     }
     g.unclip();
@@ -478,6 +505,11 @@ void App::drawPlayerbar() {
     }
     x -= 34 + 8;
     if (iconButton(uid("pb.queue"), ICON_QUEUE, x - 17, cy, route.view == View::Queue)) navigate(View::Queue);
+    // The sleep timer: lit while it runs (or stop-after is on, its "End of this track"), the time left beside it.
+    x -= 34 + 8;
+    const double sl = sleepLeft();
+    if (iconButton(uid("pb.sleep"), ICON_MOON, x - 17, cy, sl > 0)) openSleep();
+    if (sl > 0) g.textC(fmtTime(std::ceil(sl)), { css::Xs, Weight::SemiBold }, x - 34 - 4, cy, pal.accentInk, 1, Align::Right);
 }
 
 // ------------------------------------------------------------------ overlays
@@ -494,6 +526,7 @@ bool App::backgroundJob(Job& j) {
         thumbs.progress(made, left);
         if (left > 0) { j = { "Overlay covers", made, made + left, 1 }; return true; }
     }
+    if (store.levelMode && levels.busy()) { j = { "Levelling", std::min(int(levels.count()), n), n, 1 }; return true; }   // short: the count shares the line
     return false;
 }
 
@@ -565,6 +598,37 @@ void App::drawCoverNotice() {
         closeCoverNotice();
     }
     if (later) closeCoverNotice();
+}
+
+/** After the sleep timer: the console goes to sleep when the count reaches 0, unless you stay awake. */
+void App::drawSleepPrompt() {
+    if (sleepPromptAt <= 0) return;
+    const float a = std::clamp(float(time - sleepPromptAt) / 0.25f, 0.f, 1.f);
+    const int left = std::max(0, int(std::ceil(store.sleepConsole - (time - sleepPromptAt))));
+    ui.region(Region::Modal);
+    g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.45f * a);
+    const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
+    const float w = 520, pad = 24, x = (css::W - w) / 2;
+    const std::vector<std::string> lines =
+        g.wrap("The sleep timer has paused the music. The console goes to sleep by itself unless you stay awake.", sf, int(w - pad * 2 - 52), 3);
+    const float h = pad + 26 + 8 + lines.size() * 21.f + 20 + 34 + pad;
+    const float y = (css::H - h) / 2 + (1 - a) * 10;
+    g.roundRect(x, y + 10, w, h, 18, { 0, 0, 0 }, 0.3f * a);
+    g.roundRect(x, y, w, h, 18, pal.surface2, a);
+    g.roundStroke(x, y, w, h, 18, 1, pal.text, 0.1f * a);
+    g.roundRect(x + pad, y + pad, 40, 40, 11, pal.accent, 0.16f * a);
+    g.icon(ICON_MOON, x + pad + 20, y + pad + 20, 20, pal.accentInk, a);
+    const float tx = x + pad + 52;
+    g.text("Going to sleep in " + std::to_string(left), tf, tx, y + pad, pal.text, a, Align::Left, int(w - pad * 2 - 52));
+    float ly = y + pad + 26 + 8;
+    for (const auto& l : lines) { g.text(l, sf, tx, ly, pal.text2, a); ly += 21; }
+    bool sleepNow = false, stay = false;
+    const float by = ly + 20;
+    const float bw = button(uid("sleep.now"), ICON_MOON, "Sleep now", tx, by, true, &sleepNow, false, false, DefaultFocus);
+    button(uid("sleep.stay"), nullptr, "Stay awake", tx + bw + 8, by, false, &stay);
+    if (sleepPromptAt == time) ui.focus(uid("sleep.now"));
+    if (sleepNow) { closeSleepPrompt(); appletRequestToSleep(); }
+    if (stay) closeSleepPrompt();
 }
 
 void App::closeCoverNotice() {

@@ -95,7 +95,8 @@ GfbgState Engine::state() {
     GfbgState s = {};
     s.protocol = GFBG_PROTOCOL;
     // A pause asked for reads as paused at once, though the 40 ms fade is still running.
-    s.status = status_ == GfbgStatus_Playing && pauseAtSilence_ && !autoPausing_ ? GfbgStatus_Paused : status_;
+    // The sleep timer's fade is still playing: Gatefold keeps its spectrum and play button going until it ends.
+    s.status = status_ == GfbgStatus_Playing && pauseAtSilence_ && !autoPausing_ && !sleepFading_ ? GfbgStatus_Paused : status_;
     s.pos = pos_;
     s.track = current();
     s.trackGen = trackGen_;
@@ -123,6 +124,8 @@ GfbgState Engine::state() {
     s.queueBy = queueBy_;
     const struct mallinfo mi = mallinfo();
     s.heapFree = u32(gfHeapSize > size_t(mi.uordblks) ? gfHeapSize - size_t(mi.uordblks) : 0);
+    if (sleepAt_) s.sleepLeft = float(double(sleepAt_ > nowMs() ? sleepAt_ - nowMs() : 0) / 1000.0);
+    s.sleepGen = sleepGen_;
     return s;
 }
 
@@ -192,6 +195,8 @@ void Engine::transport(u32 op, u32 by) {
     static const Cmd::Kind kinds[] = { Cmd::Pause, Cmd::Resume, Cmd::Toggle, Cmd::Stop, Cmd::Next, Cmd::Prev };
     if (op >= sizeof kinds / sizeof *kinds) return;
     Lock l(&m_);
+    // Played again by hand during the sleep fade: awake after all, so the timer is off.
+    if (sleepFading_ && (kinds[op] == Cmd::Resume || kinds[op] == Cmd::Toggle)) { sleepFading_ = false; sleepAt_ = 0; }
     cmds_.push_back({ kinds[op], 0, false, 0, by });
 }
 
@@ -212,6 +217,7 @@ void Engine::setMode(u32 mode, u32 by) {
     Lock l(&m_);
     const s32 cur = current();
     mode_ = mode;
+    lvlTarget_ = levelFor(playing_);   // Auto levels by track while shuffling, by album otherwise
     identityOrder();
     if (mode == GfbgMode_Shuffle) {
         shuffle();
@@ -228,6 +234,62 @@ void Engine::setMode(u32 mode, u32 by) {
 void Engine::setStopAfter(bool on) {
     Lock l(&m_);
     stopAfter_ = on;
+}
+
+/** The levelling gain for a path (linear), as the mode asks: Auto takes the album's but the track's while shuffling. */
+float Engine::levelFor(const std::string& path) const {
+    const u32 mode = cfg_.reserved[0];
+    if (mode == GfbgLevel_Off || gains_.empty() || path.empty()) return 1;
+    const u64 h = gfbgHash(path.data(), path.size());
+    const auto it = std::lower_bound(gains_.begin(), gains_.end(), h, [](const GfbgGain& g, u64 v) { return g.hash < v; });
+    if (it == gains_.end() || it->hash != h) return 1;   // not measured yet: as it is
+    const bool album = mode == GfbgLevel_Album || (mode == GfbgLevel_Auto && mode_ != GfbgMode_Shuffle);
+    return std::pow(10.f, (album ? it->album : it->track) / 20.f);
+}
+
+/** Gatefold rewrites GFBG_GAINS as it measures: its header's generation says when to read it again. */
+void Engine::watchGains() {
+    FILE* f = fopen(GFBG_GAINS, "rb");
+    if (!f) return;
+    GfbgGainsHeader h{};
+    if (fread(&h, sizeof h, 1, f) != 1 || h.magic != GFBG_GAINS_MAGIC || h.count > 100000) { fclose(f); return; }
+    {
+        Lock l(&m_);
+        if (h.gen == gainsGen_) { fclose(f); return; }
+    }
+    std::vector<GfbgGain> g(h.count);
+    const bool ok = fread(g.data(), sizeof(GfbgGain), h.count, f) == h.count;
+    fclose(f);
+    if (!ok) return;
+    Lock l(&m_);
+    gains_.swap(g);
+    gainsGen_ = h.gen;
+    lvlTarget_ = levelFor(playing_);   // the track playing may have its value now: eased in
+}
+
+void Engine::setSleep(float seconds) {
+    Lock l(&m_);
+    // Turned off or moved during the fade: the music comes back up.
+    if (sleepFading_) cmds_.push_back({ Cmd::Resume, 0, false, 0, 0 });
+    sleepFading_ = false;
+    sleepAt_ = seconds > 0 ? nowMs() + u64(double(seconds) * 1000) : 0;
+}
+
+/** Every watch tick: the fade starts SleepFade seconds before the end, then the pause; then the timer is off. */
+void Engine::watchSleep(u64 now) {
+    Lock l(&m_);
+    if (!sleepAt_) return;
+    if (now >= sleepAt_) {
+        sleepAt_ = 0;
+        sleepFading_ = false;
+        sleepGen_++;
+        if (status_ == GfbgStatus_Playing && !pauseAtSilence_) cmds_.push_back({ Cmd::Pause, 0, false, 0.3, 0 });
+        return;
+    }
+    if (!sleepFading_ && status_ == GfbgStatus_Playing && !pauseAtSilence_ && now + u64(SleepFade * 1000) >= sleepAt_) {
+        sleepFading_ = true;
+        cmds_.push_back({ Cmd::Pause, 0, false, double(sleepAt_ - now) / 1000.0, 0 });
+    }
 }
 
 u32 Engine::pcm(float* out) {
@@ -252,6 +314,8 @@ void Engine::setConfig(const GfbgConfig& c) {
         cfg_.fadeOut = std::clamp(cfg_.fadeOut, 0.f, 10.f);
         cfg_.fadeIn = std::clamp(cfg_.fadeIn, 0.f, 10.f);
         cfg_.gameVolume = std::clamp(cfg_.gameVolume, 0.f, 1.f);
+        cfg_.reserved[0] = std::min<u32>(cfg_.reserved[0], GfbgLevel_Auto);
+        lvlTarget_ = levelFor(playing_);   // the levelling mode may have changed: eased to the new gain
         applyGameVolume();   // the default may be the one the game in front uses
     }
     saveConfig();
@@ -368,7 +432,8 @@ void Engine::runCommands() {
             const bool wantPause = c.kind == Cmd::Pause || (c.kind == Cmd::Toggle && pausing);
             autoPaused_ = autoPausing_ = false;
             if (wantPause) {
-                if (status_ == GfbgStatus_Playing) rampTo(0, 0.04f, true);
+                // c.t: a longer fade asked for (the sleep timer); a pause by hand takes 40 ms
+                if (status_ == GfbgStatus_Playing) rampTo(0, float(std::max(0.04, c.t)), true);
             } else if (status_ == GfbgStatus_Stopped) {
                 if (!order_.empty()) { playAtPos(std::max(0, pos_), false, resumeAt_); trackBy_ = c.by; }
             } else {
@@ -434,6 +499,9 @@ bool Engine::load(s32 pos, double start) {
     tailFlushed_ = false;
     playing_ = p;
     coverPath_ = cover;
+    lvl_ = lvlTarget_ = levelFor(p);   // levelled from the first sample, also across a gapless join
+    heardFrames_ = 0;
+    counted_ = false;
     base_ = start > 0.5 ? start : 0;
     outFrames_ = 0;
     resumeAt_ = 0;
@@ -549,7 +617,17 @@ int Engine::produce(s16* out, int frames) {
     while (n < frames && dec_) {
         const int got = rs_.pull(mix_ + n * 2, frames - n);
         n += got;
-        if (got > 0) { Lock l(&m_); outFrames_ += u64(got); }
+        if (got > 0) {
+            Lock l(&m_);
+            outFrames_ += u64(got);
+            heardFrames_ += u64(got);   // what was heard, seeks or not: foo_playcount counts listening time
+            const double dur = dec_->duration;
+            const double need = dur > 0 ? std::min(60.0, dur * 0.9) : 60.0;   // Gatefold's Stats::threshold
+            if (!counted_ && double(heardFrames_) >= need * GFBG_RATE) {
+                counted_ = true;
+                if (plays_.size() < 256) plays_.push_back(playing_);
+            }
+        }
         if (n >= frames) break;
         const int r = dec_->read(decBuf_, 1024);
         if (r > 0) { rs_.push(decBuf_, r); continue; }
@@ -573,7 +651,8 @@ int Engine::produce(s16* out, int frames) {
         if (gain_ < gainTarget_) gain_ = std::min(gainTarget_, gain_ + gainStep_);
         else if (gain_ > gainTarget_) gain_ = std::max(gainTarget_, gain_ - gainStep_);
         vol_ += (volume_ - vol_) * 0.0005f;   // ~40 ms to settle
-        const float g = gain_ * gain_ * (3 - 2 * gain_) * vol_;   // smoothstep: fades start and end softly
+        lvl_ += (lvlTarget_ - lvl_) * 0.00005f;   // ~0.4 s: a gain measured mid-track comes in gently
+        const float g = gain_ * gain_ * (3 - 2 * gain_) * vol_ * lvl_;   // smoothstep: fades start and end softly
         for (int c = 0; c < 2; c++) {
             const float v = mix_[i * 2 + c] * g * 32767.f;
             out[i * 2 + c] = s16(std::lrint(std::clamp(v, -32768.f, 32767.f)));
@@ -810,6 +889,7 @@ void Engine::watchMain(void* self) {
     s32 lastEnd = -1;
     u32 shown = GfbgApp_None;     // the state pause-for-apps last acted on
     u64 launchedPid = 0;          // the game whose launch was acted on: in front again, it is a return from HOME
+    u64 gainsAt = 0;              // the gains file's header is read every 2 s
     int pdmFocus = -1;            // the newest application applet event: 1 in front, 0 not, −1 unknown
     for (;;) {
         svcSleepThread(250'000'000);
@@ -863,6 +943,9 @@ void Engine::watchMain(void* self) {
         const bool due = (e->dirty_ && now - e->dirtyAt_ > 2000) || (e->status_ == GfbgStatus_Playing && now - e->savedAt_ > 30000);
         mutexUnlock(&e->m_);
         if (due) e->saveSession();
+        e->writePlays();
+        e->watchSleep(now);
+        if (now - gainsAt >= 2000) { gainsAt = now; e->watchGains(); }
     }
 }
 
@@ -890,6 +973,7 @@ void Engine::loadFiles() {
         else if (k == "fadeOut") cfg_.fadeOut = std::clamp(float(atof(v)), 0.f, 10.f);
         else if (k == "fadeIn") cfg_.fadeIn = std::clamp(float(atof(v)), 0.f, 10.f);
         else if (k == "gameVolume") cfg_.gameVolume = std::clamp(float(atof(v)), 0.f, 1.f);
+        else if (k == "levelling") cfg_.reserved[0] = u32(std::clamp(atoi(v), 0, 3));
     }
     for (const auto& l : readLines(cfgPath("bg-games.txt"))) {
         const size_t eq = l.find('=');
@@ -931,6 +1015,25 @@ void Engine::loadFiles() {
     rng_ ^= armGetSystemTick();
 }
 
+/** "time<TAB>path" lines for Gatefold (Stats, stats.cpp), which renames the file away to read it. */
+void Engine::writePlays() {
+    mutexLock(&m_);
+    if (plays_.empty()) { mutexUnlock(&m_); return; }
+    std::vector<std::string> plays = std::move(plays_);
+    plays_.clear();
+    mutexUnlock(&m_);
+    u64 t = 0;
+    if (R_FAILED(timeGetCurrentTime(TimeType_UserSystemClock, &t))) t = 0;   // 0: Gatefold dates it when it reads it
+    // Opened and wound to its end rather than with "a": the plays must not depend on append mode.
+    const std::string path = cfgPath("bg-plays.txt");
+    FILE* f = fopen(path.c_str(), "r+b");
+    if (!f) f = fopen(path.c_str(), "wb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    for (const auto& p : plays) fprintf(f, "%llu\t%s\n", (unsigned long long)t, p.c_str());
+    fclose(f);
+}
+
 void Engine::saveSession() {
     std::string out;
     {
@@ -969,6 +1072,7 @@ void Engine::saveConfig() {
     if (FILE* f = fopen(cfgPath("bg-config.txt").c_str(), "wb")) {
         fprintf(f, "onOpen=%d\nonHome=%d\nonClose=%d\nonReturn=%d\nfadeOut=%.2f\nfadeIn=%.2f\ngameVolume=%.3f\n", c.onOpen, c.onHome,
                 c.onClose, c.onReturn, double(c.fadeOut), double(c.fadeIn), double(c.gameVolume));
+        fprintf(f, "levelling=%u\n", unsigned(c.reserved[0]));
         fclose(f);
     }
 }

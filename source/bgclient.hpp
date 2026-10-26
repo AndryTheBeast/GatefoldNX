@@ -24,6 +24,8 @@ struct BgState {
     int sampleRate = 0, channels = 0, codec = 0, bitrate = 0;
     int appState = 0;
     unsigned heapFree = 0;
+    float sleepLeft = 0;     // seconds until the sleep timer pauses the music, 0 off
+    unsigned sleepGen = 0;   // bumps when it runs out
 };
 
 struct BgConfig {
@@ -64,6 +66,9 @@ public:
     void seek(double t, double now);
     void setVolume(float v);
     void setStopAfter(bool on);
+    /** Volume levelling's mode for the player (GfbgLevel, in GfbgConfig.reserved[0]); the gains are a file. */
+    void setLevelMode(int mode);
+    void setSleep(float seconds);
     /** Newest n mono samples at 48 kHz; false when nothing new since the last call. */
     bool pcm(float* out, int n);
     bool config(BgConfig& out);

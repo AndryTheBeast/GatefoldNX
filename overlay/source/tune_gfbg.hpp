@@ -13,6 +13,8 @@ void gfSetConfig(const GfbgConfig& c);
 bool gfGameVolume(GfbgGameVolume* out);
 bool gfState(GfbgState* out);
 void gfSetStopAfter(bool on);
+/** The sleep timer: the music fades out and pauses after this many seconds; 0 off. */
+void gfSetSleep(float seconds);
 void gfFlush();
 
 /** Gatefold's copy of a track's cover for the overlay (GFBG_THUMBS): GFBG_ART² RGB; false when there is none. */
