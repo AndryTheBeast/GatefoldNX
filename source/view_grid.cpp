@@ -27,7 +27,8 @@ GridLayout gridFor(float x, float w) {
 }  // namespace
 
 /** .tile: 10 px padding, 10 px-rounded cover (round for artists), title, subtitle. */
-bool App::tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub) {
+bool App::tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub,
+               const std::vector<int>* quad) {
     const float cover = w - 20;
     const float h = 10 + cover + 8 + 20 + 2 + 18 + 10;
     const bool hit = ui.item(id, { x, y, w, h }, 14);
@@ -35,8 +36,11 @@ bool App::tile(Id id, int coverTrack, float x, float y, float w, bool round, con
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float rad = round ? cover / 2 : 10;
     // Gatefold's shadow under the cover (0 10px 24px -14px) is left out at the user's request, as on Now playing
-    coverBox(coverTrack, x + 10, y + 10, cover, rad);
-    g.roundStroke(x + 10, y + 10, cover, cover, rad, 1, pal.text, 0.09f);
+    if (quad) coverQuad(*quad, x + 10, y + 10, cover, rad);   // it draws its own outline
+    else {
+        coverBox(coverTrack, x + 10, y + 10, cover, rad);
+        g.roundStroke(x + 10, y + 10, cover, cover, rad, 1, pal.text, 0.09f);
+    }
     if (hot && !round) {
         // .tile .cov .play — shown on hover in Gatefold, on focus here
         g.circle(x + 10 + cover - 31, y + 10 + cover - 31, 21, pal.accent);
@@ -132,9 +136,9 @@ void App::drawArtists(float x, float y, float w, float h, bool genre) {
             const int cover = ar.albums.empty() ? ar.tracks[0] : lib.albums[ar.albums[0]].tracks[0];
             std::string sub = std::to_string(ar.tracks.size()) + (ar.tracks.size() == 1 ? " track" : " tracks");
             if (!ar.albums.empty()) sub = std::to_string(ar.albums.size()) + (ar.albums.size() == 1 ? " album" : " albums") + (genre ? " · " + sub : "");
-            // artists are round, as in Gatefold; a genre is shown by the cover of its first album, square
+            // artists are round, as in Gatefold; a genre shows the covers of its first four albums, as Folders does
             if (tile(uid(genre ? "gen.tile" : "art.tile", int(uid(ar.name) & 0x7fffffff)), cover, gl.x0 + c * gl.tileW, headBottom + r * gl.tileH - sa.y,
-                     gl.tileW, !genre, ar.name, sub))
+                     gl.tileW, !genre, ar.name, sub, genre ? &ar.tracks : nullptr))
                 genre ? openGenre(ar.name) : openArtist(ar.name);
         }
     g.unclip();
@@ -146,8 +150,6 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     if (ai < 0) { viewHead(genre ? "Genre" : "Artist", route.query, "Not in the library", x, y, w); return; }
     const Artist& ar = genre ? genres[ai] : artists[ai];
     const int lead = ar.albums.empty() ? ar.tracks[0] : lib.albums[ar.albums[0]].tracks[0];
-    AlbumArt& art = meta.art(lead);
-    const Palette& ap = art.state == AlbumArt::Ready ? art.pal : pal;
 
     const GridLayout gl = gridFor(x, w);
     const float heroH = 26 + 220 + 22;
@@ -159,10 +161,11 @@ void App::drawArtist(float x, float y, float w, float h, bool genre) {
     ui.pushArea(&sa);
     const float oy = y - sa.y;
 
-    g.rectV(x, oy, w, heroH, ap.accent, 0.26f, ap.accent, 0);
+    // Gatefold tints the hero with the cover's accent and haloes the cover; on the console the tint covered
+    // only the content area and clashed with the sidebar and player bar, so the page keeps the app's background.
     const float cx = x + 30, cyTop = oy + 26;
-    g.glow(cx + 110, cyTop + 150, 170, ap.glow, 0.6f);
-    coverBox(lead, cx, cyTop, 220, genre ? 16 : 110);
+    if (genre) coverQuad(ar.tracks, cx, cyTop, 220, 16);
+    else coverBox(lead, cx, cyTop, 220, 110);
 
     const float tx = cx + 220 + 28, tw = w - (tx - x) - 30;
     float ty = cyTop + 220 - 34 - 16 - 22 - 8 - 48 - 6 - 18;

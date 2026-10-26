@@ -145,7 +145,7 @@ void Store::load() {
         else if (k == "hiddenTabs") hiddenTabs = unsigned(atoi(v.c_str())) & 63u;
         else if (k == "theme") { theme = std::clamp(atoi(v.c_str()), 0, 4); if (theme == 2) theme = 1; }   // Grey is no longer offered: Dark
         else if (k == "brightness") brightness = std::clamp(atoi(v.c_str()), 0, 1);
-        else if (k == "saturation") saturation = std::clamp(float(atof(v.c_str())), 0.f, 1.5f);
+        else if (k == "saturation") saturation = std::clamp(float(atof(v.c_str())), 0.f, 1.f);   // was up to 150%, which changed nothing past 100%
         else if (k == "colourTransition") colourTransition = std::clamp(float(atof(v.c_str())), 0.f, 3.f);
         else if (k == "customBg") customBg = atoi(v.c_str());
         else if (k == "customAccent") customAccent = atoi(v.c_str());

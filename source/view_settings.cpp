@@ -126,8 +126,8 @@ void App::drawSettings(float x, float y, float w, float h) {
     auto pct = [](float v) { return std::to_string(int(std::lround(v * 100))) + "%"; };
 
     std::vector<Section> sections;
-    static float satShown, trShown;   // Saturation 0..150% and Colour transition 0..3 s, as the slider's 0..1
-    satShown = store.saturation / 1.5f;
+    static float satShown, trShown;   // Saturation 0..100% and Colour transition 0..3 s, as the slider's 0..1
+    satShown = store.saturation;   // 0..100%: past 100% the palette changes no further
     trShown = store.colourTransition / 3.f;
 
     // Appearance
@@ -190,7 +190,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                        : "For From the cover; Dark and Light keep their own",
                                       "set.bright", brightNames, store.brightness, [this](int i) { store.brightness = i; applyTheme(); });
         const Row saturation = sliderRow("Saturation", std::to_string(int(std::lround(store.saturation * 100))) + "%", "How strongly the cover tints the interface",
-                                         "set.sat", satShown, [this] { store.saturation = std::round(satShown * 1.5f * 100) / 100; applyTheme(); });
+                                         "set.sat", satShown, [this] { store.saturation = std::round(satShown * 100) / 100; applyTheme(); });
         char trV[16];
         snprintf(trV, sizeof trV, "%.1f s", double(store.colourTransition));
         const Row transition = sliderRow("Colour transition", trV, "How long the colours take to follow a new cover", "set.tr", trShown,

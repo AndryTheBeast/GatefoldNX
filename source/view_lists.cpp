@@ -51,8 +51,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     // .pl-head: cover, kicker, title, sub, actions
     const float cx = x + 28, cyTop = oy + 18;
     if (!tracks.empty()) {
-        g.glow(cx + 60, cyTop + 80, 90, pal.glow, 0.35f);
-        coverQuad(tracks, cx, cyTop, 120, 12);   // .pl-cover.quad
+        coverQuad(tracks, cx, cyTop, 120, 12);   // .pl-cover.quad (no halo, as on the other pages)
     } else {
         g.roundRect(cx, cyTop, 120, 120, 12, pal.surface2);
         g.icon(placeholder, cx + 60, cyTop + 60, 40, pal.text3, 0.7f);
@@ -147,8 +146,6 @@ void App::drawAlbum(float x, float y, float w, float h) {
     const int a = routeAlbum();
     if (a < 0) { viewHead("Album", "Not in the library", "Its tags changed or the music folder was rescanned.", x, y, w); return; }
     const Album& al = lib.albums[a];
-    AlbumArt& art = meta.art(al.tracks[0]);
-    const Palette& ap = art.state == AlbumArt::Ready ? art.pal : pal;
 
     ScrollArea& sa = area("album", a);
     const float heroH = 26 + 220 + 22;
@@ -157,10 +154,9 @@ void App::drawAlbum(float x, float y, float w, float h) {
     ui.pushArea(&sa);
     const float oy = y - sa.y;
 
-    // .album-hero::before — the album's own accent, fading down
-    g.rectV(x, oy, w, heroH, ap.accent, 0.26f, ap.accent, 0);
+    // .album-hero::before (the album's accent, fading down) and the cover's halo are left out: on the console the
+    // tint covered only the content area and clashed with the sidebar and player bar. The app's background stays.
     const float cx = x + 30, cyTop = oy + 26;
-    g.glow(cx + 110, cyTop + 150, 170, ap.glow, 0.6f);
     coverBox(al.tracks[0], cx, cyTop, 220, 12);
 
     // h1 + .album-meta + .album-actions, bottom-aligned with the cover

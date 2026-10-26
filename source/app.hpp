@@ -350,7 +350,9 @@ private:
     void drawLibrary(float x, float y, float w, float h);
     void drawArtists(float x, float y, float w, float h, bool genre = false);
     void drawArtist(float x, float y, float w, float h, bool genre = false);
-    bool tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub);
+    /** quad: the four covers of these tracks' first albums (a genre), as Folders shows a folder. */
+    bool tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub,
+              const std::vector<int>* quad = nullptr);
 
     // ================= view_tracks.cpp: the four list views, shared by every list of tracks
     struct ListEntry {
