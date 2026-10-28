@@ -63,3 +63,5 @@ std::string baseName(const std::string& path);
 
 /** Sub-folders of a directory (hidden ones skipped), sorted by name; for the folder picker. */
 std::vector<std::string> listDirs(const std::string& path);
+/** The .m3u / .m3u8 files in a directory (names only), sorted; for + → Import a playlist file. */
+std::vector<std::string> listPlaylistFiles(const std::string& path);

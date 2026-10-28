@@ -14,6 +14,7 @@
 namespace {
 
 const char* const kAudioExt[] = { "flac", "mp3", "ogg", "opus", "wav", "m4a", "m4b", "mp4", "aac", "alac" };
+bool isPlaylistExt(const std::string& ext) { return ext == "m3u" || ext == "m3u8"; }
 const char* const kCoverNames[] = { "cover", "folder", "front", "album", "albumart" };
 const char* const kImageExt[] = { "jpg", "jpeg", "png" };
 
@@ -126,6 +127,7 @@ void Library::build(const std::vector<std::string>& rootList, const std::vector<
     rootFolders.clear();
     tracks.reserve(files.size());
     for (const auto& f : files)
+        if (!isPlaylistExt(extOf(f)))   // a file list remembered by a build that listed them (1.2.0 dev)
         for (const auto& r : roots)
             if (f.size() > r.size() && f.compare(0, r.size(), r) == 0 && f[r.size()] == '/') { tracks.push_back(makeTrack(f, r)); break; }
     std::sort(tracks.begin(), tracks.end(), [](const Track& a, const Track& b) { return pathLess(a.path, b.path); });
@@ -178,6 +180,20 @@ std::vector<std::string> listDirs(const std::string& path) {
             isDir = stat((path + "/" + name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
         }
         if (isDir) out.push_back(name);
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(), pathLess);
+    return out;
+}
+
+std::vector<std::string> listPlaylistFiles(const std::string& path) {
+    std::vector<std::string> out;
+    DIR* d = opendir(path.c_str());
+    if (!d) return out;
+    while (dirent* e = readdir(d)) {
+        const std::string name = e->d_name;
+        if (name.empty() || name[0] == '.' || e->d_type == DT_DIR || !isPlaylistExt(extOf(name))) continue;
+        out.push_back(name);
     }
     closedir(d);
     std::sort(out.begin(), out.end(), pathLess);

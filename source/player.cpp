@@ -30,6 +30,7 @@ bool Player::init() {
     frameBytes_ = (SDL_AUDIO_BITSIZE(fmt) / 8) * ch;
     channels_ = ch;
     float32_ = SDL_AUDIO_ISFLOAT(fmt);
+    eq_ = GfEq(float(rate_));
     instance_ = this;
     Mix_SetPostMix(&Player::postMix, this);
     Mix_HookMusicFinished(&Player::musicFinished);
@@ -46,38 +47,62 @@ void Player::shutdown() {
     instance_ = nullptr;
 }
 
-bool Player::load(const std::string& path, bool paused) {
-    stop();
-    frames_ = 0;
-    if (ffHandles(path)) {
-        if (float32_) return false;   // the hook writes 16-bit samples, which is what Mix_OpenAudio asked for
-        {
-            std::lock_guard<std::mutex> g(ffLock_);
-            if (!ff_.open(path, rate_, channels_)) {
-                SDL_Log("ffmpeg could not open %s", path.c_str());
-                return false;
-            }
+bool Player::load(const std::string& path, bool paused, double fade) {
+    // Opened before anything stops: the file's tables are read while the music still plays.
+    auto d = std::make_unique<FfDecoder>();
+    const bool ff = !float32_ && channels_ == 2 && d->open(path, rate_, channels_);   // the hook writes 16-bit stereo, as asked for
+    if (!ff) {
+        // SDL_mixer's own decoders, for a file FFmpeg cannot open: no crossfade or equalizer there.
+        stop();
+        frames_ = 0;
+        music_ = Mix_LoadMUS(path.c_str());
+        if (!music_) {
+            SDL_Log("Mix_LoadMUS(%s): %s", path.c_str(), Mix_GetError());
+            return false;
         }
-        ffPaused_ = paused;
-        ffEnded_ = false;
-        ffActive_ = true;
-        Mix_HookMusic(&Player::ffHook, this);
+        // Holding the audio lock, so not one buffer plays before a paused start takes effect.
+        SDL_LockAudio();
+        const bool ok = Mix_PlayMusic(music_, 1) == 0;
+        if (ok && paused) Mix_PauseMusic();
+        SDL_UnlockAudio();
+        if (!ok) {
+            SDL_Log("Mix_PlayMusic: %s", Mix_GetError());
+            stop();
+            return false;
+        }
         return true;
     }
-    music_ = Mix_LoadMUS(path.c_str());
-    if (!music_) {
-        SDL_Log("Mix_LoadMUS(%s): %s", path.c_str(), Mix_GetError());
-        return false;
+    if (music_) {
+        Mix_HaltMusic();
+        Mix_FreeMusic(music_);
+        music_ = nullptr;
     }
-    // Holding the audio lock, so not one buffer plays before a paused start takes effect.
-    SDL_LockAudio();
-    const bool ok = Mix_PlayMusic(music_, 1) == 0;
-    if (ok && paused) Mix_PauseMusic();
-    SDL_UnlockAudio();
-    if (!ok) {
-        SDL_Log("Mix_PlayMusic: %s", Mix_GetError());
-        stop();
-        return false;
+    const bool cross = fade > 0.05 && !paused && ffActive_ && !ffPaused_ && !ffEnded_ && cur_;
+    std::unique_ptr<FfDecoder> old1, old2;   // closed after the lock is let go
+    {
+        std::lock_guard<std::mutex> g(ffLock_);
+        if (cross) {
+#ifndef __SWITCH__
+            SDL_Log("crossfade %.2f s into %s", fade, path.c_str());   // the PC preview checks it with this
+#endif
+            old1 = std::move(out_);   // a crossfade still running: that outgoing track just stops
+            out_ = std::move(cur_);
+            fadeLen_ = std::max(1LL, (long long)(fade * rate_));
+            fadeAt_ = 0;
+        } else {
+            old1 = std::move(cur_);
+            old2 = std::move(out_);
+            fadeLen_ = fadeAt_ = 0;
+        }
+        cur_ = std::move(d);
+        frames_ = 0;
+        ffPaused_ = paused;
+        ffEnded_ = false;
+        finished_ = false;
+    }
+    if (!ffActive_) {
+        ffActive_ = true;
+        Mix_HookMusic(&Player::ffHook, this);
     }
     return true;
 }
@@ -88,7 +113,9 @@ void Player::stop() {
         Mix_HookMusic(nullptr, nullptr);   // takes the audio lock, so the hook is not running after this
         ffActive_ = false;
         std::lock_guard<std::mutex> g(ffLock_);
-        ff_.close();
+        cur_.reset();
+        out_.reset();
+        done_.reset();
     }
     if (music_) {
         Mix_HaltMusic();
@@ -97,6 +124,14 @@ void Player::stop() {
     }
     frames_ = 0;
     finished_ = false;   // the SDL_mixer hook also fires on halt; that is not a natural end
+}
+
+void Player::update() {
+    std::unique_ptr<FfDecoder> done;
+    {
+        std::lock_guard<std::mutex> g(ffLock_);
+        done = std::move(done_);
+    }
 }
 
 void Player::togglePause() {
@@ -111,8 +146,11 @@ void Player::seek(double seconds) {
     if (seconds < 0) seconds = 0;
     if (remote()) { bg_->seek(seconds, clockNow()); return; }
     if (ffActive_) {
+        std::unique_ptr<FfDecoder> old;
         std::lock_guard<std::mutex> g(ffLock_);
-        if (ff_.seek(seconds)) { frames_ = (long long)(seconds * rate_); ffEnded_ = false; }
+        old = std::move(out_);   // a seek ends a crossfade: the outgoing track stops
+        fadeLen_ = fadeAt_ = 0;
+        if (cur_ && cur_->seek(seconds)) { frames_ = (long long)(seconds * rate_); ffEnded_ = false; }
         return;
     }
     if (!music_) return;
@@ -139,6 +177,12 @@ void Player::setVolume(float v) {
     Mix_VolumeMusic(int(std::lround(v * MIX_MAX_VOLUME)));
 }
 
+void Player::setEq(const GfbgEq& e) {
+    std::lock_guard<std::mutex> g(eqLock_);
+    eqWant_ = e;
+    eqNew_ = true;
+}
+
 bool Player::latestPcm(float* out, int n) {
     if (remote()) return bg_->pcm(out, n);
     const unsigned w = written_.load();
@@ -148,23 +192,78 @@ bool Player::latestPcm(float* out, int n) {
     return true;
 }
 
-/** Audio thread: FFmpeg-decoded music, with our own pause and volume (SDL_mixer's apply to its own music only). */
+/** The mono mix before volume and the equalizer, for the spectrum (as the background player's). */
+void Player::feedRing(const float* stereo, int frames) {
+    unsigned w = written_.load();
+    for (int i = 0; i < frames; i++) ring_[w++ % Ring] = (stereo[i * 2] + stereo[i * 2 + 1]) * 0.5f;
+    written_ = w;
+}
+
+/**
+ * Audio thread: the FFmpeg voices, mixed. The track playing, plus during a crossfade the one fading out
+ * (equal power: sin in, cos out); then volume, levelling and the equalizer (whose headroom the volume
+ * gives back, gfeq.hpp), as the background player does. SDL_mixer's volume applies to its own music only.
+ */
 void Player::ffHook(void* self, unsigned char* stream, int len) {
     auto* p = static_cast<Player*>(self);
     memset(stream, 0, size_t(len));
-    if (!p->ffActive_ || p->ffPaused_ || p->ffEnded_) return;
+    if (!p->ffActive_ || p->ffPaused_) return;
     std::unique_lock<std::mutex> lk(p->ffLock_, std::try_to_lock);
-    if (!lk.owns_lock()) return;   // a seek is in progress: one buffer of silence
+    if (!lk.owns_lock()) return;   // a load or seek is being made: one buffer of silence
+    if (p->eqNew_) {
+        std::unique_lock<std::mutex> el(p->eqLock_, std::try_to_lock);
+        if (el.owns_lock()) { p->eq_.set(p->eqWant_); p->eqNew_ = false; }
+    }
     auto* out = reinterpret_cast<int16_t*>(stream);
-    const int frames = len / (p->channels_ * 2);
-    const int got = p->ff_.read(out, frames);
-    const float vol = p->volume_.load();
-    if (vol < 0.999f)
-        for (int i = 0; i < got * p->channels_; i++) out[i] = int16_t(out[i] * vol);
-    p->frames_ += got;
-    if (got < frames && p->ff_.atEnd()) {
-        p->ffEnded_ = true;
-        p->finished_ = true;
+    const int frames = len / 4;
+    constexpr int Chunk = 4096;
+    for (int at = 0; at < frames; at += Chunk) {
+        const int n = std::min(Chunk, frames - at);
+        // the track playing
+        int got = 0;
+        if (!p->ffEnded_ && p->cur_) got = p->cur_->read(p->pcmIn_, n);
+        for (int i = 0; i < got * 2; i++) p->mixIn_[i] = p->pcmIn_[i] * (1.f / 32768.f);
+        std::fill(p->mixIn_ + got * 2, p->mixIn_ + n * 2, 0.f);
+        p->frames_ += got;
+        if (got < n && !p->ffEnded_ && p->cur_ && p->cur_->atEnd()) {
+            p->ffEnded_ = true;
+            p->finished_ = true;
+        }
+        // the one fading out
+        if (p->out_) {
+            const int og = p->out_->read(p->pcmIn_, n);
+            for (int i = 0; i < n; i++) {
+                const float t = std::min(1.f, float(p->fadeAt_ + i) / float(p->fadeLen_));
+                const float gin = std::sin(t * float(kPi) / 2), gout = std::cos(t * float(kPi) / 2);
+                const float l = i < og ? p->pcmIn_[i * 2] * (1.f / 32768.f) : 0.f, r = i < og ? p->pcmIn_[i * 2 + 1] * (1.f / 32768.f) : 0.f;
+                p->mixIn_[i * 2] = p->mixIn_[i * 2] * gin + l * gout;
+                p->mixIn_[i * 2 + 1] = p->mixIn_[i * 2 + 1] * gin + r * gout;
+            }
+            p->fadeAt_ += n;
+            if (p->fadeAt_ >= p->fadeLen_ || og < n) {
+                if (!p->done_) p->done_ = std::move(p->out_);   // closed by update(), off the audio thread
+                else p->out_.reset();
+                p->fadeLen_ = p->fadeAt_ = 0;
+            }
+        }
+        p->feedRing(p->mixIn_, n);
+        // levelling, the equalizer, then the volume: last, so it works as with the EQ off (gfeq.hpp)
+        float vol = p->vol_.load(), lv = p->level_.load();
+        const float want = p->volume_.load(), wantLv = p->levelTarget_.load();
+        for (int i = 0; i < n; i++) {
+            lv += (wantLv - lv) * 0.00005f;    // ~0.4 s
+            p->mixIn_[i * 2] *= lv;
+            p->mixIn_[i * 2 + 1] *= lv;
+        }
+        p->level_ = lv;
+        p->eq_.process(p->mixIn_, n);
+        for (int i = 0; i < n; i++) {
+            vol += (want - vol) * 0.0005f;     // ~40 ms to settle
+            p->mixIn_[i * 2] *= vol;
+            p->mixIn_[i * 2 + 1] *= vol;
+        }
+        p->vol_ = vol;
+        for (int i = 0; i < n * 2; i++) out[at * 2 + i] = int16_t(std::lrint(std::clamp(p->mixIn_[i] * 32767.f, -32768.f, 32767.f)));
     }
 }
 
@@ -174,12 +273,11 @@ void Player::postMix(void* self, unsigned char* stream, int len) {
     static thread_local bool moved = false;
     if (!moved) { cores::moveHere(cores::Audio); moved = true; }
     auto* p = static_cast<Player*>(self);
-    const bool sdlPlaying = p->music_ && Mix_PlayingMusic() && !Mix_PausedMusic();
-    const bool ffPlaying = p->ffActive_ && !p->ffPaused_ && !p->ffEnded_;
-    if (!sdlPlaying && !ffPlaying) return;
+    // The FFmpeg hook does its own levelling, equalizer and spectrum; this is for SDL_mixer's music only.
+    const bool sdlPlaying = !p->ffActive_ && p->music_ && Mix_PlayingMusic() && !Mix_PausedMusic();
+    if (!sdlPlaying) return;
     const int frames = len / p->frameBytes_;
-    // Volume levelling: here, after both paths (SDL_mixer's music and the FFmpeg hook) are mixed. Eased
-    // per buffer towards the target; a gain above 1 is clamped (the peak limit keeps that rare).
+    // Volume levelling: eased per buffer towards the target; a gain above 1 is clamped (the peak limit keeps that rare).
     {
         float lv = p->level_.load();
         const float want = p->levelTarget_.load();
@@ -196,7 +294,7 @@ void Player::postMix(void* self, unsigned char* stream, int len) {
             }
         }
     }
-    if (sdlPlaying) p->frames_ += frames;   // the FFmpeg hook counts its own frames
+    p->frames_ += frames;
     // Mono copy for the spectrum. Mix_OpenAudio asked for S16, but read what was granted.
     unsigned w = p->written_.load();
     const int ch = p->channels_;

@@ -420,7 +420,8 @@ Palette paletteFromPixels(const uint8_t* rgba, int w, int h, const PaletteOpts& 
 Palette paletteCustom(const PaletteOpts& in) {
     // theme.js clustersOf: your colours stand in for a cover's, the background the largest
     PaletteOpts o = in;
-    if (o.hasBg) o.mode = PaletteOpts::Auto;
+    // The mode comes from the caller: Auto takes the background as it is (theme.js); Dark or Light make it a
+    // tint, as a cover's main colour is (Gatefold NX: Custom's brightness).
     std::vector<Cluster> cl;
     auto add = [&](const Rgb& c, float share) {
         const Lch l = lchOf(c);

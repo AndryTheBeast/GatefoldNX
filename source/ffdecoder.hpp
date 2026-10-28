@@ -1,7 +1,8 @@
 /*
  * Gatefold NX · ffdecoder.hpp
- * FFmpeg for what SDL_mixer cannot open: M4A/MP4 (AAC, ALAC). Decodes to
- * interleaved 16-bit PCM at a chosen rate and channel count, and reads MP4 tags.
+ * FFmpeg: Gatefold's own player decodes every format through it (player.cpp: AAC, ALAC, FLAC, MP3, Vorbis,
+ * Opus, WAV), to interleaved 16-bit PCM at a chosen rate and channel count. It also reads MP4 tags; ffHandles
+ * names the files whose tags and waveform come from FFmpeg (the others have readers of their own).
  */
 #pragma once
 #include <cstdint>

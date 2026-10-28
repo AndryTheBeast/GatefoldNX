@@ -76,6 +76,7 @@ void reply(void* base, Result rc, const void* out = nullptr, size_t size = 0) {
 
 constexpr Result BadArgs = MAKERESULT(Module_Libnx, LibnxError_BadInput);
 constexpr Result NoSuchCmd = MAKERESULT(Module_Libnx, LibnxError_NotFound);
+constexpr Result QueueTooBig = GFBG_QUEUE_TOO_BIG;
 
 struct Session { Handle h; u32 kind; };
 
@@ -95,7 +96,7 @@ bool handle(Session& s) {
     if ((type != CmifCommandType_Request && type != CmifCommandType_RequestWithContext) || in->magic != CMIF_IN_HEADER_MAGIC) return false;
 
     // The arguments are copied out before the reply overwrites the same TLS.
-    u8 arg[64];
+    u8 arg[160];   // the largest is GfbgEq (116 bytes, protocol 5); TLS holds 0x100 in all
     memcpy(arg, in + 1, sizeof arg);
     const u32 cmd = in->command_id;
     auto sendBuf = [&](size_t& n) -> u8* {
@@ -128,8 +129,7 @@ bool handle(Session& s) {
         size_t n = 0;
         const u8* p = sendBuf(n);
         if (!p) { reply(base, BadArgs); break; }
-        engine.setQueue(p, n, s.kind);
-        reply(base, 0);
+        reply(base, engine.setQueue(p, n, s.kind) ? 0 : QueueTooBig);
         break;
     }
     case GfbgCmd_GetQueue: {
@@ -208,6 +208,18 @@ bool handle(Session& s) {
         float v;
         memcpy(&v, arg, sizeof v);
         engine.setGameVolume(v);
+        reply(base, 0);
+        break;
+    }
+    case GfbgCmd_GetEq: {
+        const GfbgEq e = engine.eq();
+        reply(base, 0, &e, sizeof e);
+        break;
+    }
+    case GfbgCmd_SetEq: {
+        GfbgEq e;
+        memcpy(&e, arg, sizeof e);
+        engine.setEq(e);
         reply(base, 0);
         break;
     }

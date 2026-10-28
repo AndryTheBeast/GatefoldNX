@@ -21,6 +21,8 @@
 namespace cores {
 struct Place { int core, priority; };
 constexpr Place Audio{ 1, 0x2A }, Loader{ 1, 0x2C }, Files{ 1, 0x2D }, Wave{ 1, 0x2E }, Meta{ 2, 0x2E }, Thumbs{ 0, 0x30 }, Loud{ 2, 0x31 }, Loud2{ 1, 0x31 };
+// Files' copying and deleting, and the updater's downloads: mostly waiting on the SD card or the network, below tags
+constexpr Place FileOps{ 2, 0x30 }, Net{ 2, 0x30 };
 
 /** Moves the calling thread there. Where that is not allowed it simply stays where it is. */
 inline void moveHere(Place p) {

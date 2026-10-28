@@ -49,6 +49,22 @@ private:
 // ---------------------------------------------------------------------------
 // Page 1 — Settings
 // ---------------------------------------------------------------------------
+/** The playlist a game event plays (GfbgAct_Playlist): Gatefold's playlists, A picks one. */
+class ActionListGui final : public SysTuneGui {
+public:
+    explicit ActionListGui(int event);
+    tsl::elm::Element *createUI() final;
+
+private:
+    int m_event;
+};
+
+/** Y on the equalizer's Preset: every preset (Gatefold's, yours, Custom), a check on the one in use; A picks it. */
+class EqPresetGui final : public SysTuneGui {
+public:
+    tsl::elm::Element *createUI() final;
+};
+
 class SettingsGui final : public SysTuneGui {
 public:
     /**
@@ -74,6 +90,7 @@ public:
 private:
     // m_frame is owned by Tesla, do NOT delete.
     tsl::elm::List      *m_list         = nullptr;
+    tsl::elm::ListItem  *m_eq_preset    = nullptr;   // Equalizer → Preset: its name, set again after the preset page
     tsl::elm::ListItem  *m_sleep_item   = nullptr;   // Sleep Timer: its time left, refreshed in update()
     int                  m_sleep_step   = 0;         // the choice last made: 0 off, then 15/30/45/60/90 min
     u64                  m_sleep_shown  = ~0ull;     // the minutes shown last

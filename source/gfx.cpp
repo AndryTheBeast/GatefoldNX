@@ -292,6 +292,16 @@ void Gfx::image(SDL_Texture* t, float x, float y, float w, float h, float rad, f
     shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; }, t, &box, &src);
 }
 
+void Gfx::imageStretched(SDL_Texture* t, float x, float y, float w, float h, float rad, float alpha) {
+    if (ghost_) return;
+    if (!t || w <= 0 || h <= 0) return;
+    std::vector<Pt> pts;
+    outline(x, y, w, h, rad, pts);
+    const SDL_FRect box{ x, y, w, h }, src{ 0, 0, 1, 1 };
+    const SDL_Color s = sdl({ 1, 1, 1 }, alpha);
+    shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; }, t, &box, &src);
+}
+
 void Gfx::imageCorners(SDL_Texture* t, float x, float y, float w, float h, const float* rads, float alpha) {
     if (ghost_) return;
     if (w <= 0 || h <= 0) return;
@@ -501,6 +511,48 @@ int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, fl
     return ct->w;
 }
 
+int Gfx::textScroll(const std::string& s, Font f, float x, float y, float boxW, float offset, float fadeL, float fadeR, const Rgb& c, float alpha) {
+    if (s.empty() || alpha <= 0 || ghost_) return 0;
+    if (newBudget_ <= 0 && !textCache_.count(std::to_string(int(f.weight) * 512 + f.size) + ":" + s)) return measure(s, f);
+    Cached* ct = textTexture(s, f);
+    if (!ct || ct->w <= 0) return 0;
+    // A ramp under half a pixel is none: its point would be dropped below as too close to the edge, and the alpha then
+    // ran from 0 at the edge across the whole box (the player bar's title faded out for one frame as it began to move).
+    if (fadeL < 0.5f) fadeL = 0;
+    if (fadeR < 0.5f) fadeR = 0;
+    const float tx0 = x - offset, tw = float(ct->w);
+    const float v0 = std::max(x, tx0), v1 = std::min(x + boxW, tx0 + tw);
+    if (v1 <= v0) return ct->w;
+    // Where the alpha changes: the ends of what shows, and where each edge's ramp begins (mask-image: linear-gradient)
+    float xs[4] = { v0, x + fadeL, x + boxW - fadeR, v1 };
+    int n = 0;
+    float pts[4];
+    for (float p : xs) if (p >= v0 && p <= v1 && (n == 0 || p > pts[n - 1] + 0.01f)) pts[n++] = p;
+    auto alphaAt = [&](float px) {
+        float a = alpha;
+        if (fadeL > 0) a *= std::clamp((px - x) / fadeL, 0.f, 1.f);
+        if (fadeR > 0) a *= std::clamp((x + boxW - px) / fadeR, 0.f, 1.f);
+        return a;
+    };
+    SDL_SetTextureColorMod(ct->tex, 255, 255, 255);
+    SDL_SetTextureAlphaMod(ct->tex, 255);
+    const float top = std::round(y - shiftY_) + shiftY_, bottom = top + ct->h;
+    verts_.clear();
+    idx_.clear();
+    for (int i = 0; i < n; i++) {
+        const SDL_Color col = sdl(c, alphaAt(pts[i]));
+        const float u = std::clamp((pts[i] - tx0) / tw, 0.f, 1.f);
+        verts_.push_back({ { pts[i], top }, col, { u, 0 } });
+        verts_.push_back({ { pts[i], bottom }, col, { u, 1 } });
+        if (i > 0) {
+            const int b = (i - 1) * 2;
+            for (int k : { b, b + 1, b + 2, b + 1, b + 3, b + 2 }) idx_.push_back(k);
+        }
+    }
+    if (!idx_.empty()) SDL_RenderGeometry(r_, ct->tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+    return ct->w;
+}
+
 // Every character goes where its advance puts it (the width the font itself spaces it by, which is what
 // measuring a piece of text gets wrong at its ends); digits in cells as wide as the widest digit's advance,
 // each centred in its cell. A count rising then moves nothing, and the spaces are the font's own.
@@ -591,10 +643,15 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
     bool over = false;   // the last line holds the rest and may need its ellipsis
     for (size_t i = 0; i < words.size(); i++) {
         const int ww = measure(words[i], f);
-        if (line.empty() || lineW + space + ww <= maxW) {
+        bool fits = line.empty() || lineW + space + ww <= maxW;
+        // The summed words run short of the drawn line (a part of a pixel each, kerning): Settings' hints ran 6 px past
+        // their cards' padding. Near the edge the line itself is measured.
+        int exact = -1;
+        if (fits && !line.empty() && lineW + space + ww > maxW - 24) fits = (exact = measure(line + ' ' + words[i], f)) <= maxW;
+        if (fits) {
             if (!line.empty()) { line += ' '; lineW += space; }
             line += words[i];
-            lineW += ww;
+            lineW = exact >= 0 ? exact : lineW + ww;
             continue;
         }
         lines.push_back(line);

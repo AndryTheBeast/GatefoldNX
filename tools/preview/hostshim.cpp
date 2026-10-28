@@ -4,11 +4,15 @@
  * Environment:
  *   GF_ROOT    folder holding sdmc/ (the fake SD card)          default: current folder
  *   GF_ROMFS   the project's romfs/ folder                      default: ../../romfs
- *   GF_SEARCH  text the "keyboard" returns when search opens
+ *   GF_SEARCH  text the "keyboard" returns when it opens; "a|b" answers a, then b
  *   GF_SCRIPT  lines of "<frame> <action> [args]":
  *                press A|B|X|Y|L|R|ZL|ZR|UP|DOWN|LEFT|RIGHT|PLUS|MINUS
  *                hold <button> <frames>   tap <x> <y>   shot <file.bmp>   quit
+ *                touch <x> <y> … release <x> <y>   (a finger held down: a long touch)
+ *                audit <label>   (the D-pad audit of that frame, appended to dpad-audit.txt: App, Ui::audit)
  *                stick <x> <y> <frames>   (the left stick, −1..1, y up)
+ *   GF_JOBS    show the three background jobs (app covers, overlay covers, levelling) as running (shell.cpp)
+ *   GF_BGCFG   show the background player's settings (Settings → Playback, a playlist's Games) as if it were connected
  *   GF_SHOW    show the window (keyboard: arrows, Enter=A, Backspace=B, Space=X,
  *              F=Y, Q/E=L/R, 1/2=ZL/ZR, Tab=Minus, Esc=Plus)
  */
@@ -108,6 +112,7 @@ int hostStat(const char* p, struct stat* s) { return stat(mapPath(p).c_str(), s)
 int hostMkdir(const char* p, int) { return _mkdir(mapPath(p).c_str()); }
 int hostRemove(const char* p) { return remove(mapPath(p).c_str()); }
 int hostRename(const char* a, const char* b) { return rename(mapPath(a).c_str(), mapPath(b).c_str()); }
+int hostRmdir(const char* p) { return _rmdir(mapPath(p).c_str()); }
 TTF_Font* hostOpenFont(const char* p, int size) { return TTF_OpenFont(mapPath(p).c_str(), size); }
 Mix_Music* hostLoadMUS(const char* p) { return Mix_LoadMUS(mapPath(p).c_str()); }
 
@@ -166,6 +171,12 @@ void padUpdate(PadState* p) {
         else if (s.action == "tap" && s.args.size() >= 2) {
             pushFinger(SDL_FINGERDOWN, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
             later.push_back({ "release", s.args });
+        } else if (s.action == "audit" && !s.args.empty()) {   // the D-pad audit of the next frame drawn (App, dpad-audit.txt)
+            std::string label;
+            for (const auto& a : s.args) label += (label.empty() ? "" : " ") + a;
+            _putenv(("GF_AUDIT=" + label).c_str());
+        } else if (s.action == "touch" && s.args.size() >= 2) {   // a finger down that stays (release x y lifts it)
+            pushFinger(SDL_FINGERDOWN, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "release" && s.args.size() >= 2) {
             pushFinger(SDL_FINGERUP, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "stick" && s.args.size() >= 3) {
@@ -196,8 +207,19 @@ HidAnalogStickState padGetStickPos(const PadState*, u32 i) {
 bool appletMainLoop() { return !quitting; }
 
 Result swkbdShow(SwkbdConfig*, char* out, size_t size) {
-    const std::string q = env("GF_SEARCH", "");
-    if (q.empty()) return 1;
+    // "a|b|c": the first time the keyboard opens it answers a, then b, then c (and c again after that)
+    static int asked = 0;
+    const std::string all = env("GF_SEARCH", "");
+    if (all.empty()) return 1;
+    std::string q = all;
+    size_t at = 0;
+    for (int i = 0; i < asked; i++) {
+        const size_t bar = all.find('|', at);
+        if (bar == std::string::npos) break;
+        at = bar + 1;
+    }
+    q = all.substr(at, all.find('|', at) == std::string::npos ? std::string::npos : all.find('|', at) - at);
+    asked++;
     snprintf(out, size, "%s", q.c_str());
     return 0;
 }

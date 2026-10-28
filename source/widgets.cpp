@@ -18,9 +18,9 @@ const char* upperAscii(std::string& s) {
 }
 }  // namespace
 
-bool App::iconButton(Id id, const char* icon, float cx, float cy, bool on, float size, float iconSize) {
+bool App::iconButton(Id id, const char* icon, float cx, float cy, bool on, float size, float iconSize, uint8_t flags) {
     const SDL_FRect r{ cx - size / 2, cy - size / 2, size, size };
-    const bool hit = ui.item(id, r, 9);
+    const bool hit = ui.item(id, r, 9, flags);
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(r.x, r.y, r.w, r.h, 9, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float s = ui.pressed(id) ? iconSize * 0.94f : iconSize;
@@ -29,10 +29,11 @@ bool App::iconButton(Id id, const char* icon, float cx, float cy, bool on, float
 }
 
 float App::button(Id id, const char* icon, const std::string& label, float x, float y, bool primary, bool* clicked, bool toggled, bool danger,
-                  uint8_t flags) {
+                  uint8_t flags, float minW) {
     const Font f{ css::Sm, Weight::SemiBold };
     const float iconW = icon ? 16 + 8 : 0;
-    const float w = 16 + iconW + g.measure(label, f) + 16;
+    const float natural = 16 + iconW + g.measure(label, f) + 16;
+    const float w = std::max(natural, minW);   // a column of buttons one width (Settings › Reset)
     const float h = 34;
     const SDL_FRect r{ x, y, w, h };
     const bool hit = ui.item(id, r, h / 2, flags);
@@ -54,9 +55,9 @@ float App::button(Id id, const char* icon, const std::string& label, float x, fl
     } else {
         g.roundRect(x, y, w, h, h / 2, pal.text, hot ? 0.11f : 0.065f);
         g.roundStroke(x, y, w, h, h / 2, 1, pal.text, 0.15f);
-        if (danger) fg = { 0.93f, 0.45f, 0.42f };   // oklch(0.72 0.17 25)
+        if (danger) fg = dangerInk();
     }
-    float tx = x + 16;
+    float tx = x + 16 + (w - natural) / 2;
     if (icon) { g.icon(icon, tx + 8, y + h / 2, 16, fg); tx += iconW; }
     g.textC(label, f, tx, y + h / 2, fg);
     return w;
@@ -211,6 +212,28 @@ void App::slider(Id id, float x, float cy, float w, float value, float* out) {
     g.circle(tx, cy + 1, 8, { 0, 0, 0 }, 0.25f);
     if (ui.engaged(id)) g.circle(tx, cy, 11, pal.accent);   // picked up with A: ←/→ move it
     g.circle(tx, cy, 7, pal.text);
+}
+
+void App::vslider(Id id, float cx, float top, float h, float value, float* out, Id left, Id right) {
+    ui.item(id, { cx - 16, top - 8, 32, h + 16 }, 10, Slider | Slider2D);
+    // The 14 px thumb travels inside the track, as the flat slider's does.
+    const float travel = h - 14, y0 = top + 7;
+    float v = value;
+    if (const int st = ui.sliderStepY(id)) v = std::clamp(v - st / 24.f, 0.f, 1.f);   // 1 dB a press on a ±12 dB band
+    if (const int st = ui.sliderStep(id)) {
+        // ←/→ hand it on: the next band is picked up straight away
+        if (const Id n = st < 0 ? left : right) { ui.focus(n); ui.engage(n); }
+        ui.useSlide();
+    }
+    if (const float dy = ui.sliderDragY(id); dy >= 0) v = std::clamp(1 - (dy - y0) / travel, 0.f, 1.f);
+    if (out) *out = v;
+    const float mid = y0 + travel * 0.5f, ky = y0 + travel * (1 - v);
+    g.roundRect(cx - 2, top, 4, h, 2, pal.text, 0.16f);
+    g.rect(cx - 7, mid - 0.5f, 14, 1, pal.text, 0.28f);   // 0 dB
+    g.roundRect(cx - 2, std::min(mid, ky), 4, std::fabs(ky - mid), 2, pal.accent);
+    g.circle(cx, ky + 1, 8, { 0, 0, 0 }, 0.25f);
+    if (ui.engaged(id)) g.circle(cx, ky, 11, pal.accent);
+    g.circle(cx, ky, 7, pal.text);
 }
 
 bool App::toggle(Id id, float x, float cy, bool on) {

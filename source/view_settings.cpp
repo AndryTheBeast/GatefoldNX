@@ -8,10 +8,12 @@
  */
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <functional>
 
 #include "app.hpp"
 #include "icons.inc"
+#include "plicons.inc"
 
 #ifndef GF_VERSION
 #define GF_VERSION "1.1.0"
@@ -32,6 +34,8 @@ struct Row {
     // a full-width block instead of label + control (the theme picker, the About header)
     float blockH = 0;
     std::function<void(float x, float y, float w)> block;
+    Id focus = 0;   // its control, for showSetting (buttons; other rows are only scrolled to and lit)
+    bool lifted = false;   // picked up with Move (a sidebar tab): drawn as the queue's held row
 };
 struct Card { std::string kicker; std::vector<Row> rows; };
 struct Section { const char* name; const char* icon; std::vector<Card> cards; };
@@ -61,6 +65,92 @@ float App::segmented(Id id, float rx, float cy, const std::vector<std::string>& 
     return w;
 }
 
+std::string App::eqPresetName(int preset) const {
+    if (preset >= 0 && preset < GFEQ_PRESETS) return kGfEqPresets[preset].name;
+    if (preset >= GFEQ_PRESETS && preset - GFEQ_PRESETS < int(store.eqUser.size())) return store.eqUser[size_t(preset - GFEQ_PRESETS)].name;
+    return "Custom";
+}
+
+void App::saveEqPreset(int into) {
+    std::string name = "My preset " + std::to_string(store.eqUser.size() + 1);
+    if (into >= int(store.eqUser.size())) into = -1;
+    if (into >= 0) name = store.eqUser[size_t(into)].name;   // updated where it is, under its name
+    else if (!keyboard("Name the preset", name, name)) return;
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    for (char& c : name) if (c == '\t') c = ' ';
+    if (name.empty()) return;
+    if (name.size() > 63) name.resize(63);
+    GfEqUser u{};
+    snprintf(u.name, sizeof u.name, "%s", name.c_str());
+    u.preamp = store.eq.preamp;
+    u.bass = store.eq.bass;
+    u.treble = store.eq.treble;
+    for (int b = 0; b < GFEQ_BANDS; b++) u.bands[b] = store.eq.bands[b];
+    int k = into;
+    if (k < 0)
+        for (int i = 0; i < int(store.eqUser.size()); i++) if (name == store.eqUser[size_t(i)].name) k = i;   // the same name: replaced
+    if (k < 0) {
+        if (store.eqUser.size() >= GFEQ_USER_MAX) { toast("That is a hundred presets already: delete one first"); return; }
+        store.eqUser.push_back(u);
+        k = int(store.eqUser.size()) - 1;
+    } else {
+        store.eqUser[size_t(k)] = u;
+    }
+    store.saveEqPresets();
+    GfbgEq e = store.eq;
+    e.preset = int8_t(GFEQ_PRESETS + k);
+    e.edited = 0;
+    setEq(e);
+    ui.focus(uid("set.eqpreset"));   // the Save row goes with the change: without this the focus fell back to Find a setting
+    toast(into >= 0 ? "Updated the preset “" + name + "”" : "Saved the preset “" + name + "”");
+}
+
+void App::renameEqPreset(int k) {
+    if (k < 0 || k >= int(store.eqUser.size())) return;
+    std::string name = store.eqUser[size_t(k)].name;
+    if (!keyboard("Rename the preset", name, name)) return;
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    for (char& c : name) if (c == '\t') c = ' ';
+    if (name.empty()) return;
+    snprintf(store.eqUser[size_t(k)].name, sizeof store.eqUser[size_t(k)].name, "%s", name.c_str());
+    store.saveEqPresets();
+}
+
+void App::deleteEqPreset(int k) {
+    if (k < 0 || k >= int(store.eqUser.size())) return;
+    const std::string name = store.eqUser[size_t(k)].name;
+    confirm(ICON_EQ, "Equalizer", name, "Your preset", "Delete this preset?", "It leaves the preset list. The sound playing now stays as it is, as Custom.",
+            "Delete", [this, k, name] {
+                if (k >= int(store.eqUser.size()) || name != store.eqUser[size_t(k)].name) return;
+                store.eqUser.erase(store.eqUser.begin() + k);
+                store.saveEqPresets();
+                GfbgEq e = store.eq;
+                if (e.preset == GFEQ_PRESETS + k) gfEqMakeCustom(&e);      // the one on: its sound stays, as Custom
+                else if (e.preset > GFEQ_PRESETS + k) e.preset--;           // the ones after it move up
+                setEq(e);
+                ui.focus(uid("set.eqpreset"));   // its rows go with it
+                toast("Deleted the preset “" + name + "”");
+            });
+}
+
+/** The equalizer buttons' short press (player bar, Canvas). */
+void App::toggleEq() {
+    GfbgEq e = store.eq;
+    e.on = !e.on;
+    setEq(e);
+    toast(e.on ? "Equalizer on: " + eqPresetName(e.preset) : std::string("Equalizer off"));
+}
+
+/** A long press on an equalizer button: Settings → Equalizer, its switch focused. */
+void App::openEqualizer() {
+    settingsCat = SetEqualizer;
+    settingsQuery.clear();
+    area("settings.pane").target = area("settings.pane").y = 0;
+    navigate(View::Settings);
+    settingsJump = "Equalizer";   // drawSettings focuses its switch and lights the row, as showSetting does
+    settingsJumpAt = time;
+}
+
 void App::openFindSetting() {
     SwkbdConfig kbd;
     if (R_FAILED(swkbdCreate(&kbd, 0))) {
@@ -81,6 +171,11 @@ void App::openFindSetting() {
 
 void App::drawSettings(float x, float y, float w, float h) {
     const Font labelF{ css::Md, Weight::SemiBold }, hintF{ css::Sm }, valueF{ css::Md };
+    // A category chosen last frame: its page was drawn then, so its first setting is known now
+    if (settingsFocusFirst) {
+        settingsFocusFirst = false;
+        if (const Id first = ui.firstIn(&area("settings.pane"))) ui.focus(first);
+    }
 
     // ------------------------------------------------------------ the rows, by category
     auto toggleRow = [&](const std::string& label, const std::string& hint, const char* key, bool& v) {
@@ -107,13 +202,36 @@ void App::drawSettings(float x, float y, float w, float h) {
                    } };
     };
     auto buttonRow = [&](const std::string& label, const std::string& hint, const char* key, const char* icon, const std::string& text,
-                         std::function<void()> act, bool danger = false) {
-        const float bw = g.measure(text, { css::Sm, Weight::SemiBold }) + 32 + (icon ? 24 : 0);
-        return Row{ label, "", hint, bw, [this, key, icon, text, act, bw, danger](float rx, float cy) {
-                       bool c = false;
-                       button(uid(key), icon, text, rx - bw, cy - 17, false, &c, false, danger);
-                       if (c) act();
-                   } };
+                         std::function<void()> act, bool danger = false, float minW = 0) {
+        const float bw = std::max(minW, float(g.measure(text, { css::Sm, Weight::SemiBold }) + 32 + (icon ? 24 : 0)));
+        Row r{ label, "", hint, bw, [this, key, icon, text, act, bw, danger](float rx, float cy) {
+                  bool c = false;
+                  button(uid(key), icon, text, rx - bw, cy - 17, false, &c, false, danger, 0, bw);
+                  if (c) act();
+              } };
+        r.focus = uid(key);
+        return r;
+    };
+    // Two buttons on one row (the equalizer's Save / Save new): the first is the row's focus
+    struct Btn { const char* key; const char* icon; std::string text; std::function<void()> act; bool danger = false; };
+    auto buttonsRow = [&](const std::string& label, const std::string& hint, std::vector<Btn> btns) {
+        float total = 0;
+        std::vector<float> ws;
+        for (const Btn& b : btns) {
+            ws.push_back(g.measure(b.text, { css::Sm, Weight::SemiBold }) + 32 + (b.icon ? 24 : 0));
+            total += ws.back() + (total > 0 ? 8 : 0);
+        }
+        Row r{ label, "", hint, total, [this, btns, ws, total](float rx, float cy) {
+                  float bx = rx - total;
+                  for (size_t i = 0; i < btns.size(); i++) {
+                      bool c = false;
+                      button(uid(btns[i].key), btns[i].icon, btns[i].text, bx, cy - 17, false, &c, false, btns[i].danger);
+                      if (c) btns[i].act();
+                      bx += ws[i] + 8;
+                  }
+              } };
+        if (!btns.empty()) r.focus = uid(btns[0].key);
+        return r;
     };
     auto infoRow = [&](const std::string& label, const std::string& hint, const std::string& value = {}) {
         // Values are counts that change (tags read, covers ready): fixed-width digits, so they do not jitter.
@@ -134,17 +252,90 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Appearance
     std::vector<Row> sidebarRows;
     {
-        // Settings → Appearance → Sidebar: each tab can be hidden; Now playing and Settings always stay
-        // in the sidebar's order; the bits keep 0.4's meaning (Store::hiddenTabs)
-        static const std::pair<const char*, int> tabs[] = { { "Playlist", 0 }, { "Albums", 5 }, { "Artists", 1 }, { "Genres", 2 }, { "Folders", 4 }, { "Library", 3 } };
-        for (const auto& [name, bit] : tabs)
-            sidebarRows.push_back({ name, "", bit == 0 ? "Now playing and Settings always stay" : "", 40, [this, bit = bit](float rx, float cy) {
-                                       const bool shown = !(store.hiddenTabs & (1u << bit));
-                                       if (toggle(uid("set.tab", bit), rx - 40, cy, shown)) {
-                                           store.hiddenTabs ^= 1u << bit;
-                                           persistSoon(0.3f);
-                                       }
-                                   } });
+        // Settings → Appearance → Sidebar: the tabs in the sidebar's order (store.tabOrder), each shown or hidden with its
+        // switch (Store::hiddenTabs; Now playing always shows) and put in order as a queue row is: Move picks it up, the
+        // D-pad moves it, A or B puts it down (App::grab). The button keeps its id per tab, so the focus moves with it.
+        const Font bf{ css::Sm, Weight::SemiBold };
+        const float mw = g.measure("Move", bf) + 32 + 24;
+        const float rw = 34;   // Remove: a round icon button
+        int lines = 0;
+        for (int i = 0; i < int(store.tabOrder.size()); i++) {
+            const int tab = store.tabOrder[size_t(i)];
+            const unsigned bit = Store::tabBit(tab);
+            const bool held = grab.kind == Grab::Tabs && grab.pos == i;
+            if (Store::isLine(tab)) {   // one of your lines: Move it, or Remove it
+                lines++;
+                // The same columns as the tabs' rows: Move where their Move is, the cross centred where their switch is
+                Row r{ "Line", "", held ? "The D-pad moves it, A puts it down" : "A thin line in the sidebar between the tabs around it",
+                       40 + 16 + mw, [this, tab, i, mw, rw](float rx, float cy) {
+                           bool c = false;
+                           {   // Remove: round, the red cross only (as the playlist page's compact Delete)
+                               const float cx = rx - 20 - rw / 2;
+                               const Id did = uid("set.tabdel", tab);
+                               c = ui.item(did, { cx, cy - 17, 34, 34 }, 17);
+                               const bool hot = ui.pressed(did) || (ui.focused(did) && ui.showFocusRing());
+                               g.roundRect(cx, cy - 17, 34, 34, 17, pal.text, hot ? 0.11f : 0.065f);
+                               g.roundStroke(cx, cy - 17, 34, 34, 17, 1, pal.text, 0.15f);
+                               g.icon(ICON_X, cx + 17, cy, 16, dangerInk());
+                           }
+                           if (c) {
+                               if (i < int(store.tabOrder.size()) && store.tabOrder[size_t(i)] == tab) store.tabOrder.erase(store.tabOrder.begin() + i);
+                               persistSoon(0.3f);
+                               return;
+                           }
+                           button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
+                           if (c) {
+                               grab = Grab{};
+                               grab.kind = Grab::Tabs;
+                               grab.pos = i;
+                               toast("Move it with the D-pad, then press A");
+                           }
+                       } };
+                r.lifted = held;
+                r.minH = 48;
+                sidebarRows.push_back(r);
+                continue;
+            }
+            const char* hint = held                    ? "The D-pad moves it, A puts it down"
+                             : tab == Store::TabNow    ? "Always shown. Settings stays at the bottom"
+                             : tab == Store::TabFiles  ? "The whole SD card: open, rename, copy, move and delete, and what fits each file"
+                                                       : "";
+            Row r{ Store::tabName(tab), "", hint, 40 + 16 + mw, [this, tab, bit, i, mw](float rx, float cy) {
+                      if (bit) {
+                          const bool shown = !(store.hiddenTabs & bit);
+                          if (toggle(uid("set.tab", int(bit)), rx - 40, cy, shown)) {
+                              store.hiddenTabs ^= bit;
+                              persistSoon(0.3f);
+                          }
+                      }
+                      bool c = false;
+                      button(uid("set.tabmove", tab), ICON_SORT_DOWN, "Move", rx - 40 - 16 - mw, cy - 17, false, &c);
+                      if (c) {
+                          grab = Grab{};
+                          grab.kind = Grab::Tabs;
+                          grab.pos = i;
+                          toast("Move it with the D-pad, then press A");
+                      }
+                  } };
+            r.lifted = held;
+            sidebarRows.push_back(r);
+        }
+        // A new line goes in at the end, picked up, so it is placed straight away
+        if (lines < Store::MaxLines) {
+            Row add = buttonRow("Add a line", "Separates the tabs in groups, as you like (up to four)", "set.tabaddline", ICON_PLUS, "Add", [this] {
+                int id = Store::TabLine;
+                while (std::find(store.tabOrder.begin(), store.tabOrder.end(), id) != store.tabOrder.end()) id++;
+                store.tabOrder.push_back(id);
+                persistSoon(0.3f);
+                grab = Grab{};
+                grab.kind = Grab::Tabs;
+                grab.pos = int(store.tabOrder.size()) - 1;
+                toast("Move it with the D-pad, then press A");
+            });
+            sidebarRows.push_back(add);
+        } else {
+            sidebarRows.push_back(infoRow("Add a line", "Four lines at most: remove one to add another"));
+        }
     }
     {
         // Interface colours: Gatefold's cards in one row (From the cover, Dark, Light, Custom). Grey is left out at the
@@ -186,10 +377,15 @@ void App::drawSettings(float x, float y, float w, float h) {
             }
         };
         static const std::vector<std::string> brightNames = { "Dark", "Light" };
-        const Row brightness = segRow("Brightness",
-                                      store.theme == 0 ? "From the cover, on a dark or a light background"
-                                                       : "For From the cover; Dark and Light keep their own",
-                                      "set.bright", brightNames, store.brightness, [this](int i) { store.brightness = i; applyTheme(); });
+        // Custom has its own: Dark, Light, or the background exactly as picked
+        static const std::vector<std::string> customBrightNames = { "Dark", "Light", "As picked" };
+        const Row brightness =
+            store.theme == 4
+                ? segRow("Brightness", "Your colours on a dark or a light background, like a cover's; or your background, moved only as far as text needs to stay readable",
+                         "set.cbright", customBrightNames, store.customMode, [this](int i) { store.customMode = i; applyTheme(); })
+                : segRow("Brightness",
+                         "From the cover, on a dark or a light background",
+                         "set.bright", brightNames, store.brightness, [this](int i) { store.brightness = i; applyTheme(); });
         const Row saturation = sliderRow("Saturation", std::to_string(int(std::lround(store.saturation * 100))) + "%", "How strongly the cover tints the interface",
                                          "set.sat", satShown, [this] { store.saturation = std::round(satShown * 100) / 100; applyTheme(); });
         char trV[16];
@@ -208,7 +404,8 @@ void App::drawSettings(float x, float y, float w, float h) {
         // Custom: your background and two accents, each from the cover playing or a few of Gatefold's own
         std::vector<Row> customRows;
         if (store.theme == 4) {
-            auto chooser = [this](const char* label, const char* key, int* field, bool allowAuto) {
+            // The last swatch opens the colour picker; it shows your own colour, ringed, when it is none of the others.
+            auto chooser = [this](const char* label, const char* hint, const char* key, int* field, bool allowAuto, Rgb shown) {
                 std::vector<int> choices;
                 if (allowAuto) choices.push_back(-1);
                 for (int i = 0; i < coverPal.swatchCount; i++) {
@@ -216,10 +413,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                     choices.push_back(int(std::lround(c.r * 255)) << 16 | int(std::lround(c.g * 255)) << 8 | int(std::lround(c.b * 255)));
                 }
                 for (int v : { 0x16181f, 0xf4f1ea, 0x8fb4ff, 0xff5a6a, 0x4cd6a0, 0xffc857 }) choices.push_back(v);
-                const float cw = choices.size() * 30.f;
-                return Row{ label, "", "", cw, [this, key, field, choices](float rx, float cy) {
+                const float cw = (choices.size() + 1) * 30.f;
+                return Row{ label, "", hint, cw, [this, label, key, field, choices, shown](float rx, float cy) {
+                               const int n = int(choices.size()) + 1;
                                for (int i = 0; i < int(choices.size()); i++) {
-                                   const float sx = rx - (int(choices.size()) - i) * 30;
+                                   const float sx = rx - (n - i) * 30;
                                    const Id id = uid(key, i);
                                    if (ui.item(id, { sx, cy - 13, 26, 26 }, 13)) { *field = choices[i]; applyTheme(); persistSoon(0.3f); }
                                    const int v = choices[i];
@@ -232,15 +430,33 @@ void App::drawSettings(float x, float y, float w, float h) {
                                    const bool on = *field == v, hot = ui.focused(id) && ui.showFocusRing();
                                    if (on || hot) g.roundStroke(sx - 2, cy - 15, 30, 30, 15, on ? 2.f : 1.f, on ? pal.accent : pal.text, on ? 1.f : 0.4f);
                                }
+                               // the picker: a colour wheel, or your own colour in the middle of it
+                               const float sx = rx - 30;
+                               const Id id = uid(key, 99);
+                               if (ui.item(id, { sx, cy - 13, 26, 26 }, 13))
+                                   openColourPicker(field, label, *field >= 0 ? Rgb{ ((*field >> 16) & 255) / 255.f, ((*field >> 8) & 255) / 255.f, (*field & 255) / 255.f } : shown);
+                               const bool own = *field >= 0 && std::find(choices.begin(), choices.end(), *field) == choices.end();
+                               if (SDL_Texture* wheel = wheelTexture()) g.imageStretched(wheel, sx + 1, cy - 12, 24, 24, 0);
+                               if (own) {
+                                   g.circle(sx + 13, cy, 8.5f, { 0, 0, 0 }, 0.35f);
+                                   g.circle(sx + 13, cy, 7, Rgb{ ((*field >> 16) & 255) / 255.f, ((*field >> 8) & 255) / 255.f, (*field & 255) / 255.f });
+                               }
+                               const bool hot = ui.focused(id) && ui.showFocusRing();
+                               if (own || hot) g.roundStroke(sx - 2, cy - 15, 30, 30, 15, own ? 2.f : 1.f, own ? pal.accent : pal.text, own ? 1.f : 0.4f);
                            } };
             };
-            customRows.push_back(chooser("Background", "set.cbg", &store.customBg, true));
-            customRows.push_back(chooser("Accent", "set.cacc", &store.customAccent, false));
-            customRows.push_back(chooser("Second accent", "set.cacc2", &store.customAccent2, true));
+            customRows.push_back(chooser("Background", "Behind every page and the bars", "set.cbg", &store.customBg, true, pal.bg));
+            customRows.push_back(chooser("Accent", "Buttons, sliders and what is playing", "set.cacc", &store.customAccent, false, pal.accent));
+            customRows.push_back(chooser("Second accent", "Where gradients start: the seek bar, the spectrum", "set.cacc2", &store.customAccent2,
+                                         true, pal.accent2));
             customRows.push_back(infoRow("Your colours", "Kept readable: text and an accent too close to the background move only as far as they must. "
-                                                         "A uses the cover's own."));
+                                                         "A uses the cover's own; the colour wheel picks any colour."));
         }
-        std::vector<Card> cards = { { "Interface colours", { themes, brightness, saturation, transition, swatches } } };
+        // Brightness only where it does something: From the cover and Custom (Dark and Light are their own)
+        std::vector<Row> colourRows = { themes };
+        if (store.theme == 0 || store.theme == 4) colourRows.push_back(brightness);
+        for (const Row& r : { saturation, transition, swatches }) colourRows.push_back(r);
+        std::vector<Card> cards = { { "Interface colours", colourRows } };
         if (!customRows.empty()) cards.push_back({ "Custom", customRows });   // only while Custom is chosen
         cards.push_back({ "Layout",
                           { toggleRow("Collapse the sidebar", "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
@@ -266,11 +482,21 @@ void App::drawSettings(float x, float y, float w, float h) {
                               40, [this](float rx, float cy) {
                                   if (toggle(uid("set.bg"), rx - 40, cy, store.background && player.remote())) setBackground(!player.remote());
                               } });
-        if (on && bgs.cfgRead) {
+        if (bgShown()) {
             // Each game event gets an action, like sys-tune's focus options.
-            static const std::vector<std::string> acts = { "Nothing", "Play", "Resume", "Pause" };
-            auto actRow = [&](const std::string& label, const std::string& hint, const char* key, int BgConfig::*field) {
-                return segRow(label, hint, key, acts, bgs.cfg.*field, [this, field](int i) { bgs.cfg.*field = i; bg.setConfig(bgs.cfg); });
+            // Playlist (GfbgAct_Playlist, 4): one of your playlists, chosen on the row under it.
+            static const std::vector<std::string> acts = { "Nothing", "Play", "Resume", "Pause", "Playlist" };
+            auto actRow = [&](const std::string& label, const std::string& hint, const char* key, int BgConfig::*field, int event) {
+                bgRows.push_back(segRow(label, hint, key, acts, std::clamp(bgs.cfg.*field, 0, 4), [this, field, event](int i) {
+                    bgs.cfg.*field = i;
+                    bg.setConfig(bgs.cfg);
+                    if (i == 4 && !bgs.cfg.lists[event]) openActionList(event);   // none yet: choose one now
+                }));
+                if (bgs.cfg.*field != 4) return;
+                const std::string name = listName(bgs.cfg.lists[event]);
+                static const char* keys[4] = { "set.bglist0", "set.bglist1", "set.bglist2", "set.bglist3" };   // ids that outlive the frame
+                bgRows.push_back(buttonRow("Its playlist", name.empty() ? "None chosen yet: until then the music resumes" : name, keys[event],
+                                           ICON_LIST, "Choose", [this, event] { openActionList(event); }));
             };
             // Fades from 0 to 5 s, on a 0..1 slider.
             auto fadeRow = [this](const std::string& label, const char* key, float BgConfig::*field) {
@@ -283,12 +509,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                                if (nv != cur) { bgs.cfg.*field = std::round(nv * 50) / 10; bg.setConfig(bgs.cfg); }
                            } };
             };
-            bgRows.push_back(actRow("When a game opens", "When it starts. Play picks a random folder and shuffles it",
-                                    "set.bgopen", &BgConfig::onOpen));
-            bgRows.push_back(actRow("On the HOME menu", "While a game waits in the background", "set.bghome", &BgConfig::onHome));
-            bgRows.push_back(actRow("Back to the game", "Going back from the HOME menu to a game that never closed", "set.bgreturn",
-                                    &BgConfig::onReturn));
-            bgRows.push_back(actRow("When a game closes", "", "set.bgclose", &BgConfig::onClose));
+            actRow("When a game opens", "When it starts. Play picks a random folder and shuffles it; Playlist plays one of yours",
+                   "set.bgopen", &BgConfig::onOpen, 0);
+            actRow("On the HOME menu", "While a game waits in the background", "set.bghome", &BgConfig::onHome, 1);
+            actRow("Back to the game", "Going back from the HOME menu to a game that never closed", "set.bgreturn", &BgConfig::onReturn, 3);
+            actRow("When a game closes", "", "set.bgclose", &BgConfig::onClose, 2);
+            bgRows.push_back(segRow("Action playlists", bgs.cfg.listStart ? "Shuffled afresh each time a game event plays one"
+                                                                          : "Each carries on at the track and time it was left at",
+                                    "set.bglstart", { "Continue", "Shuffle" }, bgs.cfg.listStart ? 1 : 0, [this](int i) {
+                                        bgs.cfg.listStart = i;
+                                        bg.setConfig(bgs.cfg);
+                                    }));
             bgRows.push_back(fadeRow("Fade out", "set.bgfout", &BgConfig::fadeOut));
             bgRows.push_back(fadeRow("Fade in", "set.bgfin", &BgConfig::fadeIn));
             // The overlay's covers: made for each queue that reaches the player, or for everything here.
@@ -302,18 +533,37 @@ void App::drawSettings(float x, float y, float w, float h) {
                 // lines do not reflow as the count rises.
                 int made = 0, left = 0;
                 thumbs.progress(made, left);
+                // Stop / Resume while some are missing; Make all once every one is made (or none was asked for).
+                const bool stopped = store.stopThumbs;
                 Row covers = buttonRow("Covers for the overlay",
-                                       left > 0 ? "Being made in the background. Keep Gatefold open until it finishes; the card above Settings shows how far"
-                                                : "Made for each queue sent to the player, or for the whole library here",
-                                       "set.bgcovers", ICON_REFRESH, left > 0 ? "Working" : "Make all", [this] {
+                                       stopped ? "Stopped. Only the track playing gets one until you resume"
+                                       : left > 0 ? "Being made in the background. Keep Gatefold open until it finishes; the card above Settings shows how far"
+                                                  : "Made for each queue sent to the player, or for the whole library here",
+                                       "set.bgcovers", stopped ? ICON_PLAY : left > 0 ? ICON_X : ICON_REFRESH,
+                                       stopped ? "Resume" : left > 0 ? "Stop" : "Make all", [this, stopped, left] {
+                                           if (stopped) { setJobStopped(Stoppable::Thumbs, false); return; }
+                                           if (left > 0) { setJobStopped(Stoppable::Thumbs, true); return; }
                                            for (int t = 0; t < int(lib.tracks.size()); t++) thumbFor(t, false);
                                            toast("Making them in the background: the card above Settings shows how far it is");
                                        });
                 covers.value = std::to_string(bgs.coverCount) + " of " + std::to_string(lib.tracks.size());
                 bgRows.push_back(covers);
             }
-            bgRows.push_back(infoRow("Controls outside Gatefold", "The Gatefold overlay in Ultrahand's menu (ZL + ZR + D-pad down unless you changed it)"));
+            bgRows.push_back(infoRow("Controls outside Gatefold", "The Gatefold overlay in Ultrahand's menu (L + D-pad down + R3 unless you changed it)"));
         }
+        // Measured: the count beside the label; Stop / Resume while the library is not all measured.
+        const size_t measured = std::min(levels.count(), lib.tracks.size());
+        const std::string measuredHint =
+            store.levelMode == 0     ? "Starts once levelling is on, with the track playing first"
+            : store.stopLevels       ? "Stopped. Only the track playing and the next ones are measured until you resume"
+            : levels.secondsPerTrack() > 0 ? "In the background while Gatefold is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
+                                     : "In the background while Gatefold is open, the track playing first";
+        Row measuredRow = store.levelMode && (store.stopLevels || measured < lib.tracks.size())
+                              ? buttonRow("Measured", measuredHint, "set.lvlstop", store.stopLevels ? ICON_PLAY : ICON_X,
+                                          store.stopLevels ? "Resume" : "Stop",
+                                          [this] { setJobStopped(Stoppable::Levels, !store.stopLevels); })
+                              : infoRow("Measured", measuredHint);
+        measuredRow.value = std::to_string(measured) + " of " + std::to_string(lib.tracks.size());
         static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat track", "Shuffle" };
         sections.push_back(
             { "Playback", ICON_PLAY,
@@ -341,11 +591,20 @@ void App::drawSettings(float x, float y, float w, float h) {
                                persistSoon(0.3f);
                            },
                            store.levelMode ? 0u : 0x7u),
-                    infoRow("Measured", store.levelMode == 0 ? "Starts once levelling is on, with the track playing first"
-                                        : levels.secondsPerTrack() > 0
-                                            ? "In the background while Gatefold is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
-                                            : "In the background while Gatefold is open, the track playing first",
-                            std::to_string(std::min(levels.count(), lib.tracks.size())) + " of " + std::to_string(lib.tracks.size())) } },
+                    measuredRow } },
+                { "Crossfade",
+                  { segRow("Crossfade", "The end of a track fades into the next one. A track changed by hand fades in 0.3 s; Stop after "
+                                        "this track, Repeat track and a sleep timer's end never fade",
+                           "set.xfade", { "Off", "2", "4", "6", "8", "12 s" },
+                           store.crossfade <= 0 ? 0 : store.crossfade <= 2 ? 1 : store.crossfade <= 4 ? 2 : store.crossfade <= 6 ? 3
+                                                    : store.crossfade <= 8 ? 4 : 5,
+                           [this](int i) {
+                               static const float secs[] = { 0, 2, 4, 6, 8, 12 };
+                               store.crossfade = secs[i];
+                           }),
+                    toggleRow("Not within an album", "Tracks of one album that follow each other keep their join, as live and "
+                                                     "gapless albums need",
+                              "set.xfadealbum", store.xfadeNotInAlbum) } },
                 { "Startup", { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track",
                                          "set.resume", store.resume) } },
                 { "Sleep",
@@ -368,7 +627,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                               "set.awake", store.keepAwake),
                     segRow("Dim the screen", store.keepAwake ? "After this long without input; any button brings it back"
                                                              : "With Keep the console awake on; otherwise the console dims by itself",
-                           "set.dim", { "Never", "1", "2", "5", "10 min" },
+                           "set.dim", { "Off", "1", "2", "5", "10 min" },
                            store.dimAfter <= 0 ? 0 : store.dimAfter <= 1 ? 1 : store.dimAfter <= 2 ? 2 : store.dimAfter <= 5 ? 3 : 4,
                            [this](int i) {
                                static const int mins[] = { 0, 1, 2, 5, 10 };
@@ -379,16 +638,145 @@ void App::drawSettings(float x, float y, float w, float h) {
                 { "Background player", bgRows } } });
     }
 
+    // Equalizer (gfeq.hpp: the same sound in Gatefold's own player and the background player)
+    {
+        auto dbText = [](float v) {
+            char b[16];
+            if (std::fabs(v) < 0.05f) return std::string("0 dB");
+            snprintf(b, sizeof b, "%+.1f dB", double(v));
+            return std::string(b);
+        };
+        // A ±12 dB value on a flat slider, in steps of 0.5 dB
+        auto dbRow = [&](const std::string& label, const std::string& hint, const char* key, float GfbgEq::*field) {
+            return Row{ label, dbText(store.eq.*field), hint, 180, [this, key, field](float rx, float cy) {
+                           const float cur = (store.eq.*field + 12) / 24;
+                           float nv = cur;
+                           slider(uid(key), rx - 180, cy, 180, cur, &nv);
+                           if (nv != cur) {
+                               GfbgEq e = store.eq;
+                               e.*field = std::round((nv * 24 - 12) * 2) / 2;
+                               if (e.preset >= GFEQ_PRESETS) gfEqKeepCustom(&e);   // your preset keeps these too: now an edit of it
+                               setEq(e);
+                           }
+                       } };
+        };
+        const bool adv = store.eq.advanced != 0;
+        const int own = store.eq.preset - GFEQ_PRESETS;   // ≥ 0: one of your saved presets
+        const bool edited = own >= 0 && store.eq.edited;  // ... changed since it was saved
+        const std::string preset = eqPresetName(store.eq.preset) + (edited ? " (edited)" : "");
+        Row onRow{ "Equalizer", "", "Shapes everything Gatefold and the background player play. A strong boost lowers the level a little so it "
+                                   "does not distort: the preamp brings it back up. Also the equalizer button in the player bar and the Canvas: a press turns it on or off, a long press opens this page",
+                   40, [this](float rx, float cy) {
+                       if (toggle(uid("set.eqon"), rx - 40, cy, store.eq.on != 0)) {
+                           GfbgEq e = store.eq;
+                           e.on = !e.on;
+                           setEq(e);
+                       }
+                   } };
+        onRow.focus = uid("set.eqon");
+        Row presetRow = buttonRow("Preset", edited      ? "Changed since you saved it: save the change into it, or as a new preset"
+                                            : own >= 0  ? "Yours: the bands, bass, treble and the preamp as you saved them"
+                                            : store.eq.preset >= 0 ? (store.eq.hasCustom ? "Sets the ten bands; Custom keeps your own curve"
+                                                                                         : "Sets the ten bands")
+                                                                   : "Your own curve, kept when you choose a preset", "set.eqpreset",
+                                  nullptr, preset, [this] { openEqPresets(); });
+        presetRow.value = "";
+        // Under the preset: Save while the curve is your own, Rename and Delete while one of yours is on
+        std::vector<Row> presetRows = { presetRow };
+        const Row saveNew = buttonRow("Save as a new preset", "Keeps this sound, with bass, treble and the preamp, under a name in the preset list",
+                                      "set.eqsave", ICON_PLUS, "Save new", [this] { saveEqPreset(); });
+        if (store.eq.preset < 0) {
+            presetRows.push_back(saveNew);
+        } else if (own >= 0 && own < int(store.eqUser.size())) {
+            if (edited) {   // your preset, changed: into it, or as a new one (one row, two buttons)
+                presetRows.push_back(buttonsRow("Save the change", "Into “" + std::string(store.eqUser[size_t(own)].name) +
+                                                                       "”, or as a new preset under its own name",
+                                                { { "set.equpdate", ICON_CHECK, "Save", [this, own] { saveEqPreset(own); } },
+                                                  { "set.eqsave", ICON_PLUS, "Save new", [this] { saveEqPreset(); } } }));
+            }
+            presetRows.push_back(buttonRow("Rename this preset", "", "set.eqrename", ICON_TAG, "Rename", [this, own] { renameEqPreset(own); }));
+            presetRows.push_back(buttonRow("Delete this preset", "The sound stays as it is, as Custom", "set.eqdelete", ICON_X, "Delete",
+                                           [this, own] { deleteEqPreset(own); }, true));
+        }
+        std::vector<Card> cards;
+        cards.push_back({ "", { onRow,
+                                segRow("Mode", adv ? "The ten bands and a preamp, as well as the preset, bass and treble"
+                                                   : "A preset, bass and treble. Advanced adds the ten bands and a preamp",
+                                       "set.eqmode", { "Simple", "Advanced" }, adv ? 1 : 0,
+                                       [this](int i) {
+                                           GfbgEq e = store.eq;
+                                           e.advanced = uint8_t(i);
+                                           setEq(e);
+                                       }),
+                                } });
+        for (const Row& r : presetRows) cards.back().rows.push_back(r);
+        cards.push_back({ "Tone", { dbRow("Bass", "Below about 100 Hz, under the muddy part, so a boost stays clean", "set.eqbass", &GfbgEq::bass),
+                                    dbRow("Treble", "Above about 10 kHz: air and cymbals", "set.eqtreble", &GfbgEq::treble) } });
+        if (adv) {
+            // The ten bands, upright, with their value above and their frequency below
+            Row bands;
+            bands.blockH = 214;
+            bands.block = [this](float bx, float by, float bw) {
+                static const char* names[GFEQ_BANDS] = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
+                const float col = bw / GFEQ_BANDS, top = by + 30, hh = 150;
+                for (int i = 0; i < GFEQ_BANDS; i++) {
+                    const float cx = bx + col * (i + 0.5f);
+                    const Id id = uid("set.eqband", i);
+                    const float cur = (store.eq.bands[i] + 12) / 24;
+                    float nv = cur;
+                    vslider(id, cx, top, hh, cur, &nv, i > 0 ? uid("set.eqband", i - 1) : 0, i + 1 < GFEQ_BANDS ? uid("set.eqband", i + 1) : 0);
+                    const float v = store.eq.bands[i];
+                    char b[8];
+                    snprintf(b, sizeof b, std::fabs(v) < 0.05f ? "0" : "%+.0f", double(v));
+                    g.textC(b, { css::Xs, Weight::SemiBold }, cx, by + 12, std::fabs(v) < 0.05f ? pal.text3 : pal.accentInk, 1, Align::Center);
+                    g.textC(names[i], { css::Xs }, cx, top + hh + 18, pal.text3, 1, Align::Center);
+                    if (nv != cur) {
+                        GfbgEq e = store.eq;
+                        e.bands[i] = std::round(nv * 24 - 12);
+                        gfEqKeepCustom(&e);   // moved by hand: Custom, kept for the preset sheet
+                        setEq(e);
+                    }
+                }
+            };
+            cards.push_back({ "Bands", { bands, dbRow("Preamp", "Everything louder or quieter, at any volume; past full scale the limiter holds the peaks", "set.eqpre",
+                                                      &GfbgEq::preamp) } });
+        }
+        cards.push_back({ "", { buttonRow("Reset", "Flat, with bass, treble and the preamp at 0 dB", "set.eqreset", ICON_REFRESH, "Reset",
+                                          [this] {
+                                              GfbgEq e = store.eq;
+                                              gfEqApplyPreset(&e, 0);
+                                              e.bass = e.treble = e.preamp = 0;
+                                              setEq(e);
+                                              toast("Equalizer reset to Flat");
+                                          }) } });
+        sections.push_back({ "Equalizer", ICON_EQ, cards });
+    }
+
     // Library
     {
         const int tagged = meta.taggedCount();
         const int done = lib.tracks.empty() ? 100 : tagged * 100 / int(lib.tracks.size());
         std::string roots;
         for (const auto& r : lib.roots) roots += (roots.empty() ? "" : ", ") + r;
+        // Covers ready: the count beside the label; Stop / Resume while the cover cache is being filled.
+        const int n = int(lib.tracks.size()), cached = std::min(meta.coversCached(), n);
+        const bool sweeping = meta.sweepPos() > 0 && meta.sweepPos() < n && cached < n;
+        const std::string coversHint = store.stopCovers ? "Stopped. Covers are still made for what is on screen; Resume caches the rest"
+                                                        : "Small copies of every cover, so lists open with their covers. Made in the background "
+                                                          "after the tags, and for new music after a rescan";
+        Row coversRow = coversHeld && !store.stopCovers && cached < n   // held at launch, or Not now on the covers question
+                            ? buttonRow("Covers ready", "Not made yet: covers are made for what is on screen; Make them caches the rest",
+                                        "set.covstop", ICON_PLAY, "Make them", [this] { appCoverNotice = 2; releaseCovers(); })
+                        : store.stopCovers || sweeping
+                            ? buttonRow("Covers ready", coversHint, "set.covstop", store.stopCovers ? ICON_PLAY : ICON_X,
+                                        store.stopCovers ? "Resume" : "Stop", [this] { setJobStopped(Stoppable::Covers, !store.stopCovers); })
+                            : infoRow("Covers ready", coversHint);
+        coversRow.value = std::to_string(cached) + " of " + std::to_string(n);
         sections.push_back(
             { "Library", ICON_GRID,
               { { "", { buttonRow("Music folder", roots.empty() ? "Not chosen yet" : roots, "set.folder", ICON_FOLDER, "Change",
                                   [this] {
+                                      folderFor = -1;
                                       const size_t s = store.musicRoot.find_last_of('/');
                                       navigate(View::PickFolder, -1,
                                                store.musicRoot.empty() || s <= 5 ? std::string("sdmc:/") : store.musicRoot.substr(0, s));
@@ -396,9 +784,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                         infoRow("Tracks", "Albums and artists come from the tags, however the folders are organised",
                                 std::to_string(lib.tracks.size()) + " · " + std::to_string(lib.albums.size()) + " albums"),
                         infoRow("Tags read", "Kept on the SD card for next time", std::to_string(done) + "%"),
-                        infoRow("Covers ready", "Small copies of every cover, so lists open with their covers. Made in the background "
-                                                "after the tags, and for new music after a rescan",
-                                std::to_string(std::min(meta.coversCached(), int(lib.tracks.size()))) + " of " + std::to_string(lib.tracks.size())),
+                        coversRow,
                         buttonRow("Rescan", "After adding or removing music", "set.rescan", ICON_REFRESH, "Rescan",
                                   [this] { rescan(); toast("Library rescanned: " + std::to_string(lib.tracks.size()) + " tracks"); }),
                         buttonRow("Read all tags again", "Forgets the tag cache and reads every file", "set.forget", nullptr, "Forget",
@@ -408,6 +794,11 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Lyrics
     sections.push_back({ "Lyrics", ICON_QUOTE,
                          { { "", { toggleRow("Lyrics in the Canvas", "Also the quote button in the Canvas", "set.cvlyr", store.canvasLyrics),
+                                   toggleRow("Timing control", "Earlier · 0.0 s · Later above synced lyrics, on Now playing and in the Canvas: "
+                                                               "each track keeps its own. Timings already set still apply when it is off",
+                                             "set.lyrtime", store.lyricTiming),
+                                   segRow("Show it for", "Where the lyrics come from", "set.lyrtimefor", { "Tags", ".lrc files", "Both" },
+                                          store.lyricTimingFor, [this](int i) { store.lyricTimingFor = i; }, store.lyricTiming ? 0u : 0x7u),
                                    infoRow("Where lyrics come from",
                                            "An .lrc file with the track's name next to it, or the LYRICS / USLT tag. Synced lines follow "
                                            "the music; tap one to jump there.") } } } });
@@ -504,26 +895,209 @@ void App::drawSettings(float x, float y, float w, float h) {
                                { "Touch", { infoRow("Touch works everywhere", "Tap, drag lists with momentum, drag the seek bar and the volume") } } } });
     }
 
-    // Storage and reset
-    sections.push_back(
-        { "Storage and reset", ICON_FOLDER,
+    // Storage and reset: where each browser opens (view_storage.cpp), what Gatefold keeps on the card, and the reset
+    std::vector<Row> folderRows, keptRows;
+    {
+        struct F { const char* label; const char* dflt; std::string* field; };
+        const F fs[5] = { { "Files opens in", "The top of the SD card", &store.filesDir },
+                          { "Importing playlists opens in", "The top of the SD card; then, while Gatefold is open, where you last picked one",
+                            &store.importDir },
+                          { "Exporting playlists opens in", "The music folder's Playlists folder (or the music folder); then where you last exported",
+                            &store.exportDir },
+                          { "The cover picker opens in", "The track's own folder (Change the cover… in the track menu)", &store.coverDir },
+                          { "Backups go to", "sdmc:/config/gatefold-nx-backups (Settings › Updates makes one before each install)", &store.backupDir } };
+        static const char* chooseKeys[5] = { "set.dir0", "set.dir1", "set.dir2", "set.dir3", "set.dir4" };
+        static const char* defaultKeys[5] = { "set.dirdef0", "set.dirdef1", "set.dirdef2", "set.dirdef3", "set.dirdef4" };
+        for (int i = 0; i < 5; i++) {
+            std::string* field = fs[i].field;
+            std::vector<Btn> btns = { { chooseKeys[i], ICON_FOLDER, "Choose", [this, i] { chooseFolder(i); } } };
+            if (!field->empty())
+                btns.push_back({ defaultKeys[i], nullptr, "Default", [this, field] {
+                                    field->clear();
+                                    persistSoon(0.3f);
+                                    toast("Back to its own default");
+                                } });
+            folderRows.push_back(buttonsRow(fs[i].label, field->empty() ? std::string(fs[i].dflt) : *field, btns));
+        }
+        struct K { const char* label; const char* hint; };
+        const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (config/gatefold-nx/art)" },
+                          { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
+                          { "Loudness measurements", "Volume levelling's measurements of each track (loudness.tsv, gains.bin)" },
+                          { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv)" },
+                          { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
+                          { "Downloads", "Release zips kept from an install that did not finish (updates)" } };
+        static const char* clearKeys[6] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5" };
+        for (int i = 0; i < 6; i++) {
+            Row r = buttonRow(ks[i].label, ks[i].hint, clearKeys[i], ICON_X, "Clear", [this, i] { clearStorage(i); }, true);
+            r.value = storageValue(i);
+            keptRows.push_back(r);
+        }
+    }
+    // Storage (the SD card: where browsers open, Files, what Gatefold keeps); Reset is its own category after Updates
+    sections.push_back({ "Storage", ICON_FOLDER,
+                         { { "Where browsers open", folderRows },
+                           { "Files", { toggleRow("Show hidden files", "Names that start with a dot, in Files", "set.hidden", store.showHidden) } },
+                           { "Kept on the SD card", keptRows } } });
+    // Reset's buttons are one column, one width (the user, 2026-10-28: Reset sat narrower than Back up, Restore and Choose)
+    float resetW = 0;
+    for (const char* t : { "Back up", "Restore", "Reset", "Choose" }) resetW = std::max(resetW, float(g.measure(t, { css::Sm, Weight::SemiBold })) + 32 + 24);
+    Section resetSection{ "Reset", ICON_REFRESH,
           { { "", { infoRow("Saved in", std::string(Store::Dir) + ": settings, playlists, Liked, where you left off and the tag cache. "
                                                                   "Saved as you change things, so closing from the HOME menu loses nothing."),
-                    buttonRow("Reset settings", "Colours, visualizer, Canvas and playback options. Your music folder, playlists and Liked stay.",
-                              "set.reset", ICON_REFRESH, "Reset",
-                              [this] {
-                                  Store fresh;
-                                  fresh.musicRoot = store.musicRoot;
-                                  fresh.playlists = store.playlists;
-                                  fresh.liked = store.liked;
-                                  store = fresh;
-                                  volumeShown = store.volume;
-                                  player.setVolume(volumeShown);
-                                  applyTheme();
+                    buttonRow("Back up the settings now", "A copy of all of it in " + backupRoot() + ", to put back below",
+                              "set.backupnow", ICON_HISTORY, "Back up", [this] {
                                   persistNow();
-                                  toast("Settings reset");
-                              },
-                              true) } } } });
+                                  Store::flush();
+                                  // On the worker, in the progress stack: the folder can hold far more than Gatefold's own
+                                  // files (a folder copied in by hand), and copying them on the main thread froze the app
+                                  if (!startFileWork("Backing up the settings", backupRoot(), false, [this, root = backupRoot()](FileWork& w) {
+                                          w.total = 0;
+                                          const std::string b = updater.backupNow(root, "by hand");
+                                          if (b.empty()) w.result = "Could not back up the settings";
+                                          else w.result = "Backed up in " + b.substr(b.find_last_of('/') + 1);
+                                      }, [this] { backupsAt = storage.at = -100; }))
+                                      return;
+                                  fileWork.cat = SetReset;
+                              }, false, resetW),
+                    buttonRow("Reset settings", "Every setting as it came, the background player's too. Your music folder, playlists, Liked, "
+                                                "tag edits, covers and saved presets stay",
+                              "set.reset", ICON_REFRESH, "Reset", [this] { resetSettings(); }, true, resetW),
+                    buttonRow("Factory reset", "Erase what you choose, your playlists, Liked and statistics among them, or everything, as if Gatefold were newly installed. Your music files and backups stay",
+                              "set.factory", ICON_X, "Choose", [this] { openFactory(); }, true, resetW) } } } };
+
+    // Updates (view_updates.cpp, updater.hpp): off until allowed; then releases with their changelogs, install or go back
+    {
+        std::vector<Card> cards;
+        const std::string me = Updater::thisVersion();
+        Row onRow{ "Updates", "", store.updates ? "Gatefold goes online only when you check, install or go back (and when it starts, if you turn "
+                                                  "that on), to GitHub and nowhere else"
+                                                : "Off: Gatefold never connects to the internet. On, it can look for new versions on GitHub, "
+                                                  "show what changed, install one, or go back to an earlier one",
+                   40, [this](float rx, float cy) {
+                       if (toggle(uid("set.updon"), rx - 40, cy, store.updates != 0)) {
+                           if (store.updates) {
+                               store.updates = 0;
+                               updater.cancel();
+                               persistSoon(0.3f);
+                               toast("Updates off: Gatefold does not go online");
+                           } else {
+                               allowUpdates();   // asks first, saying what going online means
+                           }
+                       }
+                   } };
+        onRow.focus = uid("set.updon");
+        std::vector<Row> top = { onRow };
+        if (store.updates) {
+            top.push_back(toggleRow("Check when Gatefold starts", "A newer version is announced once, at the bottom of the screen", "set.updstart",
+                                    store.updateAtStart));
+            std::string hint;
+            if (updater.busy()) hint = updateStatus();
+            else if (!updater.error.empty()) hint = "Last try: " + updater.error;
+            else if (updater.checkedAt) {
+                char b[64];
+                const time_t t = time_t(updater.checkedAt);
+                strftime(b, sizeof b, "Last checked %d %b, %H:%M", localtime(&t));
+                const int n = updater.newer();
+                hint = std::string(b) + (n >= 0 ? " · " + updater.releases[size_t(n)].version + " is out" : " · up to date");
+            } else hint = "Lists every release below, with what changed";
+            const bool busy = updater.busy();
+            top.push_back(buttonRow("Check for updates", hint, "set.updcheck", busy ? ICON_X : ICON_REFRESH, busy ? "Stop" : "Check", [this, busy] {
+                if (busy) updater.cancel();
+                else checkUpdates(false);
+            }));
+        }
+        top.push_back(infoRow("This version", "The app, the background player and the overlay come from one release and are updated together. "
+                                              "Background player: " + std::string(player.remote() ? "connected" : "not connected (off, missing, or of another version)"),
+                              me + " · protocol " + std::to_string(Updater::thisProtocol())));
+        cards.push_back({ "", top });
+        // Installed, waiting for a restart: the background player (if its file changed), then Gatefold
+        const UpdInstalled& ins = updater.installed;
+        if (!ins.version.empty() && (ins.appPending || ins.bgChanged || ins.overlayPending || ins.fresh)) {
+            std::string what = ins.appPending ? "Gatefold " + ins.version + " starts when this one closes" : "Gatefold is " + ins.version;
+            if (ins.bgChanged) what += "; the background player restarts with it (the music stops for a moment)";
+            if (ins.overlayPending) what += "; the overlay is replaced once Ultrahand lets go of it (close the Gatefold overlay)";
+            if (ins.fresh) what += "; your settings are cleared (they are in the backup)";
+            Row fin = buttonRow("Restart to finish", what, "set.updfinish", ICON_REFRESH, "Restart now", [this] { finishUpdate(); });
+            fin.value = ins.from + " to " + ins.version;
+            cards.push_back({ "Installed", { fin } });
+        }
+        // Every release: Details opens its changelog and Install / Go back
+        if (store.updates || !updater.releases.empty()) {
+            std::vector<Row> rel;
+            for (int i = 0; i < int(updater.releases.size()); i++) {
+                const UpdRelease& r = updater.releases[size_t(i)];
+                const int cmp = Updater::compare(r.version, me);
+                char mb[24];
+                snprintf(mb, sizeof mb, "%.1f MB", double(r.zipSize) / (1024.0 * 1024.0));
+                const std::string hint = r.date + " · " + (cmp > 0 ? "newer" : cmp < 0 ? "earlier" : "this version") + " · " + mb +
+                                         (r.manifest ? "" : " · without in-app updates");
+                const float bw = g.measure("Details", { css::Sm, Weight::SemiBold }) + 32;
+                Row row{ "Gatefold NX " + r.version, "", hint, bw, [this, i, bw](float rx, float cy) {
+                            bool c = false;
+                            button(uid("set.updrel", i), nullptr, "Details", rx - bw, cy - 17, false, &c);
+                            if (c) openRelease(i);
+                        } };
+                row.focus = uid("set.updrel", i);
+                if (cmp == 0) row.value = "· installed";
+                rel.push_back(row);
+            }
+            if (rel.empty()) rel.push_back(infoRow("No releases listed yet", "Check for updates reads them from GitHub"));
+            cards.push_back({ "Releases", rel });
+        }
+        cards.push_back({ "Backups", { infoRow("Before every install", "Gatefold backs up your settings first. They are put back from Settings › Reset") } });
+        sections.push_back({ "Updates", ICON_DOWNLOAD, cards });
+    }
+    // Reset: the backups (made by hand, before each install, before a restore) are listed here and put back from here,
+    // between Back up and the two red ones, last: Reset settings and Factory reset
+    {
+        std::vector<Row>& first = resetSection.cards[0].rows;
+        const std::vector<Row> resetRows(first.end() - 2, first.end());
+        first.erase(first.end() - 2, first.end());
+        {
+            std::vector<Row> bk = { infoRow("Your backups", "Made by hand above, and before every install. Kept in " + backupRoot() +
+                                                                " (Settings › Storage chooses where new ones go)") };
+            const std::string pend = updater.restorePending();
+            if (!pend.empty())
+                bk.push_back(buttonRow("A restore waits", "When Gatefold closes: " + pend, "set.updrestx", ICON_X, "Cancel", [this] {
+                    updater.cancelRestore();
+                    toast("The restore is cancelled");
+                }));
+            const auto& list = updateBackups();
+            for (int i = 0; i < int(list.size()) && i < 20; i++) {
+                const UpdBackup& b = list[size_t(i)];
+                const float bw = resetW;
+                Row row{ b.name, "", b.note, bw, [this, i, bw](float rx, float cy) {
+                            bool c = false;
+                            button(uid("set.updbk", i), ICON_HISTORY, "Restore", rx - bw, cy - 17, false, &c, false, false, 0, bw);
+                            if (c && i < int(backupsShown.size())) restoreBackup(backupsShown[size_t(i)]);
+                        } };
+                row.focus = uid("set.updbk", i);
+                bk.push_back(row);
+            }
+            resetSection.cards.push_back({ "Backups", bk });
+        }
+        resetSection.cards.push_back({ "", resetRows });
+    }
+    sections.push_back(resetSection);
+
+#ifdef GF_DEV
+    // Debug: dev builds only (the Makefile's DEV), never in a release: the testing tools
+    sections.push_back(
+        { "Debug", ICON_BOLT,
+          { { "Testing",
+              { toggleRow("Frame times", "A graph of the last two seconds of frames: green is on time, red took longer than a "
+                                         "sixtieth of a second, the white part is the app's own work",
+                          "set.frametimes", store.frameTimes),
+                buttonRow("1-minute sleep timer", "The end of the sleep timer without the wait: the fade, the pause and the card",
+                          "set.sleep1", ICON_MOON, sleepLeft() > 0 && sleepChoice == 9 ? "Running" : "Start", [this] {
+                              stopAfterCurrent = false;
+                              setSleep(60.0, 9);
+                              toast("The music pauses in 1 minute");
+                          }),
+                infoRow("Background player memory", "Free on its heap (1.5 MB in all). A crossfade needs 320 KB of it for the second "
+                                                    "track, else the join stays gapless",
+                        player.remote() ? std::to_string(bg.state().heapFree / 1024) + " KB" : std::string("Not connected")) } } } });
+#endif
 
     // About
     {
@@ -541,23 +1115,36 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back(
             { "About", ICON_INFO,
               { { "", { head } },
-#ifdef GF_DEV   // dev builds only (the Makefile's DEV)
-                { "Diagnostics",
-                  { toggleRow("Frame times", "A graph of the last two seconds of frames: green is on time, red took longer than a "
-                                             "sixtieth of a second, the white part is the app's own work",
-                              "set.frametimes", store.frameTimes) } },
-#endif
+                { "Tour", { buttonRow("Take the tour", "Every part of Gatefold on its own screens, with examples: about 30 short steps, in chapters",
+                                      "set.tour", ICON_SPARKLE, "Start", [this] { startTour(); }) } },
                 { "Credits",
                   { infoRow("Gatefold", "The design, colours, icons and app icon. © Gatefold contributors, MIT licence"),
                     infoRow("Inter", "The typeface. © The Inter Project Authors, SIL Open Font Licence"),
-                    infoRow("FFmpeg", "AAC and ALAC decoding. LGPL 2.1"),
+                    infoRow("FFmpeg", "Decoding in Gatefold's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
-                    infoRow("libFLAC, mpg123, Opus, Tremor", "FLAC, MP3, Opus and Ogg Vorbis decoding. BSD and LGPL licences"),
+                    infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
+                    infoRow("libcurl and zlib", "Updates: the connection to GitHub, over the console's own secure connection. curl and zlib licences"),
                     infoRow("libnx and devkitPro", "The Nintendo Switch homebrew toolchain. ISC licence"),
                     infoRow("Background player", "Helix AAC decoder (RealNetworks RPSL), minimp3 (CC0), dr_flac (public domain), and "
                                                  "the overlay is built on sys-tune's, with libultrahand (GPL 2)") } } } });
     }
+    // Storage goes with Library (your music, then where it and Gatefold's own files are): built later, placed after it
+    {
+        auto st = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Storage"; });
+        if (st != sections.end()) {
+            Section s = std::move(*st);
+            sections.erase(st);
+            auto li = std::find_if(sections.begin(), sections.end(), [](const Section& x) { return std::string(x.name) == "Library"; });
+            sections.insert(li == sections.end() ? sections.end() : li + 1, std::move(s));
+        }
+    }
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);
+    // Pages that read the SD card do it once when they open: Storage and reset's sizes, Updates' backups
+    if (settingsCat != settingsCatSeen_) {
+        settingsCatSeen_ = settingsCat;
+        if (settingsCat == SetStorage && time - storage.at > 60) storage.at = -100;   // sizes kept a minute (a Clear measures again)
+        if (settingsCat == SetReset) backupsAt = -100;
+    }
 
     // ------------------------------------------------------------ left column
     const float lx = x + 24, lw = 214;
@@ -578,21 +1165,24 @@ void App::drawSettings(float x, float y, float w, float h) {
                 1, Align::Left, int(lw - 50));
         cy += 38 + 12;
     }
+    // Eleven categories and more (Updates; Debug in dev builds) sit a little closer, so About stays above the player bar
+    const float step = sections.size() > 12 ? 33 : sections.size() > 10 ? 36 : 40, catH = step - 2;   // 13: a dev build's Debug
     for (int i = 0; i < int(sections.size()); i++) {
         const Id id = uid("set.cat", i);
         const bool on = settingsQuery.empty() && settingsCat == i;
-        if (ui.item(id, { lx, cy, lw, 38 }, 10, on ? DefaultFocus : 0)) {
+        if (ui.item(id, { lx, cy, lw, catH }, 10, on ? DefaultFocus : 0)) {
             settingsCat = i;
             settingsQuery.clear();
             area("settings.pane").target = area("settings.pane").y = 0;
+            settingsFocusFirst = true;   // the page's first setting takes the focus (the user: as an artist's page does)
         }
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-        if (on) g.roundRect(lx, cy, lw, 38, 10, pal.accent, 0.14f);
-        else if (hot) g.roundRect(lx, cy, lw, 38, 10, pal.text, 0.065f);
-        g.icon(sections[i].icon, lx + 12 + 9, cy + 19, 18, on ? pal.accentInk : pal.text2);
-        g.textC(sections[i].name, { css::Base, Weight::SemiBold }, lx + 12 + 18 + 12, cy + 19, on ? pal.accentInk : hot ? pal.text : pal.text2, 1,
+        if (on) g.roundRect(lx, cy, lw, catH, 10, pal.accent, 0.14f);
+        else if (hot) g.roundRect(lx, cy, lw, catH, 10, pal.text, 0.065f);
+        g.icon(sections[i].icon, lx + 12 + 9, cy + catH / 2, 18, on ? pal.accentInk : pal.text2);
+        g.textC(sections[i].name, { css::Base, Weight::SemiBold }, lx + 12 + 18 + 12, cy + catH / 2, on ? pal.accentInk : hot ? pal.text : pal.text2, 1,
                 Align::Left, int(lw - 50));
-        cy += 40;
+        cy += step;
     }
 
     // ------------------------------------------------------------ right pane
@@ -663,6 +1253,23 @@ void App::drawSettings(float x, float y, float w, float h) {
             const Laid& l = laid[i];
             const Row& r = *l.r;
             if (i > 0) g.rect(px + pad, ry, innerW, 1, pal.text, 0.09f);
+            if (r.lifted) {   // held to be moved: lifted, the accent around it (the queue's Move)
+                g.roundRect(px + 8, ry + 4, pw - 16, l.h - 8, 12, pal.accent, 0.14f);
+                g.roundStroke(px + 8, ry + 4, pw - 16, l.h - 8, 12, 2, pal.accent, 0.95f);
+            }
+            // showSetting: for its first frames the page scrolls to the row and focuses its control; the row is lit
+            // in the accent and fades over a second and a half.
+            if (settingsQuery.empty() && !settingsJump.empty() && r.label == settingsJump) {
+                const double since = time - settingsJumpAt;
+                if (since < 0.15) {
+                    sa.target = ry - y + sa.y - 90;
+                    sa.clamp();
+                    if (r.focus) ui.focus(r.focus);
+                }
+                const float lit = float(std::clamp(1.0 - (since - 0.5) / 1.2, 0.0, 1.0));
+                if (lit > 0) g.roundRect(px + 8, ry + 4, pw - 16, l.h - 8, 12, pal.accent, 0.16f * lit);
+                else settingsJump.clear();
+            }
             {   // every row registers, even scrolled out of view: the D-pad scrolls by moving focus onto it
                 if (r.block) {
                     r.block(px + pad, ry + 8, innerW);

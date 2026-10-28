@@ -162,6 +162,30 @@ bool gfState(GfbgState* out) { if (!open) return false; flush(); return R_SUCCEE
 void gfSetStopAfter(bool on) { if (open) gfbgSetStopAfter(&srv, on); }
 void gfSetSleep(float seconds) { if (open) gfbgSetSleep(&srv, seconds); }
 void gfFlush() { flush(); }
+bool gfEq(GfbgEq* out) { return open && R_SUCCEEDED(gfbgGetEq(&srv, out)); }
+void gfSetEq(const GfbgEq& e) { if (open) gfbgSetEq(&srv, &e); }
+
+std::vector<std::string> gfPlaylistNames() {
+    std::vector<std::string> out;
+    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    if (!f) return out;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] != '#') continue;   // a track: only the names are wanted here
+        size_t n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        if (n > 1) out.emplace_back(line + 1, n - 1);
+    }
+    fclose(f);
+    return out;
+}
+
+std::string gfPlaylistName(u64 hash) {
+    if (!hash) return {};
+    for (const auto& n : gfPlaylistNames())
+        if (gfbgHash(n.data(), n.size()) == hash) return n;
+    return {};
+}
 
 bool gfLoadThumb(const char* trackPath, std::vector<u8>& rgb) {
     // map.tsv changes while Gatefold works through a queue, so it is read again each time: a few
@@ -353,6 +377,8 @@ Result tuneEnqueue(const char* path, TuneEnqueueType type) {
 Result tuneRemove(u32 index) {
     ensureQueue();
     if (index >= q.order.size()) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    // The track at pos is the one playing: the player would carry on with it while pos moved on (Gatefold keeps it too)
+    if (s32(index) == q.pos) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     const s32 gone = q.order[index];
     q.order.erase(q.order.begin() + index);
     q.paths.erase(q.paths.begin() + gone);

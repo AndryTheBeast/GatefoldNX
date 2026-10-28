@@ -66,7 +66,10 @@ bool Levels::poll() {
         if (found_.empty() && !(fileRead_ && !loaded_)) return false;
         got.swap(found_);
         if (fileRead_ && !loaded_) { file.swap(fromFile_); read = true; }
-        for (double s : took_) { measuredS_ += s; measuredN_++; }
+        for (double s : took_) {
+            if (lastDone_ >= 0 && s - lastDone_ < 30) { measuredS_ += s - lastDone_; measuredN_++; }
+            lastDone_ = std::max(lastDone_, s);
+        }
         took_.clear();
     }
     if (read) {
@@ -77,6 +80,19 @@ bool Levels::poll() {
     if (!got.empty()) dirty_ = true;
     gen_++;
     return true;
+}
+
+void Levels::forget() {
+    {
+        std::lock_guard<std::mutex> g(m_);
+        known_.clear();
+        found_.clear();
+        allAt_ = 0;
+    }
+    map_.clear();
+    dirty_ = true;
+    gen_++;
+    wake_.notify_all();
 }
 
 std::string Levels::serialise() {
@@ -123,6 +139,14 @@ void Levels::loadFile() {
     wake_.notify_all();
 }
 
+void Levels::pause(bool p) {
+    {
+        std::lock_guard<std::mutex> g(m_);
+        paused_ = p;
+    }
+    wake_.notify_all();
+}
+
 void Levels::run(int) {
     std::unique_lock<std::mutex> g(m_);
     while (!quit_) {
@@ -132,7 +156,7 @@ void Levels::run(int) {
         bool background = false;
         for (const auto& p : first_)
             if (!known_.count(p)) { path = p; break; }
-        while (path.empty() && allAt_ < all_.size()) {
+        while (path.empty() && !paused_ && allAt_ < all_.size()) {
             const std::string& p = all_[allAt_++];
             if (!known_.count(p)) { path = p; background = true; }
         }
@@ -144,9 +168,7 @@ void Levels::run(int) {
         if (background) busy_++;
         g.unlock();
         loud::Meter::Result r;
-        const auto t0 = std::chrono::steady_clock::now();
         const bool ok = loud::measureFile(path, r, &quit_);
-        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         g.lock();
         if (background) busy_--;
         if (quit_) break;
@@ -164,7 +186,7 @@ void Levels::run(int) {
                 for (int i = from; i < loud::Bins; i++) kept += r.hist.n[size_t(i)];
             }
             l.blocks = float(kept);
-            took_.push_back(took);
+            if (background) took_.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
         }
         found_.emplace_back(path, l);
     }

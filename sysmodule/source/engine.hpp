@@ -16,6 +16,7 @@
 
 #include "decoder.hpp"
 #include "gfbg.h"
+#include "gfeq.hpp"
 #include "resampler.hpp"
 
 class Engine {
@@ -25,7 +26,7 @@ public:
     // ---- IPC (any thread)
     void hello(u32 kind, u64 pid);
     GfbgState state();
-    void setQueue(const u8* data, size_t size, u32 by);
+    bool setQueue(const u8* data, size_t size, u32 by);   // false: no room on the heap for it
     size_t queueBytes();
     void getQueue(u8* out, size_t cap);
     void playAt(s32 pos, bool paused, double start, u32 by);
@@ -41,10 +42,12 @@ public:
     void trackInfo(GfbgTrackInfo* out);
     GfbgGameVolume gameVolume();
     void setGameVolume(float v);
+    GfbgEq eq();
+    void setEq(const GfbgEq& e);
 
 private:
     // AutoResume and PlayFade come from the game events: t is their fade-in.
-    struct Cmd { enum Kind { PlayAt, Toggle, Pause, Resume, Stop, Next, Prev, Seek, AutoResume, PlayFade } kind; s32 pos; bool paused; double t; u32 by; };
+    struct Cmd { enum Kind { PlayAt, Toggle, Pause, Resume, Stop, Next, Prev, Seek, AutoResume, PlayFade } kind; s32 pos; bool paused; double t; u32 by; double start = 0; };
 
     Mutex m_;
     std::deque<Cmd> cmds_;
@@ -69,13 +72,20 @@ private:
     u64 outFrames_ = 0;        // 48 kHz frames made since base_
     u64 inFlight_ = 0;         // frames handed to audout and not played yet
     double resumeAt_ = 0;      // where a restored, stopped queue starts
-    float volume_ = 1;
+    float volume_ = 0.5f;      // first run: half, as Gatefold's
     float gain_ = 0, gainTarget_ = 1, gainStep_ = 1;   // per output frame
-    float vol_ = 1;            // volume_ as applied, eased so a slider drag never crackles
+    float vol_ = 0.5f;          // volume_ as applied, eased so a slider drag never crackles
     bool pauseAtSilence_ = false, autoPausing_ = false, autoPaused_ = false;
     bool tailFlushed_ = false;  // the resampler's tail is out: the track is really over
     bool flush_ = false;        // drop the buffers audout holds (a seek, a track picked by hand)
     std::string playing_;      // the path loaded now
+    // ---- crossfade (cfg_.crossfade): the track fading out (out*) while the one loaded fades in, equal power
+    std::unique_ptr<Decoder> outDec_;
+    Resampler outRs_;
+    bool outTail_ = false;
+    u64 xfLen_ = 0, xfAt_ = 0;   // 48 kHz frames: the fade's length, and how far it is
+    bool xfChecked_ = false;     // this track's end was looked at
+    float outMix_[2048 * 2];
     // Play statistics: a track heard long enough (Gatefold's Stats::threshold) is counted once per
     // play, and the watch thread appends it to bg-plays.txt for Gatefold to take in.
     u64 heardFrames_ = 0;
@@ -91,7 +101,8 @@ private:
     u32 ringAt_ = 0, serial_ = 0;
 
     // ---- pause-for-apps
-    GfbgConfig cfg_{ GfbgAct_Pause, GfbgAct_Resume, GfbgAct_Resume, GfbgAct_Resume, 1.5f, 2.f, 1.f, {} };
+    // First-run defaults, as Gatefold's BgConfig (the user, 2026-10-28): nothing on game events, a 2 s fade out
+    GfbgConfig cfg_{ GfbgAct_Nothing, GfbgAct_Nothing, GfbgAct_Nothing, GfbgAct_Nothing, 2.f, 2.f, 1.f, {}, 0.f, GfbgXfade_NotInAlbum, GfbgListStart_Continue, 0, {} };
     // Game volume (aud:a): per program id, applied when a game comes up.
     std::vector<std::pair<u64, float>> gameVolumes_;
     u64 appPid_ = 0, appProgram_ = 0;   // the application now, when it is not Gatefold
@@ -108,6 +119,12 @@ private:
     float levelFor(const std::string& path) const;   // m_ held
     void watchGains();                                // the watch thread, without the lock
 
+    // ---- the equalizer (gfeq.hpp): set under m_, run by produce under m_
+    GfbgEq eqCfg_ = gfEqDefault();
+    GfEq eqDsp_{ float(GFBG_RATE) };
+    u32 eqGen_ = 0;
+    u64 eqSaveAt_ = 0;   // nowMs() when bg-config.txt is written: a slider dragged sends many, the card gets one
+
     // ---- the sleep timer: the music fades out over its last seconds (SleepFade) and pauses
     static constexpr double SleepFade = 10;
     u64 sleepAt_ = 0;          // nowMs() when it runs out, 0 off
@@ -118,6 +135,7 @@ private:
     // ---- persistence
     bool dirty_ = false;
     u64 dirtyAt_ = 0, savedAt_ = 0;
+    u32 edits_ = 0;            // bumps when the queue's paths or order change: a save that sees it move starts again later
 
     // queue helpers (m_ held)
     int count() const { return int(offs_.size()); }
@@ -132,6 +150,13 @@ private:
     static void watchMain(void* self);
     void runCommands();
     bool load(s32 pos, double start);
+    /** The bookkeeping of a track loaded (load, crossfadeInto); false, with pos_ moved on, when d is null. */
+    bool adopt(s32 pos, std::unique_ptr<Decoder> d, const std::string& p, const std::string& cover, double start);
+    /** The next track's position if this track's end may crossfade into it (next(true)'s rules), else −1. */
+    s32 crossfadeNextPos(double left) const;
+    /** Starts fading into pos over fade seconds; false (nothing changed) when it cannot: no memory to spare,
+     *  the file did not open, or (albumRule) it is the next track of the same album. Unlocks m_ to open it. */
+    bool crossfadeInto(s32 pos, double fade, bool albumRule);
     void playAtPos(s32 pos, bool paused, double start);
     void next(bool natural);
     void prev();
@@ -144,6 +169,13 @@ private:
     void gameEvent(u32 state, bool fresh);   // the game opened (fresh) or came back, went to HOME, or quit: cfg_'s action
     void act(u8 action);             // m_ held
     bool playRandomFolder();         // GfbgAct_Play; scans the SD card, so m_ is not held
+    bool playPlaylist(u64 hash);     // GfbgAct_Playlist: that one of Gatefold's playlists (GFBG_PLAYLISTS); m_ not held
+    // Each action playlist's place (its track and time) when another queue took over, for GfbgListStart_Continue.
+    struct Place { u64 hash; double at; std::string path; };
+    std::vector<Place> places_;
+    u64 listHash_ = 0;               // the queue now is this action playlist (0: anything else)
+    void rememberPlace();            // m_ held
+    void savePlaces();
 
     // files
     void loadFiles();

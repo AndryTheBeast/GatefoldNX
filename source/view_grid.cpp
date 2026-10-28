@@ -29,10 +29,10 @@ GridLayout gridFor(float x, float w) {
 
 /** .tile: 10 px padding, 10 px-rounded cover (round for artists), title, subtitle. */
 bool App::tile(Id id, int coverTrack, float x, float y, float w, bool round, const std::string& title, const std::string& sub,
-               const std::vector<int>* quad) {
+               const std::vector<int>* quad, uint8_t flags) {
     const float cover = w - 20;
     const float h = 10 + cover + 8 + 20 + 2 + 18 + 10;
-    const bool hit = ui.item(id, { x, y, w, h }, 14);
+    const bool hit = ui.item(id, { x, y, w, h }, 14, flags);
     const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
     if (hot) g.roundRect(x, y, w, h, 14, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
     const float rad = round ? cover / 2 : 10;
@@ -108,8 +108,12 @@ void App::drawAlbumGrid(float x, float y, float w, float h, float headBottom) {
             const int i = r * gl.cols + c;
             if (i >= int(albumOrder.size())) break;
             const Album& al = lib.albums[albumOrder[i]];
-            if (tile(uid("lib.tile", int(uid(al.key) & 0x7fffffff)), al.tracks[0], gl.x0 + c * gl.tileW, headBottom + r * gl.tileH - sa.y, gl.tileW, false,
-                     al.title, al.artist))
+            const Id tid = uid("lib.tile", int(uid(al.key) & 0x7fffffff));
+            // The first album is where the page opens (not the sort button above it); Up from the top row goes to
+            // the sort button, which the layout put out of reach from the left (the search field was nearer)
+            if (r == 0) ui.link(tid, 0, -1, sid);
+            if (tile(tid, al.tracks[0], gl.x0 + c * gl.tileW, headBottom + r * gl.tileH - sa.y, gl.tileW, false, al.title, al.artist, nullptr,
+                     i == 0 ? DefaultFocus : 0))
                 openAlbum(albumOrder[i]);
         }
     g.unclip();

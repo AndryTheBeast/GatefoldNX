@@ -72,7 +72,7 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> &amp; <a 
 - 🎶 **Your own playlists**, made with + in the sidebar or from the track menu. They can be renamed and deleted.
 - ✨ **Smart playlists** (+ in the sidebar → Smart playlist…), as in Gatefold 1.4: Recently added, Most played, Recently played, Forgotten favourites, Never played, a genre, a decade, long tracks. Each has one setting, shows how many tracks match before you create it, and keeps itself up to date.
 - 📊 **Play statistics.** A track counts as played after a minute (or nearly all of a shorter one), in Gatefold and in the background player. Plays, last played and date added show in the track's Details. They are kept by Gatefold; your files are not changed.
-- 🧾 **Editing the queue.** On the Playlist view and in Up next, the track menu has Play next, Move (the row is picked up and the D-pad moves it) and Remove, and Clear empties the queue but for the track playing.
+- 🧾 **Editing the queue.** On the Playlist view and in Up next, the track menu has Play next, Move (the row is picked up and the D-pad moves it) and Remove, and Clear empties the queue, the track playing too.
 - 🔍 **Search** with the console keyboard (Y): title, artist, album and path.
 - 🔄 **Resume where you left off**: the queue comes back after a restart, paused at the same place.
 
@@ -109,7 +109,7 @@ Press **+** on any track, or ⋯ on Now playing:
 
 An optional sysmodule plays the music outside Gatefold: on the HOME menu, during games, and after Gatefold is closed. While it runs it does all the playback and Gatefold becomes its remote, so closing Gatefold never interrupts the song.
 
-- 🎵 AAC (M4A) with its own small decoder (Helix), plus MP3, FLAC and WAV, gapless, at its own volume.
+- 🎵 M4A (AAC) with its own small decoder (Helix), plus MP3 and FLAC, gapless, at its own volume.
 - 🎮 **Game actions.** For *Game Opens*, *HOME Menu*, *Back to the Game* and *Game Closes*, choose Nothing, Play (a random folder of your music, shuffled), Resume or Pause, each with a fade. A fresh launch and a return from HOME are told apart, so going HOME and back never reshuffles.
 - 🔊 **Per-game volume.** The game running now keeps its own music volume, and every other game shares one.
 - 💾 **The queue is kept** across restarts (`bg-session.txt`).
@@ -123,7 +123,7 @@ An optional sysmodule plays the music outside Gatefold: on the HOME menu, during
 - **Player page:** the cover, title and artist, a seek bar (A picks it up, so the D-pad never scrubs by accident), and shuffle / previous / play / next / repeat.
 - **Settings page** (D-pad right): Gatefold's queue, browse and play a folder, the music volume, the running game's volume (shown under the game's own name), the volume for every other game, the game actions and their fades, the sleep timer, and stop after this track. With shuffle on, a folder played or added is shuffled.
 
-Open it with Ultrahand's combo (ZL + ZR + D-pad down unless you changed it).
+Open it with Ultrahand's combo (L + D-pad down + R3, a click of the right stick, unless you changed it).
 
 | Player | Queue, browse and volumes | Game actions | The queue |
 |:---:|:---:|:---:|:---:|
@@ -166,6 +166,8 @@ Download `GatefoldNX-<version>.zip` from [Releases](../../releases/latest) and u
 | `atmosphere/contents/4200000047464E58/toolbox.json` | lets sysmodule managers list it |
 | `switch/.overlays/Gatefold.ovl` | 🧩 the overlay |
 
+🙈 **Can't find the overlay?** `switch/.overlays` is a hidden folder (its name starts with a dot): macOS and many phone file and zip apps hide it, and some leave it out when copying. Copy the whole `switch` and `atmosphere` folders from the zip, and on a Mac press ⌘ ⇧ . in Finder to see hidden folders. The overlay shows up in **Ultrahand**, which must be installed.
+
 The SD-card layout is in `dist/` once built. **Restart the console** after installing or updating the background player, because sysmodules load at boot.
 
 ▶️ **Launch Gatefold by holding R while starting a game** (title override). Applet mode, from the Album, has too little memory and no keyboard.
@@ -176,8 +178,9 @@ The app and the overlay work without the background player. Without it, or with 
 
 ## 🎼 Formats
 
-- **In Gatefold:** M4A / MP4 (AAC, ALAC) through FFmpeg, and FLAC, MP3, Ogg Vorbis, Opus and WAV through SDL_mixer.
-- **In the background player:** AAC, MP3, FLAC and WAV.
+**Supported: MP3, M4A (AAC) and FLAC.** These are the formats Gatefold is tested with, in the app and in the background player.
+
+- **Every other format is unsupported.** Some of them may play (WAV; in Gatefold only, also ALAC, Ogg Vorbis and Opus), but they are not tested. If you run into a problem with one, you can still [open an issue](https://github.com/AndryTheBeast/GatefoldNX/issues).
 - **Covers:** embedded art, your own cover from the track menu, or `cover` / `folder` / `front` (.jpg, .png) in the track's folder.
 - **Lyrics:** an `.lrc` (or `.txt`) file with the track's name beside it, or the LYRICS / USLT tag.
 
@@ -229,7 +232,7 @@ The preview is a dev build; `DEV=0` before `bash tools/preview/build.sh` builds 
 
 ## ⚠️ Known limits
 
-- **Background player formats:** ALAC, Ogg Vorbis and Opus play in Gatefold only; the background player skips them.
+- **Formats:** only MP3, M4A and FLAC are supported and tested. Others may play but are untested; the background player skips ALAC, Ogg Vorbis and Opus.
 - **Not ported:** Gatefold's sound analysis (AI moods and radio), YouTube, and online cover and lyrics lookup.
 - **Scripts:** CJK text uses the console's own fonts; scripts outside them will not render.
 - **MP3 durations:** VBR MP3s without a Xing header get an estimated duration.

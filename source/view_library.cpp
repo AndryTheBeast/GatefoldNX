@@ -60,14 +60,6 @@ int filedCompare(const std::string& a, const std::string& b) {
     return strcasecmp(filedFrom(a), filedFrom(b));
 }
 
-struct FolderTiles { int cols; float w, cover, h; };
-FolderTiles folderTilesFor(float w) {
-    const float inner = w - 32;
-    const int cols = std::max(2, int(inner / 200));
-    const float tw = inner / cols, cover = tw - 16;
-    return { cols, tw, cover, 8 + cover + 10 + 20 + 18 + 16 };
-}
-
 }  // namespace
 
 // ============================================================ Tracks: sorting and filtering
@@ -359,25 +351,34 @@ void App::drawFoldersTab(float x, float y, float w, float h, float top) {
     if (clicked && !all.empty()) playTracks(all, 0, "Music");
     bx += button(uid("lfo.shuffle"), ICON_SHUFFLE, "Shuffle", bx, top, false, &clicked) + 8;
     if (clicked && !all.empty()) playTracks(all, 0, "Music", true);
-    g.icon(ICON_FOLDER, x + w - 28 - g.measure(node.path, { css::Sm, Weight::SemiBold }) - 14, top + 17, 15, pal.text2);
-    g.textC(node.path, { css::Sm, Weight::SemiBold }, x + w - 28, top + 17, pal.text2, 1, Align::Right);
-
-    const float lt = top + 34 + 14;
-    const FolderTiles ft = folderTilesFor(w);
-    ScrollArea& sa = area("lib.folders");
-    sa.view = { x, lt, w, y + h - lt };
-    const int n = int(node.children.size()), rows = (n + ft.cols - 1) / ft.cols;
-    sa.content = rows * ft.h + 24;
-    ui.pushArea(&sa);
-    g.clip(x, lt, w, y + h - lt);
-    for (int r = 0; r < rows; r++) {
-        const float ry = lt + r * ft.h - sa.y;
-        if (ry + ft.h < lt - 40 || ry > y + h + 40) continue;
-        for (int c = 0; c < ft.cols && r * ft.cols + c < n; c++) {
-            const int f = node.children[r * ft.cols + c];
-            if (folderTile(uid("lfo.tile", f), f, x + 16 + c * ft.w, ry, ft.w, ft.cover)) navigate(View::Folders, f);
+    // the music folder itself as one playlist, as on its Folders page
+    const int pl = store.playlistByPath(node.path);
+    bx += button(uid("lfo.addpl"), pl >= 0 ? ICON_LIST : ICON_PLUS, pl >= 0 ? "In playlists" : "Add as playlist", bx, top, false, &clicked, pl >= 0) + 8;
+    if (clicked) {
+        if (pl >= 0) {
+            confirmRemoveFolderPlaylist(pl, node.last - node.first);
+        } else {
+            const std::string as = store.freePlaylistName("Music");
+            store.playlists.push_back({ as, node.path, {} });
+            toast("Added “" + as + "” to playlists");
+            store.save();
         }
     }
+    if (!node.children.empty()) {
+        bx += button(uid("lfo.addall"), ICON_PLUS, "Add all as playlists", bx, top, false, &clicked) + 8;
+        if (clicked) addSubfoldersAsPlaylists(root);
+    }
+    // the views, as Folders' for a folder of sub-folders (by album would repeat the tiles); the same saved choice
+    int m = store.viewFolders == 0 ? 2 : store.viewFolders;
+    viewSwitch("lfo.view", x + w - 28, top + 17, m, 1u);
+    if (m != (store.viewFolders == 0 ? 2 : store.viewFolders)) store.viewFolders = m;
+
+    const float lt = top + 34 + 14;
+    ScrollArea& sa = area("lib.folders");
+    sa.view = { x, lt, w, y + h - lt };
+    ui.pushArea(&sa);
+    g.clip(x, lt, w, y + h - lt);
+    sa.content = drawSubfolders("lfo.tile", node, x, lt - sa.y, w, lt, y + h - lt, ListMode(m)) + 24;
     g.unclip();
     ui.popArea();
 }

@@ -231,15 +231,34 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
         " \uE0E2 Remove All " + ult::DIVIDER_SYMBOL +
         " \uE0B6 Set As Startup", true));
 
-    m_items.reserve(count);
-
     // Jump target: only meaningful when source == Playlist (indicator would
     // be shown) — otherwise we leave the list at the top.
     const bool   inPlaylistCtx = (play_ctx::source() == play_ctx::Source::Playlist);
     const char  *cp            = play_ctx::currentPath();
     std::string  current_label;
 
-    for (u32 i = 0; i < count; ++i) {
+    // At most kWindow tracks, around the one playing (else from the top), with a line saying which
+    constexpr u32 kWindow = 200;
+    m_start = 0;
+    u32 shown = count;
+    if (count > kWindow) {
+        u32 at = 0;
+        if (inPlaylistCtx && cp[0] != '\0')
+            for (u32 i = 0; i < count; ++i)
+                if (!strcasecmp(saved[i].c_str(), cp)) { at = i; break; }
+        m_start = at > kWindow / 4 ? std::min(at - kWindow / 4, count - kWindow) : 0;
+        shown = kWindow;
+        const std::string note = "Tracks " + std::to_string(m_start + 1) + "-" + std::to_string(m_start + shown) + " of " +
+                                 std::to_string(count) + " " + ult::DIVIDER_SYMBOL + " Gatefold Shows Them All";
+        m_list->addItem(new tsl::elm::CustomDrawer([note](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32 h) {
+            const auto tw = r->getTextDimensions(note, false, 15).first;
+            r->drawString(note, false, x + (w - s32(tw)) / 2, y + 20, 15, tsl::offTextColor);
+        }), 32);
+    }
+    m_first = count > kWindow ? 2 : 1;
+    m_items.reserve(shown);
+
+    for (u32 i = m_start; i < m_start + shown; ++i) {
         const std::string &full_path = saved[i];
 
         TitleArtist ta = readTitleArtist(full_path.c_str());
@@ -259,7 +278,8 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
 
         item->setClickListener([this, item](u64 keys) -> bool {
             const auto index      = this->m_list->getIndexInList(item);
-            const auto tune_index = index - 1;  // subtract 1 for the header
+            const auto row        = index - this->m_first;                 // its place among the items shown
+            const auto tune_index = s32(this->m_start) + row;             // … and in the queue
 
             // ---- A: play / toggle / context-switch -------------------------
             if (keys & HidNpadButton_A) {
@@ -300,6 +320,14 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
 
             // ---- Y: remove this item from saved playlist -------------------
             } else if (keys & KEY_Y) {
+                // The track playing stays, as in Gatefold's own queue: removed here, the player carried on with it while
+                // its place in the queue (and so the title and cover shown) moved on to the next one
+                if (play_ctx::source() == play_ctx::Source::Playlist && play_ctx::currentPath()[0] != '\0' &&
+                    strcasecmp(item->getFullPath().c_str(), play_ctx::currentPath()) == 0) {
+                    if (tsl::notification)
+                        tsl::notification->showNow("Play Another Track First", 26, "It Is Playing", 2500, false);
+                    return true;
+                }
                 bool ok = false;
                 if (play_ctx::source() == play_ctx::Source::Playlist) {
                     // IPC and saved[] are in sync — remove from both.
@@ -317,11 +345,12 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
                     this->removeFocus();
                     this->m_list->removeIndex(index);
                 
-                    if ((size_t)tune_index < this->m_items.size())
-                        this->m_items.erase(this->m_items.begin() + tune_index);
+                    if (row >= 0 && (size_t)row < this->m_items.size())
+                        this->m_items.erase(this->m_items.begin() + row);
                 
                     // ---- NEW: handle empty playlist case -------------------------
-                    if (this->m_items.empty()) {
+                    // (every track shown removed but the queue has more beyond the window: the page opens on those next time)
+                    if (this->m_items.empty() && play_ctx::savedPlaylist().empty()) {
                         this->m_list->clear();
                 
                         m_list->addItem(new tsl::elm::CustomDrawer(
@@ -340,9 +369,9 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
                     // --------------------------------------------------------------
                 
                     // Re-number remaining items
-                    for (size_t k = (size_t)tune_index; k < this->m_items.size(); ++k)
+                    for (size_t k = (size_t)std::max<s32>(0, row); k < this->m_items.size(); ++k)
                         static_cast<ButtonListItem*>(this->m_items[k])->setEntryNumber(
-                            static_cast<u32>(k + 1));
+                            static_cast<u32>(this->m_start + k + 1));
                 
                     this->m_list->setFocusedIndex(nextIndex);
                 

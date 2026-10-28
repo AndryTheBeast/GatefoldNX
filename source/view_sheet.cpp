@@ -137,6 +137,7 @@ void App::undoTagEdits(int track) {
 void App::listCoverDir(const std::string& dir) {
     sheet.dir = dir;
     sheet.entries.clear();
+    sheet.memo.clear();
     for (const auto& d : listDirs(dir)) sheet.entries.push_back(d + "/");
     std::vector<std::string> images;
     if (DIR* d = opendir(dir.c_str())) {
@@ -223,7 +224,34 @@ void App::closeSheet() {
 }
 
 void App::sheetBack() {
-    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep) { closeSheet(); return; }
+    if (sheet.page == Sheet::Colour) {   // B puts down a square or bar first (Ui); then it is Cancel
+        closeColourPicker(false);
+        return;
+    }
+    if (sheet.page == Sheet::Job && sheet.fromList) {   // back to the list, on the job it came from
+        int row = 0;
+        for (int i = 0; i < sheet.recipe && i < JobSlots; i++) row += jobCards[i].shown > 0.01f;
+        openJobList();
+        sheet.queuePos = row;   // drawSmartSheet focuses it
+        return;
+    }
+    if (sheet.page == Sheet::Menu || sheet.page == Sheet::NewList || sheet.page == Sheet::Sleep || sheet.page == Sheet::Job || sheet.page == Sheet::Jobs ||
+        sheet.page == Sheet::PlFile || sheet.page == Sheet::Confirm || sheet.page == Sheet::EqPreset ||
+        sheet.page == Sheet::ActList || sheet.page == Sheet::ListActions || sheet.page == Sheet::PlMenu || sheet.page == Sheet::FileMenu ||
+        sheet.page == Sheet::Factory) {
+        closeSheet();
+        return;
+    }
+    if (sheet.page == Sheet::FileInfo || sheet.page == Sheet::FileLink) {   // Files: back to the file's menu
+        sheet.page = Sheet::FileMenu;
+        ui.focusDefault();
+        return;
+    }
+    if (sheet.page == Sheet::PlIcon && !sheet.fromList) {   // the icons → the playlist's menu (opened from the page's icon button: closes)
+        sheet.page = Sheet::PlMenu;
+        ui.focusDefault();
+        return;
+    }
     if (sheet.page == Sheet::Smart || sheet.page == Sheet::SmartForm) {   // the recipe → the recipes → the choice
         sheet.page = sheet.page == Sheet::SmartForm ? Sheet::Smart : Sheet::NewList;
         ui.focusDefault();
@@ -265,7 +293,7 @@ void App::drawSheet() {
         if (q.order.size() > 1 && (!sheet.upNext || qp > q.pos))
             items.push_back({ ICON_SORT_DOWN, "Move", "", [this, qp, upNext = sheet.upNext] {
                                   closeSheet();
-                                  grab = Grab{ qp, upNext, 1 };
+                                  grab = Grab{ Grab::Queue, qp, upNext, 1 };
                                   ui.focus(upNext ? uid("np.next", qp - q.pos - 1) : uid("pl.r", qp));
                                   ui.setPadMode(true);
                                   toast("Move it with the D-pad, then press A");
@@ -316,7 +344,10 @@ void App::drawSheet() {
         items.push_back({ ICON_IMAGE, "Change the cover…", store.covers.count(tr.path) ? "Yours" : "", [this, t] {
                               sheet.page = Sheet::Cover;
                               sheet.wholeAlbum = lib.tracks[t].albumIdx >= 0;
-                              listCoverDir(lib.tracks[t].folder);
+                              // Settings → Storage and reset may name a folder of covers; else the track's own
+                              struct stat st;
+                              const bool own = !store.coverDir.empty() && stat(store.coverDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+                              listCoverDir(own ? store.coverDir : lib.tracks[t].folder);
                           } });
         if (store.covers.count(tr.path))
             items.push_back({ ICON_REFRESH, "Use the original cover", "", [this, t] {
@@ -335,13 +366,13 @@ void App::drawSheet() {
                               } });
         if (store.edits.count(tr.path)) items.push_back({ ICON_REFRESH, "Undo my tag edits", "", [this, t] { undoTagEdits(t); } });
         if (tr.albumIdx >= 0)
-            items.push_back({ ICON_GRID, "Go to the album", lib.albums[tr.albumIdx].title, [this, a = tr.albumIdx] { closeSheet(); openAlbum(a); } });
+            items.push_back({ ICON_GRID, "Go to the album", lib.albums[tr.albumIdx].title, [this, a = tr.albumIdx] { closeSheet(); goToAlbum(a); } });
         items.push_back({ ICON_MIC, "Go to the artist", tr.artist, [this, a = tr.artist] { closeSheet(); openArtist(a); } });
         if (!tr.genre.empty()) {
             const std::string g1 = tr.genre.substr(0, tr.genre.find(';'));
             items.push_back({ ICON_TAG, "Go to the genre", g1, [this, g1] { closeSheet(); openGenre(g1); } });
         }
-        items.push_back({ ICON_FOLDER, "Show in Folders", "", [this, f = tr.folder] { closeSheet(); navigate(View::Folders, lib.folderByPath(f)); } });
+        items.push_back({ ICON_FOLDER, "Show in Folders", "", [this, f = tr.folder] { closeSheet(); if (tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(f)); } });
         items.push_back({ ICON_INFO, "Details", "", [this, t] {
                               sheet.info = TrackInfo{};
                               readTrackInfo(lib.tracks[t].path, sheet.info, true, true);
@@ -375,9 +406,13 @@ void App::drawSheet() {
                 const std::string name = e.substr(0, e.size() - 1);
                 items.push_back({ ICON_FOLDER, name, "", [this, name] { listCoverDir(joinPath(sheet.dir, name)); } });
             } else {
-                struct stat st {};
                 const std::string full = joinPath(sheet.dir, e);
-                const std::string size = stat(full.c_str(), &st) == 0 ? sizeText(double(st.st_size)) : "";
+                auto m = sheet.memo.find(full);
+                if (m == sheet.memo.end()) {
+                    struct stat st {};
+                    m = sheet.memo.emplace(full, stat(full.c_str(), &st) == 0 ? sizeText(double(st.st_size)) : "").first;
+                }
+                const std::string size = m->second;
                 items.push_back({ ICON_IMAGE, e, size, [this, full] { setTrackCover(full); sheet.page = Sheet::Menu; ui.focusDefault(); } });
             }
         }
@@ -400,10 +435,19 @@ void App::drawSheet() {
         if (in.bitrateKbps) fmt += " · " + std::to_string(in.bitrateKbps) + " kbps";
         info("Format", fmt);
         info("Length", fmtTime(tr.duration > 0 ? tr.duration : in.duration));
-        struct stat st {};
-        if (stat(tr.path.c_str(), &st) == 0) info("Size", sizeText(double(st.st_size)));
+        if (!sheet.memo.count("size")) {   // once, not every frame
+            struct stat st {};
+            sheet.memo["size"] = stat(tr.path.c_str(), &st) == 0 ? sizeText(double(st.st_size)) : "";
+            sheet.memo["lrc"] = readSidecarLyrics(tr.path).empty() ? "" : "1";
+        }
+        info("Size", sheet.memo["size"]);
         info("Cover", store.covers.count(tr.path) ? "Yours, kept by Gatefold" : !in.cover.empty() ? "In the file" : "From the folder, or none");
-        info("Lyrics", !readSidecarLyrics(tr.path).empty() ? ".lrc file" : !in.lyrics.empty() ? "In the tags" : "None");
+        info("Lyrics", !sheet.memo["lrc"].empty() ? ".lrc file" : !in.lyrics.empty() ? "In the tags" : "None");
+        if (const auto it = store.lyricNudge.find(tr.path); it != store.lyricNudge.end()) {   // the timing control (Now playing, the Canvas)
+            char b[48];
+            snprintf(b, sizeof b, "%.1f s %s, kept by Gatefold", double(std::fabs(it->second)), it->second > 0 ? "later" : "earlier");
+            info("Lyrics timing", b);
+        }
         info("Your edits", store.edits.count(tr.path) ? "Yes, kept by Gatefold; the file is unchanged" : "");
         // Volume levelling (levels.hpp)
         if (const Level* lv = levels.find(tr.path); lv && !std::isnan(lv->lufs)) {
@@ -435,7 +479,7 @@ void App::drawSheet() {
     // ---- card
     float bodyH = 8;
     for (const auto& it : items) bodyH += it.h;
-    if (page == Sheet::Cover && tr.albumIdx >= 0) bodyH += 52;
+    if (page == Sheet::Cover && tr.albumIdx >= 0) bodyH += 22 + 44;   // the folder line and Use for (below)
     if (page == Sheet::Delete) bodyH = 110;
     if (page == Sheet::Tags) bodyH += 34;
     bodyH = std::min(bodyH + 8, maxBody);
@@ -474,7 +518,7 @@ void App::drawSheet() {
             segmented(uid("sh.scope"), x + w - 24, ry + 14, { "This track", "The whole album" }, sheet.wholeAlbum ? 1 : 0, &pick);
             g.textC("Use for", { css::Base, Weight::SemiBold }, x + 24, ry + 14, pal.text2);
             if (pick >= 0) sheet.wholeAlbum = pick == 1;
-            ry += 30;
+            ry += 44;   // the control is 36 tall round ry + 14: 30 put the first row's focus ring against it
         }
     }
     if (page == Sheet::Delete) {
@@ -497,7 +541,7 @@ void App::drawSheet() {
         const bool hit = it.act && ui.item(id, { x + 12, ry, w - 24, it.h }, 10, i == focusRow ? DefaultFocus : 0);
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
         if (hot && !it.text) g.roundRect(x + 12, ry, w - 24, it.h, 10, pal.text, ui.pressed(id) ? 0.11f : 0.065f);
-        const Rgb fg = it.danger ? Rgb{ 0.93f, 0.45f, 0.42f } : pal.text;
+        const Rgb fg = it.danger ? dangerInk() : pal.text;
         float lx = x + 24;
         if (it.icon) { g.icon(it.icon, lx + 9, ry + it.h / 2, 18, it.danger ? fg : pal.text2); lx += 18 + 14; }
         if (page == Sheet::Info) {

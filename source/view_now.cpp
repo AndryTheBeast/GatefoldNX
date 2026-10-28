@@ -122,12 +122,12 @@ void App::drawNow(float x, float y, float w, float h) {
         if (clicked) { store.toggleLiked(t.path); store.save(); toast(liked ? "Removed from Liked" : "Added to Liked"); }
         if (t.albumIdx >= 0) {
             bx += button(uid("np.album"), ICON_GRID, "Album", bx, cy, false, &clicked) + 8;
-            if (clicked) openAlbum(t.albumIdx);
+            if (clicked) goToAlbum(t.albumIdx);
         }
         bx += button(uid("np.artist"), ICON_MIC, "Artist", bx, cy, false, &clicked) + 8;
         if (clicked) openArtist(t.artist);
         bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
-        if (clicked) navigate(View::Folders, lib.folderByPath(t.folder));
+        if (clicked && tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(t.folder));
         {
             // .np-actions .more: the track menu (also + on the controller)
             const Id mid = uid("np.more");
@@ -228,7 +228,7 @@ void App::drawUpNext(float x, float y, float w, float h) {
         const int pos = (q.pos + 1 + i) % int(q.order.size());   // in play order (wrapped round with Repeat)
         if (ui.item(id, { x - 8, ry, w + 16, 52 }, 8)) playAt(pos);
         if (ui.focused(id)) { hoverTrack = t; hoverQueue = pos; hoverUpNext = true; }
-        if (grab.upNext && grab.pos == pos) {   // picked up with the track menu's Move
+        if (grab.kind == Grab::Queue && grab.upNext && grab.pos == pos) {   // picked up with the track menu's Move
             g.roundRect(x - 8, ry, w + 16, 52, 8, pal.accent, 0.14f);
             g.roundStroke(x - 8, ry, w + 16, 52, 8, 2, pal.accent, 0.95f);
         }
@@ -254,8 +254,13 @@ void App::drawLyrics(float x, float y, float w, float h) {
         g.text("Put an .lrc file with the track's name next to it, or a LYRICS tag.", { css::Base }, x, y + 56, pal.text3, 1, Align::Left, int(w));
         return;
     }
-    // .lyr-bar
+    // .lyr-bar: what they are, and for synced ones the timing control on the right
     g.textC(std::string(now.synced ? "Synced" : "Plain text") + " · " + now.lyricsSource, { css::Xs }, x, y + 14, pal.text3);
+    if (lyricTimingShown()) {
+        const Font cf{ css::Xs, Weight::SemiBold };
+        const float cw = lyricSyncControl(nullptr, 0, 0, 24, cf, 0, false);   // measured first, then drawn against the right edge
+        lyricSyncControl("np.sync", x + w - cw, y + 14, 24, cf, 1, true);
+    }
     const float top = y + 30, vh = h - 30;
     sa.view = { x, top, w, vh };
 
@@ -303,7 +308,7 @@ void App::drawLyrics(float x, float y, float w, float h) {
             a *= clampf(e / 24 + 0.15f, 0.15f, 1);
             if (r == 0 || rows[r - 1].first != li) {
                 const Id id = uid("np.lyr", li);
-                if (ui.item(id, { x, ry, w, lh }, 6) && now.lyrics[li].t >= 0) player.seek(now.lyrics[li].t);
+                if (ui.item(id, { x, ry, w, lh }, 6)) seekLyric(li);
             }
         } else {
             c = pal.text2;
@@ -313,6 +318,37 @@ void App::drawLyrics(float x, float y, float w, float h) {
     }
     g.unclip();
     ui.popArea();
+}
+
+/**
+ * The lyrics' timing, as a pill like the Canvas' layout switch: "Earlier", the nudge, "Later". Each press moves
+ * them 0.1 s; the value in the middle puts them back in time with the file. key nullptr: only measures.
+ */
+float App::lyricSyncControl(const char* key, float x, float cy, float h, const Font& f, float alpha, bool live) {
+    const float n = lyricNudge();
+    char v[24];
+    if (std::fabs(n) < 0.05f) snprintf(v, sizeof v, "0.0 s");
+    else snprintf(v, sizeof v, "%s%.1f s", n > 0 ? "+" : "−", double(std::fabs(n)));
+    const char* labels[3] = { "Earlier", v, "Later" };
+    float ws[3], total = 0;
+    for (int i = 0; i < 3; i++) {
+        // the middle sized for the widest value, so the pill does not change width as it moves
+        ws[i] = (i == 1 ? std::max(g.measure("+10.0 s", f), g.measure(v, f)) : g.measure(labels[i], f)) + h * 0.8f;
+        total += ws[i];
+    }
+    if (!key) return total;
+    g.roundRect(x, cy - h / 2, total, h, h / 2, pal.text, 0.08f * alpha);
+    float bx = x;
+    for (int i = 0; i < 3; i++) {
+        const Id id = uid(key, i);
+        if (live && ui.item(id, { bx, cy - h / 2, ws[i], h }, h / 2)) nudgeLyrics(i == 0 ? -0.1f : i == 2 ? 0.1f : 0.f);
+        const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+        if (hot) g.roundRect(bx, cy - h / 2, ws[i], h, h / 2, pal.text, 0.1f * alpha);
+        const bool value = i == 1, moved = std::fabs(n) >= 0.05f;
+        g.textC(labels[i], f, bx + ws[i] / 2, cy, value ? (moved ? pal.accentInk : pal.text3) : pal.text2, alpha, Align::Center);
+        bx += ws[i];
+    }
+    return total;
 }
 
 void App::drawPaletteTab(float x, float y, float w, float h) {

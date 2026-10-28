@@ -3,6 +3,7 @@
  * What the overlay needs beyond sys-tune's API, over the same connection (tune_gfbg.cpp).
  */
 #pragma once
+#include <string>
 #include <vector>
 
 #include "gfbg.h"
@@ -15,6 +16,12 @@ bool gfState(GfbgState* out);
 void gfSetStopAfter(bool on);
 /** The sleep timer: the music fades out and pauses after this many seconds; 0 off. */
 void gfSetSleep(float seconds);
+bool gfEq(GfbgEq* out);
+void gfSetEq(const GfbgEq& e);
+/** The names of Gatefold's playlists (GFBG_PLAYLISTS), in its order. */
+std::vector<std::string> gfPlaylistNames();
+/** The name of the playlist whose name hashes to `hash`, "" when there is none. */
+std::string gfPlaylistName(u64 hash);
 void gfFlush();
 
 /** Gatefold's copy of a track's cover for the overlay (GFBG_THUMBS): GFBG_ART² RGB; false when there is none. */

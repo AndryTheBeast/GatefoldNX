@@ -341,6 +341,68 @@ void SettingsGui::refreshPlaylistCount(u32 count) {
 }
 
 // ---------------------------------------------------------------------------
+// Game events: an item's value (the playlist page sets them too)
+namespace {
+struct ActItem { tsl::elm::ListItem* item; u8 GfbgConfig::*field; };
+ActItem s_act_items[4] = {};   // by event (GfbgConfig.lists' order): opens, HOME, closes, back to the game
+bool s_act_changed = false;    // the playlist page picked one: SettingsGui::update shows it
+// Events set to Playlist get a hint line under their item (the playlist, and Y): which ones have it on this page,
+// and its text. The value stays the one word "Playlist", so the label is never cut.
+bool s_act_hinted[4] = {};
+std::string s_act_hint[4];
+constexpr const char* kActLabels[4] = { "Game Opens", "HOME Menu", "Game Closes", "Back to the Game" };
+
+void showAction(int event) {
+    static constexpr const char* names[] = { "Nothing", "Play", "Resume", "Pause", "Playlist" };
+    const ActItem& a = s_act_items[event];
+    if (!a.item) return;
+    GfbgConfig c{};
+    gfConfig(&c);
+    const u8 v = std::min<u8>(c.*a.field, GfbgAct_Playlist);
+    a.item->setValue(names[v], v == GfbgAct_Nothing);
+    std::string name = v == GfbgAct_Playlist ? gfPlaylistName(c.lists[event]) : std::string();
+    constexpr size_t kMax = 28;   // what fits in the line with "Y to change"
+    if (name.size() > kMax) {
+        size_t cut = kMax;
+        while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80) cut--;   // not inside a UTF-8 character
+        name = name.substr(0, cut) + "…";
+    }
+    s_act_hint[event] = name.empty() ? std::string("Y chooses the playlist") : name + "  " + ult::DIVIDER_SYMBOL + "  Y to change";
+}
+
+// The equalizer's settings as last read, your presets (GFEQ_USER, read when a page opens), and the preset page's pick
+GfbgEq s_eq{};
+std::vector<GfEqUser> s_user;
+bool s_eq_changed = false;
+
+void readUserPresets() {
+    s_user.clear();
+    if (FILE* f = fopen(GFEQ_USER, "r")) {
+        char line[512];
+        GfEqUser u{};
+        while (fgets(line, sizeof line, f) && s_user.size() < GFEQ_USER_MAX)
+            if (gfEqParseUser(line, &u)) s_user.push_back(u);
+        fclose(f);
+    }
+}
+
+std::string presetName() {
+    if (s_eq.preset >= 0 && s_eq.preset < GFEQ_PRESETS) return std::string(kGfEqPresets[s_eq.preset].name);
+    const int k = s_eq.preset - GFEQ_PRESETS;
+    return k >= 0 && k < int(s_user.size()) ? std::string(s_user[size_t(k)].name) + (s_eq.edited ? " (edited)" : "") : std::string("Custom");
+}
+
+/** The events whose action is Playlist now, as a bit each. */
+unsigned playlistEvents() {
+    GfbgConfig c{};
+    gfConfig(&c);
+    const u8 acts[4] = { c.onOpen, c.onHome, c.onClose, c.onReturn };
+    unsigned bits = 0;
+    for (int e = 0; e < 4; e++) bits |= (acts[e] == GfbgAct_Playlist ? 1u : 0u) << e;
+    return bits;
+}
+}  // namespace
+
 tsl::elm::Element* SettingsGui::createUI() {
     m_frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
 
@@ -348,13 +410,6 @@ tsl::elm::Element* SettingsGui::createUI() {
     pm::getCurrentPidTid(&pid, &tid);
     m_tid      = tid;
     m_last_tid = tid; // in sync from the start so update() only fires on changes
-
-    // Format a title ID as a hex string for use as a label.
-    auto tidLabel = [](u64 t) -> std::string {
-        char buf[19];
-        std::snprintf(buf, sizeof(buf), "0x%016llX", static_cast<unsigned long long>(t));
-        return buf;
-    };
 
     m_list = new tsl::elm::List();
 
@@ -492,34 +547,66 @@ tsl::elm::Element* SettingsGui::createUI() {
 
     // ---- Games: what the music does at each game event (Gatefold's background player) ----
     // Each item cycles with A, like sys-tune's Title Focus: Nothing, Play (a random folder,
-    // shuffled), Resume, Pause.
+    // shuffled), Playlist (one of Gatefold's, chosen with Y), Resume, Pause.
     m_list->addItem(new tsl::elm::CategoryHeader("Games"));
     static GfbgConfig s_cfg{};
     gfConfig(&s_cfg);
-    auto actionItem = [this](const char* label, u8 GfbgConfig::*field) {
-        static constexpr const char* names[] = { "Nothing", "Play", "Resume", "Pause" };
-        auto* item = new tsl::elm::ListItem(label, names[std::min<u8>(s_cfg.*field, 3)]);
-        item->setValue(names[std::min<u8>(s_cfg.*field, 3)], s_cfg.*field == GfbgAct_Nothing);
-        item->setClickListener([item, field](u64 keys) -> bool {
+    auto actionItem = [this](const char* label, u8 GfbgConfig::*field, int event) {
+        auto* item = new tsl::elm::ListItem(label, "");
+        s_act_items[event] = { item, field };
+        showAction(event);
+        item->setClickListener([field, event](u64 keys) -> bool {
+            if (keys & HidNpadButton_Y) {   // the playlist for this event
+                tsl::changeTo<ActionListGui>(event);
+                return true;
+            }
             if (!(keys & HidNpadButton_A)) return false;
+            static constexpr u8 next[] = { GfbgAct_Play, GfbgAct_Playlist, GfbgAct_Pause, GfbgAct_Nothing, GfbgAct_Resume };
             gfConfig(&s_cfg);
-            s_cfg.*field = u8((s_cfg.*field + 1) % 4);
+            s_cfg.*field = next[std::min<u8>(s_cfg.*field, GfbgAct_Playlist)];
             gfSetConfig(s_cfg);
-            item->setValue(names[s_cfg.*field], s_cfg.*field == GfbgAct_Nothing);
+            showAction(event);
+            // Into or out of Playlist: the page is built again with or without the hint line, the focus back
+            // here (deferred to update(): this item is still on the call stack).
+            if (((playlistEvents() >> event) & 1u) != (s_act_hinted[event] ? 1u : 0u)) {
+                s_settings_rebuild_jump = kActLabels[event];
+                s_settings_rebuild_pending = true;
+            }
             return true;
         });
         m_list->addItem(item);
+        // Playlist: which one it plays and that Y changes it, centred under the item like the hint under "Games"
+        s_act_hinted[event] = (playlistEvents() >> event) & 1u;
+        if (s_act_hinted[event])
+            m_list->addItem(new tsl::elm::CustomDrawer([event](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32) {
+                const std::string& hint = s_act_hint[event];
+                const s32 tw = static_cast<s32>(r->getTextDimensions(hint, false, 15).first);
+                r->drawString(hint, false, x + std::max<s32>(0, (w - tw) / 2), y + 20, 15, tsl::offTextColor);
+            }), 32);
     };
-    actionItem("Game Opens", &GfbgConfig::onOpen);
-    actionItem("HOME Menu", &GfbgConfig::onHome);
-    actionItem("Back to the Game", &GfbgConfig::onReturn);
-    actionItem("Game Closes", &GfbgConfig::onClose);
+    actionItem("Game Opens", &GfbgConfig::onOpen, 0);
+    actionItem("HOME Menu", &GfbgConfig::onHome, 1);
+    actionItem("Back to the Game", &GfbgConfig::onReturn, 3);
+    actionItem("Game Closes", &GfbgConfig::onClose, 2);
+    // How a Playlist action starts: where it was left, or shuffled afresh.
+    {
+        auto* item = new tsl::elm::ListItem("Action Playlists", s_cfg.listStart ? "Shuffle" : "Continue");
+        item->setClickListener([item](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            gfConfig(&s_cfg);
+            s_cfg.listStart = s_cfg.listStart ? GfbgListStart_Continue : GfbgListStart_Shuffle;
+            gfSetConfig(s_cfg);
+            item->setValue(s_cfg.listStart ? "Shuffle" : "Continue");
+            return true;
+        });
+        m_list->addItem(item);
+    }
     // Fades step through a few lengths, A by A.
     auto fadeItem = [this](const char* label, float GfbgConfig::*field) {
         static constexpr float steps[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 5.f };
         auto text = [](float s) {
             char b[16];
-            if (s <= 0.f) std::snprintf(b, sizeof(b), "None");
+            if (s <= 0.f) std::snprintf(b, sizeof(b), "Off");
             else std::snprintf(b, sizeof(b), "%.1f s", static_cast<double>(s));
             return std::string(b);
         };
@@ -538,6 +625,45 @@ tsl::elm::Element* SettingsGui::createUI() {
     };
     fadeItem("Fade Out", &GfbgConfig::fadeOut);
     fadeItem("Fade In", &GfbgConfig::fadeIn);
+
+    // ---- Equalizer: on or off, and the preset (the bands are Gatefold's: Settings → Equalizer) ----
+    m_list->addItem(new tsl::elm::CategoryHeader("Equalizer"));
+    {
+        gfEq(&s_eq);
+        auto* on = new tsl::elm::ToggleListItem("Equalizer", s_eq.on != 0, "On", "Off");
+        on->setStateChangedListener([](bool v) {
+            gfEq(&s_eq);
+            s_eq.on = v ? 1 : 0;
+            gfSetEq(s_eq);
+        });
+        m_list->addItem(on);
+        readUserPresets();
+        auto* preset = new tsl::elm::ListItem("Preset", presetName());
+        m_eq_preset = preset;
+        preset->setClickListener([preset](u64 keys) -> bool {
+            if (keys & HidNpadButton_Y) {   // every preset, a check on the one in use
+                tsl::changeTo<EqPresetGui>();
+                return true;
+            }
+            if (!(keys & HidNpadButton_A)) return false;
+            gfEq(&s_eq);
+            // Flat … Acoustic, then yours, then Custom (when there is one), round again
+            const int next = s_eq.preset + 1, own = int(s_user.size());
+            if (s_eq.preset >= 0 && next < GFEQ_PRESETS) gfEqApplyPreset(&s_eq, next);
+            else if (s_eq.preset >= 0 && next < GFEQ_PRESETS + own) gfEqApplyUser(&s_eq, &s_user[size_t(next - GFEQ_PRESETS)], next - GFEQ_PRESETS);
+            else if (s_eq.preset >= 0 && s_eq.hasCustom) gfEqApplyCustom(&s_eq);
+            else gfEqApplyPreset(&s_eq, 0);
+            gfSetEq(s_eq);
+            preset->setValue(presetName());
+            return true;
+        });
+        m_list->addItem(preset);
+        m_list->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32) {
+            static const std::string kHint = "A - Next preset  " + ult::DIVIDER_SYMBOL + "  Y - All presets";
+            const s32 tw = static_cast<s32>(r->getTextDimensions(kHint, false, 15).first);
+            r->drawString(kHint, false, x + (w - tw) / 2, y + 20, 15, tsl::offTextColor);
+        }), 32);
+    }
 
     // ---- Misc ----
     m_list->addItem(new tsl::elm::CategoryHeader("Miscellaneous"));
@@ -591,7 +717,110 @@ tsl::elm::Element* SettingsGui::createUI() {
 }
 
 // ---------------------------------------------------------------------------
+// Game events: an item's value, and the page that picks its playlist (Y)
+
+
+ActionListGui::ActionListGui(int event) : m_event(event) {}
+
+tsl::elm::Element* ActionListGui::createUI() {
+    static constexpr const char* titles[] = { "Game Opens", "HOME Menu", "Game Closes", "Back to the Game" };
+    auto* frame = new SysTuneOverlayFrame();
+    auto* list = new tsl::elm::List();
+    list->addItem(new tsl::elm::CategoryHeader(std::string("Playlist for ") + titles[std::clamp(m_event, 0, 3)]));
+    const std::vector<std::string> names = gfPlaylistNames();
+    if (names.empty()) {
+        auto* none = new tsl::elm::ListItem("Open Gatefold once to list its playlists");
+        list->addItem(none);
+    }
+    GfbgConfig c{};
+    gfConfig(&c);
+    for (const auto& n : names) {
+        const u64 h = gfbgHash(n.data(), n.size());
+        auto* item = new tsl::elm::ListItem(n, h == c.lists[m_event] ? "\uE14B" : "");   // a check on the one chosen
+        const int ev = m_event;
+        item->setClickListener([h, ev](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            GfbgConfig cfg{};
+            gfConfig(&cfg);
+            cfg.lists[ev] = h;
+            u8* acts[4] = { &cfg.onOpen, &cfg.onHome, &cfg.onClose, &cfg.onReturn };
+            *acts[ev] = GfbgAct_Playlist;
+            gfSetConfig(cfg);
+            s_act_changed = true;
+            tsl::goBack();
+            return true;
+        });
+        list->addItem(item);
+    }
+    frame->setContent(list);
+    return frame;
+}
+
+// ---------------------------------------------------------------------------
+// Y on Preset: every preset as a list, as Gatefold's sheet has them (its twelve, then yours, then Custom),
+// a check on the one in use; A picks one and goes back.
+
+tsl::elm::Element* EqPresetGui::createUI() {
+    auto* frame = new SysTuneOverlayFrame();
+    auto* list = new tsl::elm::List();
+    gfEq(&s_eq);
+    readUserPresets();
+    // kind 0 Gatefold's (index), 1 yours (index), 2 Custom
+    auto add = [list](const std::string& name, int kind, int k, bool current) {
+        auto* item = new tsl::elm::ListItem(name, current ? "" : "");
+        item->setClickListener([kind, k](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            gfEq(&s_eq);
+            if (kind == 0) gfEqApplyPreset(&s_eq, k);
+            else if (kind == 1 && k < int(s_user.size())) gfEqApplyUser(&s_eq, &s_user[size_t(k)], k);
+            else if (kind == 2) gfEqApplyCustom(&s_eq);
+            gfSetEq(s_eq);
+            s_eq_changed = true;
+            tsl::goBack();
+            return true;
+        });
+        list->addItem(item);
+    };
+    const int own = int(s_user.size());
+    const bool onUser = s_eq.preset >= GFEQ_PRESETS && s_eq.preset < GFEQ_PRESETS + own;
+    list->addItem(new tsl::elm::CategoryHeader("Gatefold's Presets"));
+    for (int i = 0; i < GFEQ_PRESETS; i++) add(kGfEqPresets[i].name, 0, i, s_eq.preset == i);
+    if (own > 0) {
+        list->addItem(new tsl::elm::CategoryHeader("Yours"));
+        for (int k = 0; k < own; k++)
+            add(std::string(s_user[size_t(k)].name) + (onUser && s_eq.preset == GFEQ_PRESETS + k && s_eq.edited ? " (edited)" : ""), 1, k,
+                s_eq.preset == GFEQ_PRESETS + k);
+    }
+    if (s_eq.hasCustom) {
+        if (own == 0) list->addItem(new tsl::elm::CategoryHeader("Yours"));
+        add("Custom", 2, 0, s_eq.preset < 0 || (s_eq.preset >= GFEQ_PRESETS && !onUser));
+    }
+    // the one in use is where the page opens
+    if (s_eq.preset >= 0 && s_eq.preset < GFEQ_PRESETS) list->jumpToItem(kGfEqPresets[s_eq.preset].name);
+    else if (onUser) list->jumpToItem(presetName());
+    else if (s_eq.hasCustom) list->jumpToItem("Custom");
+    frame->setContent(list);
+    return frame;
+}
+
+// ---------------------------------------------------------------------------
 void SettingsGui::update() {
+    if (s_eq_changed) {
+        s_eq_changed = false;
+        if (m_eq_preset) m_eq_preset->setValue(presetName());
+    }
+    if (s_act_changed) {
+        s_act_changed = false;
+        for (int e = 0; e < 4; e++) showAction(e);
+        // Y picked a playlist for an event that was not on Playlist yet: built again with its hint line
+        const unsigned bits = playlistEvents();
+        for (int e = 0; e < 4; e++)
+            if (((bits >> e) & 1u) != (s_act_hinted[e] ? 1u : 0u)) {
+                s_settings_rebuild_jump = kActLabels[e];
+                s_settings_rebuild_pending = true;
+                break;
+            }
+    }
     // Consume any pending rebuild request.  This is set by the "Default On
     // Start" listener and intentionally deferred here so the swapTo fires
     // after the full onClick/handleInput chain has returned — not while the

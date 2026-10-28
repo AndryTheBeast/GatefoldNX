@@ -7,8 +7,11 @@
  * The header keeps libnx's IPC types out of the views: BgState mirrors GfbgState.
  */
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
+
+#include "gfeqcfg.h"
 
 struct BgState {
     enum Status { Stopped = 0, Playing = 1, Paused = 2 };
@@ -26,13 +29,19 @@ struct BgState {
     unsigned heapFree = 0;
     float sleepLeft = 0;     // seconds until the sleep timer pauses the music, 0 off
     unsigned sleepGen = 0;   // bumps when it runs out
+    unsigned eqGen = 0;      // bumps on every SetEq, whoever sent it (the overlay too)
 };
 
 struct BgConfig {
     // What the music does when a game opens, waits on the HOME menu, comes back from it, or closes:
     // GfbgAct (0 nothing, 1 play a random folder, 2 resume, 3 pause).
-    int onOpen = 3, onHome = 2, onClose = 2, onReturn = 2;
-    float fadeOut = 1.5f, fadeIn = 2.f;
+    // First-run defaults (the user, 2026-10-28): the music does nothing by itself on game events; as Engine::cfg_
+    int onOpen = 0, onHome = 0, onClose = 0, onReturn = 0;
+    float fadeOut = 2.f, fadeIn = 2.f;
+    // 4 (GfbgAct_Playlist): the playlist for each event, gfbgHash of its name, in GfbgConfig's order (onOpen, onHome,
+    // onClose, onReturn); and how such a playlist starts: 0 where it was left, 1 shuffled afresh (GfbgListStart)
+    uint64_t lists[4] = {};
+    int listStart = 0;
 };
 
 struct BgQueue {
@@ -44,7 +53,7 @@ struct BgQueue {
 
 class BgClient {
 public:
-    static constexpr unsigned ByGatefold = 1;
+    static constexpr unsigned ByGatefold = 1, ByOverlay = 2;   // GfbgClient
 
     /** True when the sysmodule runs and speaks our protocol. */
     bool connect();
@@ -58,6 +67,7 @@ public:
     double position(double now) const;
 
     bool setQueue(const BgQueue& q);
+    bool queueRefused() const { return refused_; }   // the last setQueue: too big for the player's heap (still connected)
     bool getQueue(BgQueue& q);
     void playAt(int pos, bool paused, double start);
     void toggle(double now);
@@ -68,6 +78,10 @@ public:
     void setStopAfter(bool on);
     /** Volume levelling's mode for the player (GfbgLevel, in GfbgConfig.reserved[0]); the gains are a file. */
     void setLevelMode(int mode);
+    /** Crossfade for the player (GfbgConfig.crossfade, xfadeFlags): seconds, 0 off. */
+    void setCrossfade(float seconds, bool notInAlbum);
+    bool eq(GfbgEq& out);
+    void setEq(const GfbgEq& e);
     void setSleep(float seconds);
     /** Newest n mono samples at 48 kHz; false when nothing new since the last call. */
     bool pcm(float* out, int n);
@@ -77,6 +91,7 @@ public:
 
 private:
     bool connected_ = false;
+    bool refused_ = false;
     BgState st_;
     double polledAt_ = 0;
     // What Gatefold just asked for wins over a poll that may predate it (commands are async).

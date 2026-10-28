@@ -44,6 +44,8 @@ public:
     void imageCorners(SDL_Texture* t, float x, float y, float w, float h, const float* rads, float alpha = 1);
     void roundRectCorners(float x, float y, float w, float h, const float* rads, const Rgb& c, float alpha = 1);
     void image(SDL_Texture* t, float x, float y, float w, float h, float rad, float alpha = 1, float zoom = 1, float panX = 0, float panY = 0);
+    /** The whole texture stretched over the box, not cropped to its shape: gradients (the colour picker's). */
+    void imageStretched(SDL_Texture* t, float x, float y, float w, float h, float rad, float alpha = 1);
     /** Soft radial glow: full colour in the centre fading to nothing at `rad`. */
     void glow(float cx, float cy, float rad, const Rgb& c, float alpha);
     /** Radial veil: transparent at (fx, fy), rising to `alpha` at 70% of an rx×ry ellipse (Gatefold's #bg .veil). */
@@ -55,6 +57,13 @@ public:
     int text(const std::string& s, Font f, float x, float y, const Rgb& c, float alpha = 1, Align a = Align::Left, int maxW = 0);
     /** Same, vertically centred on cy. */
     int textC(const std::string& s, Font f, float x, float cy, const Rgb& c, float alpha = 1, Align a = Align::Left, int maxW = 0);
+    /**
+     * One line of text in a box boxW wide, moved left by offset and cut at the box, its ends fading over
+     * fadeL / fadeR px (Gatefold's mask-image fade, app.css .album-facts) instead of an ellipsis: the player
+     * bar's long titles, which scroll. Returns the text's whole width.
+     */
+    int textScroll(const std::string& s, Font f, float x, float y, float boxW, float offset, float fadeL, float fadeR, const Rgb& c,
+                   float alpha = 1);
     /** Letter-spaced text (the uppercase kickers), spacing in em. Centred on cy. */
     int textSpaced(const std::string& s, Font f, float x, float cy, float spacingEm, const Rgb& c, float alpha = 1, Align a = Align::Left);
     /**

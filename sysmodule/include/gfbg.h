@@ -11,9 +11,11 @@
 #include <stdio.h>
 #include <switch.h>
 
+#include "gfeqcfg.h"
+
 #define GFBG_SERVICE    "gatefold"           // sm name, 8 characters at most
 #define GFBG_PROGRAM_ID 0x4200000047464E58ULL // "GFNX" in the homebrew range
-#define GFBG_PROTOCOL   4   // 4: the sleep timer (SetSleep, GfbgState.sleepLeft/sleepGen)
+#define GFBG_PROTOCOL   5   // 5: the equalizer (GetEq/SetEq, GfbgState.eqGen), crossfade and playlist actions (GfbgConfig grew)
 #define GFBG_PCM        4096                  // mono samples GetPcm returns, at 48 kHz (Spectrum::N)
 #define GFBG_RATE       48000
 
@@ -39,6 +41,8 @@ typedef enum {
     GfbgCmd_GetGameVolume = 14, // → GfbgGameVolume
     GfbgCmd_SetGameVolume = 15, // in float: the game in front's volume, remembered for that game
     GfbgCmd_SetSleep     = 16,  // in float seconds until the music fades out and pauses; 0 turns the timer off
+    GfbgCmd_GetEq        = 17,  // → GfbgEq (gfeqcfg.h)
+    GfbgCmd_SetEq        = 18,  // in GfbgEq: the player keeps it (bg-config.txt) and bumps GfbgState.eqGen
 } GfbgCmd;
 
 typedef enum { GfbgClient_Gatefold = 1, GfbgClient_Overlay = 2 } GfbgClient;
@@ -60,6 +64,7 @@ typedef enum {
     GfbgAct_Play = 1,     // a random folder of the music folder, shuffled
     GfbgAct_Resume = 2,   // the track it was on
     GfbgAct_Pause = 3,
+    GfbgAct_Playlist = 4, // one of Gatefold's playlists (GfbgConfig.lists, GFBG_PLAYLISTS); none chosen: as Resume
 } GfbgAct;
 
 /** What pause-for-apps is doing. */
@@ -92,6 +97,7 @@ typedef struct {
     u32 heapFree;      // bytes, for the About page
     float sleepLeft;   // seconds until the sleep timer pauses the music, 0 when it is off (protocol 4)
     u32 sleepGen;      // bumps when the sleep timer runs out
+    u32 eqGen;         // bumps on every SetEq, whoever sent it (protocol 5): Gatefold reads the EQ again
 } GfbgState;
 
 typedef struct {
@@ -102,8 +108,26 @@ typedef struct {
     float fadeOut;     // seconds
     float fadeIn;      // seconds
     float gameVolume;  // the volume of games that have none of their own (SetGameVolume)
-    u32 reserved[4];
+    u32 reserved[4];   // [0] volume levelling's mode (GfbgLevel)
+    // protocol 5
+    float crossfade;   // seconds, 0 off
+    u32 xfadeFlags;    // GfbgXfade_*
+    u32 listStart;     // how an action's playlist starts: GfbgListStart
+    u32 reserved5;
+    u64 lists[4];      // GfbgAct_Playlist: gfbgHash of the playlist's name, per event (onOpen, onHome, onClose, onReturn); 0 none
 } GfbgConfig;
+
+/** Crossfade: consecutive tracks of one album keep their join (gapless, live albums). */
+#define GfbgXfade_NotInAlbum 1u
+
+typedef enum { GfbgListStart_Continue = 0, GfbgListStart_Shuffle = 1 } GfbgListStart;
+
+/**
+ * Gatefold's playlists for the playlist action (protocol 5), rewritten by Gatefold when they change:
+ * for each one a line "#<name>" then its tracks' paths, one a line, in its order. The player reads only
+ * the one an event asks for, the overlay only the names.
+ */
+#define GFBG_PLAYLISTS "sdmc:/config/gatefold-nx/bg-playlists.txt"
 
 typedef struct {
     u64 programId;     // the game in front, 0 on the HOME menu (or when it is Gatefold)
@@ -123,6 +147,8 @@ typedef struct {
 
 /** SetQueue: when the track playing now is the one at the new pos, it carries on untouched. */
 #define GfbgQueue_KeepCurrent 1
+/** SetQueue's answer when the queue does not fit in the player's heap (it keeps the queue it had; nothing else changes). */
+#define GFBG_QUEUE_TOO_BIG MAKERESULT(Module_Libnx, LibnxError_OutOfMemory)
 
 typedef struct {
     s32 pos;
@@ -229,6 +255,9 @@ static inline Result gfbgSetGameVolume(Service* s, float v) { return serviceDisp
 
 static inline Result gfbgGetConfig(Service* s, GfbgConfig* out) { return serviceDispatchOut(s, GfbgCmd_GetConfig, *out); }
 static inline Result gfbgSetConfig(Service* s, const GfbgConfig* in) { return serviceDispatchIn(s, GfbgCmd_SetConfig, *in); }
+
+static inline Result gfbgGetEq(Service* s, GfbgEq* out) { return serviceDispatchOut(s, GfbgCmd_GetEq, *out); }
+static inline Result gfbgSetEq(Service* s, const GfbgEq* in) { return serviceDispatchIn(s, GfbgCmd_SetEq, *in); }
 
 static inline Result gfbgGetTrackInfo(Service* s, GfbgTrackInfo* out) {
     return serviceDispatch(s, GfbgCmd_GetTrackInfo, .buffer_attrs = { SfBufferAttr_HipcMapAlias | SfBufferAttr_Out },

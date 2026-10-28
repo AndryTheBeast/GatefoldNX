@@ -4,10 +4,12 @@
  */
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 
 #include "app.hpp"
 #include "icons.inc"
+#include "plicons.inc"
 
 namespace {
 
@@ -30,11 +32,13 @@ void App::draw() {
     hoverQueue = -1;
     hoverUpNextShown = hoverUpNext;
     hoverUpNext = false;
-    ui.setModal(sheet.page != Sheet::Closed || (coverNotice == 1 && !canvas) || sleepPromptAt > 0);
+    plHoverShown = route.view == View::Playlists ? plHover : -2;
+    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0);
     if (canvas) {
         drawCanvas();
         profMark(2);
         drawSheet();
+        drawTour();
         drawSleepPrompt();
         drawToast();
         if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);
@@ -61,7 +65,13 @@ void App::draw() {
     case View::Album: drawAlbum(mx, my, mw, mh); break;
     case View::Folders: drawFolders(mx, my, mw, mh); break;
     case View::Settings: drawSettings(mx, my, mw, mh); break;
-    case View::PickFolder: drawPicker(mx, my, mw, mh); break;
+    case View::Files: drawFiles(mx, my, mw, mh); break;
+    case View::Playlists: drawPlaylists(mx, my, mw, mh); break;
+    case View::PickFolder:
+        if (folderFor >= 0 && route.view != View::PickFolder) folderFor = -1;
+        [[fallthrough]];
+    case View::PickPlaylist:
+    case View::PickExport: drawPicker(mx, my, mw, mh); break;
     default: drawTrackList(mx, my, mw, mh); break;
     }
     g.unclip();
@@ -77,6 +87,7 @@ void App::draw() {
     profMark(4);
     drawCoverNotice();
     drawSheet();
+    drawTour();   // over every page it shows (tour.cpp)
     drawSleepPrompt();
     drawToast();
     if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);   // Dim the screen, docked
@@ -281,50 +292,95 @@ void App::drawSidebar() {
     };
 
     const View v = route.view;
-    if (navItem("nav.now", ICON_DISC, "Now playing", v == View::Now, "", 38, navFont)) navigate(View::Now);
-    // Settings → Appearance can hide any of these (store.hiddenTabs); Now playing and Settings always stay.
+    // The tabs in your order (Settings → Appearance → Sidebar, store.tabOrder); any can be hidden (store.hiddenTabs)
+    // but Now playing. Settings always stays at the bottom.
     const unsigned hide = store.hiddenTabs;
-    if (!(hide & 1) &&
-        navItem("nav.queue", ICON_LIST, "Playlist", v == View::Queue, q.tracks.empty() ? "" : std::to_string(q.tracks.size()), 38, navFont))
-        navigate(View::Queue);
-    // Gatefold 1.4.2's order, with Albums and Folders as tabs of their own (each can be hidden).
-    if (!(hide & 32) && navItem("nav.albums", ICON_V_GRID, "Albums", v == View::Albums || (v == View::Album && libFrom == View::Albums),
-                                std::to_string(lib.albums.size()), 38, navFont)) {
-        libFrom = View::Albums;
-        navigate(View::Albums);
-    }
-    if (!(hide & 2) &&
-        navItem("nav.artists", ICON_MIC, "Artists", v == View::Artists || v == View::Artist, std::to_string(artists.size()), 38, navFont))
-        navigate(View::Artists);
-    if (!(hide & 4) && navItem("nav.genres", ICON_TAG, "Genres", v == View::Genres || v == View::Genre, std::to_string(genres.size()), 38, navFont))
-        navigate(View::Genres);
     // A folder page lights the tab it belongs to: Folders, or Library when opened from its Folders tab
     // (or when the Folders tab is hidden, so something stays lit).
     const bool folderInLibrary = v == View::Folders && (folderFrom == View::Library || (hide & 16));
-    if (!(hide & 16) && navItem("nav.folders", ICON_FOLDER, "Folders", v == View::Folders && !folderInLibrary,
-                                std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), 38, navFont)) {
-        navigate(View::Folders, lib.rootFolders.empty() ? -1 : lib.rootFolders[0]);
-        folderFrom = View::Folders;   // the tab itself, even when clicked from Library
+    // An artist's or a genre's page lights its own tab, or Library when that tab is hidden (App::tabFor)
+    const bool artistInLibrary = v == View::Artist && (hide & Store::tabBit(Store::TabArtists));
+    const bool genreInLibrary = v == View::Genre && (hide & Store::tabBit(Store::TabGenres));
+    // Your lines: drawn only between two tabs that show (never first, last or twice in a row), in the rows' own gap
+    std::vector<int> shownTabs;
+    for (int tab : store.tabOrder) {
+        if (Store::isLine(tab)) { if (!shownTabs.empty() && !Store::isLine(shownTabs.back())) shownTabs.push_back(tab); continue; }
+        if (tab != Store::TabNow && (hide & Store::tabBit(tab))) continue;
+        shownTabs.push_back(tab);
     }
-    if (!(hide & 8) && navItem("nav.library", ICON_GRID, "Library", v == View::Library || (v == View::Album && libFrom == View::Library) || folderInLibrary,
-                               std::to_string(lib.tracks.size()), 38, navFont)) {
-        libFrom = View::Library;
-        navigate(View::Library);
+    while (!shownTabs.empty() && Store::isLine(shownTabs.back())) shownTabs.pop_back();
+    for (int tab : shownTabs) {
+        if (Store::isLine(tab)) {
+            // every line in the sidebar the same: 6 px clear to the highlight above (the row's own 2 px gap + 4) and 6 below
+            y += 4;
+            g.rect(x0 + 8, y, w - 16, 1, pal.text, 0.09f);
+            y += 7;
+            continue;
+        }
+        switch (tab) {
+        case Store::TabNow:
+            if (navItem("nav.now", ICON_DISC, "Now playing", v == View::Now, "", 38, navFont)) navigate(View::Now);
+            break;
+        case Store::TabQueue:
+            if (navItem("nav.queue", ICON_LIST, "Playlist", v == View::Queue, q.tracks.empty() ? "" : std::to_string(q.tracks.size()), 38, navFont))
+                navigate(View::Queue);
+            break;
+        case Store::TabAlbums:
+            if (navItem("nav.albums", ICON_V_GRID, "Albums", v == View::Albums || (v == View::Album && libFrom == View::Albums),
+                        std::to_string(lib.albums.size()), 38, navFont)) {
+                libFrom = View::Albums;
+                navigate(View::Albums);
+            }
+            break;
+        case Store::TabArtists:
+            if (navItem("nav.artists", ICON_MIC, "Artists", v == View::Artists || v == View::Artist, std::to_string(artists.size()), 38, navFont))
+                navigate(View::Artists);
+            break;
+        case Store::TabGenres:
+            if (navItem("nav.genres", ICON_TAG, "Genres", v == View::Genres || v == View::Genre, std::to_string(genres.size()), 38, navFont))
+                navigate(View::Genres);
+            break;
+        case Store::TabFolders:
+            if (navItem("nav.folders", ICON_FOLDER, "Folders", v == View::Folders && !folderInLibrary,
+                        std::to_string(std::max(0, int(lib.folders.size()) - int(lib.rootFolders.size()))), 38, navFont)) {
+                navigate(View::Folders, lib.rootFolders.empty() ? -1 : lib.rootFolders[0]);
+                folderFrom = View::Folders;   // the tab itself, even when clicked from Library
+            }
+            break;
+        case Store::TabLibrary:
+            if (navItem("nav.library", ICON_GRID, "Library", v == View::Library || (v == View::Album && libFrom == View::Library) || folderInLibrary ||
+                                                        artistInLibrary || genreInLibrary,
+                        std::to_string(lib.tracks.size()), 38, navFont)) {
+                libFrom = View::Library;
+                navigate(View::Library);
+            }
+            break;
+        case Store::TabFiles:
+            if (navItem("nav.files", PLI_SDCARD, "Files", v == View::Files, "", 38, navFont)) openFiles(filesStart());
+            break;
+        }
     }
 
-    // .nav-sep + .nav-label with the new-playlist button
-    y += 8;
+    // .nav-sep + .nav-label with the new-playlist button; the line as clear of the tab above as your lines are (6 px)
+    y += 4;
     g.rect(x0 + 8, y, w - 16, 1, pal.text, 0.09f);
     y += 11;
     if (!collapsed) {
-        kicker("Playlists", x0 + 12, y + 12, pal.text3, 0.08f);
+        // the header opens the Playlists page (all of them, and their order); lit while it shows
+        const Id hid = uid("nav.playlists");
+        const float hw = w - 36;
+        if (ui.item(hid, { x0, y, hw, 24 }, 7)) navigate(View::Playlists);
+        const bool here = v == View::Playlists, hot = ui.pressed(hid) || (ui.focused(hid) && ui.showFocusRing());
+        if (here) g.roundRect(x0, y, hw, 24, 7, pal.accent, 0.09f);
+        else if (hot) g.roundRect(x0, y, hw, 24, 7, pal.text, ui.pressed(hid) ? 0.11f : 0.065f);
+        kicker("Playlists", x0 + 12, y + 12, here ? pal.accentInk : hot ? pal.text2 : pal.text3, 0.08f);
         if (iconButton(uid("nav.newpl"), ICON_PLUS, x0 + w - 12, y + 12, false, 24, 14)) openNewList();   // your own, or a smart one
         y += 28;
     }
 
     // #playlists: Liked, then the folders added as playlists
     // The progress card sits above Settings while something runs in the background; the playlists make room.
-    const float jobH = (collapsed ? 30 : 52) * jobShown;
+    const float jobH = jobsHeight(collapsed);
     const float footH = 2 + 8 + 1 + 11 + 38 + jobH;
     const float listTop = y, listH = css::H - css::BarH - 12 - footH - listTop;
     ScrollArea& sa = area("side.playlists");
@@ -342,7 +398,7 @@ void App::drawSidebar() {
         const FolderPlaylist& p = store.playlists[i];
         const int f = p.folder() ? lib.folderByPath(p.path) : -1;
         const int count = p.own() ? int(p.tracks.size()) : p.smart() ? int(smartTracks(p.path).size()) : f >= 0 ? lib.folders[f].last - lib.folders[f].first : 0;
-        if (navItem("nav.pl", p.smart() ? smartIcon(p.path) : ICON_LIST, p.name, v == View::List && route.ref == i, std::to_string(count), 32, plFont, i, q.name == p.name && isPlaying()))
+        if (navItem("nav.pl", playlistIcon(i), p.name, v == View::List && route.ref == i, std::to_string(count), 32, plFont, i, q.name == p.name && isPlaying()))
             navigate(View::List, i);
     }
     g.unclip();
@@ -350,7 +406,24 @@ void App::drawSidebar() {
 
     // .side-foot
     y = css::H - css::BarH - 12 - 38 - 2;
-    if (jobShown > 0.01f) drawJobCard(x0, y - 11 - 6, w, collapsed);
+    // One stack above Settings: the first job running in front, the others peeking out behind it (furthest drawn first).
+    {
+        const JobStack st = jobStack();
+        const float bottom = y - 11 - 6, frontH = collapsed ? 22 : 44, peek = collapsed ? 4 : 7;
+        // Only the strip above the front card is drawn: the front card is see-through, and the others must not show in it.
+        // The cards behind are counted in fractions (a job leaving or arriving is part of one), so they slide, never jump.
+        g.clip(x0, 0, w, bottom - frontH);
+        for (int k = int(std::ceil(st.behind - 0.01f)); k >= 1; k--) {
+            const float part = std::min(1.f, st.behind - (k - 1));
+            const float inset = 8.f * k, top = bottom - frontH - peek * std::min(float(k), st.behind);
+            g.roundRect(x0 + inset, top, w - inset * 2, frontH, 10, pal.text, (0.07f - 0.015f * k) * part);
+            g.roundStroke(x0 + inset, top, w - inset * 2, frontH, 10, 1, pal.text, (0.12f - 0.03f * k) * part);
+        }
+        g.unclip();
+        if (st.body > 0.01f) drawJobCard(st, x0, bottom, w, collapsed);
+        // The last job stopped (or done) with the focus on the stack: Settings, just under where it was, takes it.
+        else if (ui.focused(uid("side.job"))) ui.focus(uid("nav.settings", 0));
+    }
     g.rect(x0 + 8, y - 11, w - 16, 1, pal.text, 0.09f);
     if (navItem("nav.settings", ICON_GEAR, "Settings", v == View::Settings, "", 38, navFont)) navigate(View::Settings);
 }
@@ -359,7 +432,7 @@ void App::drawSidebar() {
 
 void App::drawSeek(float x, float y, float w, float h, Id id) {
     const double dur = now.info.duration;
-    ui.item(id, { x, y - 4, w, h + 8 }, 6, Slider);
+    ui.item(id, { x, y - 4, w, h + 8 }, 6, Slider | NoSideEntry);   // reached with Up/Down only (it spans the controls below)
     float frac = dur > 0 ? float(std::clamp(player.position() / dur, 0.0, 1.0)) : 0;
     const float drag = ui.sliderDrag(id);
     float shown = drag >= 0 ? std::clamp((drag - x) / w, 0.f, 1.f) : frac;
@@ -442,8 +515,27 @@ void App::drawPlayerbar() {
     }
     const float metaX = lx + 56 + 12, heartX = lx + leftW - 17;
     const int metaW = int(heartX - 17 - 12 - metaX);
-    g.text(hasTrack ? now.info.title : "—", { css::Base, Weight::SemiBold }, metaX, cy - 21, pal.text, 1, Align::Left, metaW);
-    g.text(hasTrack ? now.info.artist : "", { css::Sm }, metaX, cy + 1, pal.text3, 1, Align::Left, metaW);
+    // A title or artist too long for its room scrolls slowly, in a loop, instead of ending in "…": it rests 3 s
+    // at its start (each new track starts there), then moves at 30 px/s; the edge it is cut at fades
+    // (Gatefold's 36 px mask, a little shorter here). With Motion off it does not move, the end just fades.
+    if (now.track != marqueeTrack) { marqueeTrack = now.track; marqueeAt = time; }
+    auto line = [&](const std::string& s, Font f, float y, const Rgb& c) {
+        const int tw = g.measure(s, f);
+        if (tw <= metaW) { g.text(s, f, metaX, y, c); return; }
+        constexpr float Rest = 3, Speed = 30, Gap = 48, Fade = 24;
+        const float loop = float(tw) + Gap;
+        float off = 0;
+        if (store.motion) {
+            const float t = std::fmod(float(time - marqueeAt), Rest + loop / Speed);
+            off = std::max(0.f, t - Rest) * Speed;
+        }
+        // no fade at the left while it rests at its start, nor as the next round settles there
+        const float fadeL = std::max(0.f, std::min({ Fade, off * 2, (loop - off) * 2 }));
+        g.textScroll(s, f, metaX, y, float(metaW), off, fadeL, Fade, c);
+        if (off > loop - metaW) g.textScroll(s, f, metaX, y, float(metaW), off - loop, fadeL, Fade, c);   // the next round coming in
+    };
+    line(hasTrack ? now.info.title : "—", { css::Base, Weight::SemiBold }, cy - 21, pal.text);
+    line(hasTrack ? now.info.artist : "", { css::Sm }, cy + 1, pal.text3);
     const bool liked = hasTrack && store.isLiked(lib.tracks[now.track].path);
     if (iconButton(uid("pb.like"), liked ? ICON_HEART_F : ICON_HEART, heartX, cy, liked) && hasTrack) {
         store.toggleLiked(lib.tracks[now.track].path);
@@ -505,6 +597,10 @@ void App::drawPlayerbar() {
     }
     x -= 34 + 8;
     if (iconButton(uid("pb.queue"), ICON_QUEUE, x - 17, cy, route.view == View::Queue)) navigate(View::Queue);
+    // The equalizer: lit while it is on. A press turns it on or off; a long press opens Settings → Equalizer.
+    x -= 34 + 8;
+    if (iconButton(uid("pb.eq"), ICON_EQ, x - 17, cy, store.eq.on != 0, 34, 18, Hold)) toggleEq();
+    if (ui.longPressed(uid("pb.eq"))) openEqualizer();
     // The sleep timer: lit while it runs (or stop-after is on, its "End of this track"), the time left beside it.
     x -= 34 + 8;
     const double sl = sleepLeft();
@@ -514,67 +610,179 @@ void App::drawPlayerbar() {
 
 // ------------------------------------------------------------------ overlays
 
-/** What runs in the background now, the most telling first. False when nothing does. */
-bool App::backgroundJob(Job& j) {
+/** What runs in the background now, by slot: the library's own work (one step at a time), the overlay's covers, levelling. */
+void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
     const int n = int(lib.tracks.size());
-    if (libCheck_.joinable() && !libCheckDone_) { j = { "Checking the music folder", 0, 0, 2 }; return true; }
-    if (n > 0 && meta.taggedCount() < n) { j = { "Reading tags", meta.taggedCount(), n, 2 }; return true; }
     const int pos = meta.sweepPos(), cached = meta.coversCached();
-    if (pos > 0 && pos < n && cached < n) { j = { "Preparing covers", std::min(cached, n), n, 2 }; return true; }
-    if (thumbs.running()) {
+    if (libCheck_.joinable() && !libCheckDone_) { jobs[0] = { "Checking the music folder", 0, 0, SetLibrary, Stoppable::None, "Music folder" }; busy[0] = true; }
+    else if (n > 0 && meta.taggedCount() < n) { jobs[0] = { "Reading tags", meta.taggedCount(), n, SetLibrary, Stoppable::None, "Tags read" }; busy[0] = true; }
+    else if (!store.stopCovers && pos > 0 && pos < n && cached < n) {
+        jobs[0] = { "Preparing covers", std::min(cached, n), n, SetLibrary, Stoppable::Covers, "Covers ready" };
+        busy[0] = true;
+    }
+    if (thumbs.running() && !store.stopThumbs) {
         int made = 0, left = 0;
         thumbs.progress(made, left);
-        if (left > 0) { j = { "Overlay covers", made, made + left, 1 }; return true; }
+        if (left > 0) { jobs[1] = { "Overlay covers", made, made + left, SetPlayback, Stoppable::Thumbs, "Covers for the overlay" }; busy[1] = true; }
     }
-    if (store.levelMode && levels.busy()) { j = { "Levelling", std::min(int(levels.count()), n), n, 1 }; return true; }   // short: the count shares the line
-    return false;
+    if (store.levelMode && !store.stopLevels && levels.busy()) {   // short: the count shares the line
+        jobs[2] = { "Levelling", std::min(int(levels.count()), n), n, SetPlayback, Stoppable::Levels, "Measured" };
+        busy[2] = true;
+    }
+    // Files: copying, or deleting a folder (settingsCat −1: the card opens Files where it ends)
+    if (fileWork.thread.joinable() && !fileWork.done) {
+        jobs[3] = { fileWork.label, fileWork.count.load(), fileWork.total.load(), fileWork.cat, Stoppable::None, nullptr };
+        busy[3] = true;
+    }
+    // An update downloading, checked and put in place (not the short check of the list): its card opens Settings → Updates
+    if (updater.busy() && updater.phase() != Updater::Checking) {
+        const Updater::Phase ph = updater.phase();
+        const bool bytes = ph == Updater::Downloading || ph == Updater::Verifying;
+        // Short: the count in megabytes takes room (the version is on Settings' row)
+        const char* what = ph == Updater::Downloading ? "Downloading" : ph == Updater::Verifying ? "Checking it" : "Installing";
+        jobs[4] = { what, int(bytes ? updater.done() / 1024 : updater.done()), int(bytes ? updater.total() / 1024 : updater.total()),
+                    SetUpdates, Stoppable::None, "Check for updates", bytes };
+        if (ph == Updater::BackingUp || ph == Updater::Installing) jobs[4].total = 0;   // quick: just busy
+        busy[4] = true;
+    }
+#ifndef __SWITCH__
+    // The PC preview has no background player, and its covers are made too fast to overlap: GF_JOBS=1 shows all
+    // three at once (hostshim.cpp), so the stack and its menus can be looked at.
+    if (getenv("GF_JOBS")) {
+        const int t = int(time * 20);
+        if (!busy[0] && !store.stopCovers) { jobs[0] = { "Preparing covers", std::min(1015 + t, 3074), 3074, SetLibrary, Stoppable::Covers, "Covers ready" }; busy[0] = true; }
+        if (!busy[1] && !store.stopThumbs) { jobs[1] = { "Overlay covers", std::min(449 + t, 2547), 2547, SetPlayback, Stoppable::Thumbs, "Covers for the overlay" }; busy[1] = true; }
+        if (!busy[2] && !store.stopLevels) { jobs[2] = { "Levelling", std::min(13 + t / 10, 3074), 3074, SetPlayback, Stoppable::Levels, "Measured" }; busy[2] = true; }
+    }
+#endif
 }
 
 /**
- * The progress card above Settings: the job, a count and a thin bar (a sliding one when there is no
- * count). Shown once a job has run for a second, so the quick ones at launch do not flash; it fades out
- * when the work is done. Pressing it opens the Settings page about it. Collapsed: just the bar.
+ * The stack as layers: each job's share of the front card (the first one running in slot order has it; one fading
+ * out hands its share to the next, so the card stays and only its contents change), the front card's own opacity
+ * (all of them together), and how many cards peek out behind it, in fractions.
  */
-void App::drawJobCard(float x, float bottom, float w, bool collapsed) {
-    const float a = jobShown;
-    const Job& j = jobLast;
-    const float h = collapsed ? 22 : 44, y = bottom - h;
-    const Id id = uid("side.job");
-    if (ui.item(id, { x, y, w, h }, 10)) { settingsCat = j.settingsCat; settingsQuery.clear(); navigate(View::Settings); }
-    const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
-    g.roundRect(x, y, w, h, 10, pal.text, (hot ? 0.09f : 0.05f) * a);
-    const float frac = j.total > 0 ? std::clamp(float(j.done) / float(j.total), 0.f, 1.f) : -1;
-    const float bx = x + 10, bw = w - 20, by = y + h - 10;
-    g.roundRect(bx, by, bw, 3, 1.5f, pal.text, 0.12f * a);
-    if (frac >= 0) {
-        g.roundRect(bx, by, std::max(3.f, bw * frac), 3, 1.5f, pal.accent, a);
-    } else {   // busy without a count: a segment sliding along
-        const float t = float(std::fmod(time, 1.6) / 1.6), seg = bw * 0.3f;
-        const float sx = bx + (bw + seg) * t - seg, l = std::max(bx, sx), r = std::min(bx + bw, sx + seg);
-        if (r > l) g.roundRect(l, by, r - l, 3, 1.5f, pal.accent, a);
+App::JobStack App::jobStack() const {
+    JobStack st;
+    float rest = 1, layers = 0;
+    for (int i = 0; i < JobSlots; i++) {
+        const float s = jobCards[i].shown;
+        st.weight[i] = s * rest;
+        rest *= 1 - s;
+        layers += s;
+        st.running += s > 0.5f;
+        if (st.front < 0 || st.weight[i] > st.weight[st.front]) st.front = i;
     }
-    if (collapsed) return;
-    const Font lf{ css::Xs, Weight::SemiBold };
-    std::string count;
-    if (j.total > 0) count = std::to_string(j.done) + " of " + std::to_string(j.total);
-    // The count in fixed-width digits, and the label's room taken from the widest the count can be: nothing moves as it rises.
-    const std::string widest = j.total > 0 ? std::to_string(j.total) + " of " + std::to_string(j.total) : std::string();
-    const int cw = widest.empty() ? 0 : g.measureNum(widest, { css::Xs });
-    g.text(j.label, lf, x + 10, y + 8, pal.text2, a, Align::Left, int(w - 20 - cw - 8));
-    if (!count.empty()) g.textNum(count, { css::Xs }, x + w - 10, y + 8, pal.text3, a, Align::Right);
+    st.body = 1 - rest;
+    st.behind = std::max(0.f, layers - st.body);
+    return st;
+}
+
+float App::jobsHeight(bool collapsed) const {
+    // The front card's height as the stack fades in, and a peek for each card behind it.
+    const JobStack st = jobStack();
+    return (collapsed ? 30 : 52) * st.body + (collapsed ? 4 : 6) * st.behind;
+}
+
+std::string App::jobCount(const Job& j) const {
+    if (j.total <= 0) return {};
+    if (!j.kb) return std::to_string(j.done) + " of " + std::to_string(j.total);
+    char b[48];
+    snprintf(b, sizeof b, "%.1f of %.1f MB", j.done / 1024.0, j.total / 1024.0);
+    return b;
+}
+
+void App::showSetting(const Job& j) {
+    if (j.settingsCat < 0) { openFiles(fileWork.dest); return; }   // Files' work: the folder it ends in
+    settingsCat = j.settingsCat;
+    settingsQuery.clear();
+    navigate(View::Settings);
+    settingsJump = j.row ? j.row : "";
+    settingsJumpAt = time;
+}
+
+void App::applyJobStops() {
+    meta.pauseCovers(store.stopCovers || coversHeld);
+    thumbs.pause(store.stopThumbs);
+    levels.pause(store.stopLevels);
+}
+
+void App::setJobStopped(Stoppable which, bool stopped) {
+    bool& flag = which == Stoppable::Covers ? store.stopCovers : which == Stoppable::Thumbs ? store.stopThumbs : store.stopLevels;
+    if (which == Stoppable::None || flag == stopped) return;
+    flag = stopped;
+    if (which == Stoppable::Covers) coversHeld = false;   // your Stop or Resume answers the launch's hold too
+    applyJobStops();
+    persistSoon(0.3f);
+    static const char* names[] = { "", "Covers", "Overlay covers", "Levelling" };
+    toast(std::string(names[int(which)]) + (stopped ? " stopped. Resume it in Settings" : " resumed"));
+}
+
+/**
+ * The front card of the stack above Settings: the job, a count and a thin bar (a sliding one when there is no
+ * count). Shown once a job has run for a second, so the quick ones at launch do not flash; it fades out when
+ * the work is done. With others running behind it, pressing it lists them all (openJobList); alone, a job
+ * that can wait (the covers, levelling) gets its menu (stop it, or its Settings row), the others go straight
+ * to their Settings row. Collapsed: just the bar.
+ */
+void App::drawJobCard(const JobStack& st, float x, float bottom, float w, bool collapsed) {
+    const float h = collapsed ? 22 : 44, y = bottom - h;
+    const int slot = st.front;
+    const Id id = uid("side.job");   // one id for the stack, whichever job is in front: the focus stays on it when the front one goes
+    if (ui.item(id, { x, y, w, h }, 10)) {
+        const Job& j = jobCards[slot].job;
+        if (st.running > 1) openJobList();                          // every job running, each with its own menu
+        else if (j.stop != Stoppable::None) openJobMenu(slot, false);   // Stop it, or its Settings row
+        else showSetting(j);
+    }
+    const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
+    g.roundRect(x, y, w, h, 10, pal.text, (hot ? 0.09f : 0.05f) * st.body);
+    const float bx = x + 10, bw = w - 20, by = y + h - 10;
+    g.roundRect(bx, by, bw, 3, 1.5f, pal.text, 0.12f * st.body);
+    // The contents of each job with a share of the front: a job leaving fades out, then the next one fades in,
+    // in the same card (no crossing lines: each shows only while it has most of the card).
+    for (int i = 0; i < JobSlots; i++) {
+        const float a = std::clamp((st.weight[i] - 0.5f) / 0.5f, 0.f, 1.f);
+        if (a <= 0.01f) continue;
+        const Job& j = jobCards[i].job;
+        const float frac = j.total > 0 ? std::clamp(float(j.done) / float(j.total), 0.f, 1.f) : -1;
+        if (frac >= 0) {
+            g.roundRect(bx, by, std::max(3.f, bw * frac), 3, 1.5f, pal.accent, a);
+        } else {   // busy without a count: a segment sliding along
+            const float t = float(std::fmod(time, 1.6) / 1.6), seg = bw * 0.3f;
+            const float sx = bx + (bw + seg) * t - seg, l = std::max(bx, sx), r = std::min(bx + bw, sx + seg);
+            if (r > l) g.roundRect(l, by, r - l, 3, 1.5f, pal.accent, a);
+        }
+        if (collapsed) continue;
+        const float right = x + w - 10;
+        const Font lf{ css::Xs, Weight::SemiBold };
+        const std::string count = jobCount(j);
+        // The count in fixed-width digits, and the label's room taken from the widest the count can be: nothing moves as it rises.
+        Job full = j;
+        full.done = j.total;
+        const std::string widest = jobCount(full);
+        const int cw = widest.empty() ? 0 : g.measureNum(widest, { css::Xs });
+        g.text(j.label, lf, x + 10, y + 8, pal.text2, a, Align::Left, int(right - x - 10 - cw - 8));
+        if (!count.empty()) g.textNum(count, { css::Xs }, right, y + 8, pal.text3, a, Align::Right);
+    }
 }
 
 /** The overlay is missing many covers: a small modal offering to make them now (they are made in the background). */
 void App::drawCoverNotice() {
-    if (coverNotice != 1) return;
+    const bool app = appCoverNotice == 1;   // the app's own covers come first, the overlay's after (never both at once)
+    if (!app && coverNotice != 1) return;
     const float a = std::clamp(float(time - coverNoticeAt) / 0.25f, 0.f, 1.f);
     ui.region(Region::Modal);
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.45f * a);
     const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
     const float w = 520, pad = 24, x = (css::W - w) / 2;
-    char sub[200];
-    snprintf(sub, sizeof sub, "%d of %d tracks have none yet, so the overlay shows no cover for them. They are made in the "
-             "background while Gatefold is open.", coverMissing, int(lib.tracks.size()));
+    char sub[240];
+    if (app)
+        snprintf(sub, sizeof sub, "%d of %d tracks have no small cover yet, so lists make each one as you scroll to it. Made now, "
+                 "in the background, every list opens with its covers (a few minutes for a large library).", coverMissing, int(lib.tracks.size()));
+    else
+        snprintf(sub, sizeof sub, "%d of %d tracks have none yet, so the overlay shows no cover for them. They are made in the "
+                 "background while Gatefold is open.", coverMissing, int(lib.tracks.size()));
     const std::vector<std::string> lines = g.wrap(sub, sf, int(w - pad * 2 - 52), 4);
     const float h = pad + 26 + 8 + lines.size() * 21.f + 20 + 34 + pad;
     const float y = (css::H - h) / 2 + (1 - a) * 10;
@@ -584,7 +792,7 @@ void App::drawCoverNotice() {
     g.roundRect(x + pad, y + pad, 40, 40, 11, pal.accent, 0.16f * a);
     g.icon(ICON_IMAGE, x + pad + 20, y + pad + 20, 20, pal.accentInk, a);
     const float tx = x + pad + 52;
-    g.text("Covers for the overlay are missing", tf, tx, y + pad, pal.text, a, Align::Left, int(w - pad * 2 - 52));
+    g.text(app ? "Covers for your library" : "Covers for the overlay are missing", tf, tx, y + pad, pal.text, a, Align::Left, int(w - pad * 2 - 52));
     float ly = y + pad + 26 + 8;
     for (const auto& l : lines) { g.text(l, sf, tx, ly, pal.text2, a); ly += 21; }
     bool make = false, later = false;
@@ -592,7 +800,18 @@ void App::drawCoverNotice() {
     const float bw = button(uid("notice.make"), ICON_REFRESH, "Make them now", tx, by, true, &make, false, false, DefaultFocus);
     button(uid("notice.later"), nullptr, "Not now", tx + bw + 8, by, false, &later);
     if (coverNoticeAt == time) ui.focus(uid("notice.make"));   // the first frame: focus moves onto it
+    if (app) {
+        if (make) {
+            releaseCovers();
+            toast("Making them in the background: the card above Settings shows how far it is");
+        } else if (later) {
+            toast("Settings › Library › Covers ready makes them when you want");
+        }
+        if (make || later) closeCoverNotice();
+        return;
+    }
     if (make) {
+        setJobStopped(Stoppable::Thumbs, false);
         for (int t = 0; t < int(lib.tracks.size()); t++) thumbFor(t, false);
         toast("Making them in the background: the card above Settings shows how far it is");
         closeCoverNotice();
@@ -631,8 +850,17 @@ void App::drawSleepPrompt() {
     if (stay) closeSleepPrompt();
 }
 
+/** The covers cache's sweep, held at launch until the covers were counted (or asked about), goes ahead. */
+void App::releaseCovers() {
+    if (!coversHeld) return;
+    coversHeld = false;
+    applyJobStops();
+}
+
 void App::closeCoverNotice() {
-    coverNotice = 2;
+    // the app's question is answered first (B or Not now leaves its sweep held for this launch); then the overlay's
+    if (appCoverNotice == 1) appCoverNotice = 2;
+    else coverNotice = 2;
     if (noticeFocus_) ui.focus(noticeFocus_);
     else ui.focusDefault();
 }

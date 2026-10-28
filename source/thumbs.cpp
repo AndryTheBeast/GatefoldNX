@@ -132,6 +132,10 @@ void ThumbWorker::start(const std::string& dir) {
     if (hasMap(old) && !hasMap(dir_)) rename(old.c_str(), dir_.c_str());
     else clear(old);
 #endif
+    // Every folder on the way: on a fresh card this starts (with the background player) before anything made
+    // config/gatefold-nx, and a lone mkdir of thumbs/ failed, so the first run's covers were made and never written.
+    for (size_t i = dir_.find('/', dir_.find(":/") + 2); i != std::string::npos; i = dir_.find('/', i + 1))
+        mkdir(dir_.substr(0, i).c_str(), 0777);
     mkdir(dir_.c_str(), 0777);
     loadMap();
     quit_ = false;
@@ -192,7 +196,8 @@ void ThumbWorker::run() {
                 saveMap();
                 l.lock();
             }
-            cv_.wait(l, [this] { return quit_ || !jobs_.empty(); });
+            // Stopped: only the shown track's cover (redo, queued first) goes ahead of the rest.
+            cv_.wait(l, [this] { return quit_ || (!jobs_.empty() && (!paused_ || jobs_.front().redo)); });
             if (quit_) return;
             if (Clock::now() < begin) {
                 cv_.wait_until(l, begin, [this] { return quit_; });
@@ -245,6 +250,14 @@ void ThumbWorker::run() {
     }
 }
 
+void ThumbWorker::pause(bool p) {
+    {
+        std::lock_guard<std::mutex> l(m_);
+        paused_ = p;
+    }
+    cv_.notify_all();
+}
+
 int ThumbWorker::waiting() {
     std::lock_guard<std::mutex> l(m_);
     return int(jobs_.size()) + (busy_ ? 1 : 0);
@@ -267,6 +280,7 @@ bool ThumbWorker::has(const std::string& track) {
 }
 
 void ThumbWorker::loadMap() {
+    map_.clear();   // started again after Settings → Storage and reset cleared them: what the file says, nothing more
     if (FILE* f = fopen((dir_ + "/map.tsv").c_str(), "rb")) {
         char line[128];
         while (fgets(line, sizeof line, f)) {

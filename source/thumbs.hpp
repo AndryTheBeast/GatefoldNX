@@ -11,6 +11,7 @@
  * (Settings → Playback → Background player).
  */
 #pragma once
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -41,6 +42,9 @@ public:
     void progress(int& made, int& left);
     bool has(const std::string& track);
     bool running() const { return started_; }
+    /** Stops (or resumes) the queue; the shown track's cover (redo) is still made. Kept queued while stopped. */
+    void pause(bool p);
+    bool paused() const { return paused_; }
 
 private:
     void run();
@@ -53,6 +57,7 @@ private:
     std::condition_variable cv_;
     std::deque<Job> jobs_;
     bool quit_ = false, started_ = false;
+    std::atomic<bool> paused_{ false };
     std::unordered_map<unsigned long long, std::string> map_;   // gfbgHash(track path) → file name
     bool mapDirty_ = false;
     bool busy_ = false;

@@ -4,6 +4,8 @@
  */
 #include "app.hpp"
 #include "cores.hpp"
+#include "m3u.hpp"
+#include "net.hpp"
 
 #include <SDL2/SDL_image.h>
 
@@ -64,6 +66,14 @@ bool App::init() {
     startMark("sdl");
 
     store.load();
+    // After a factory reset: its old settings folder, moved aside at exit, is deleted in the background
+    if (struct stat st; stat((std::string(Store::Dir) + ".erased").c_str(), &st) == 0)
+        eraseOld_ = std::thread([] {
+            cores::moveHere(cores::FileOps);
+            Updater::eraseLeftovers(Store::Dir);
+        });
+    coversHeld = !store.stopCovers;   // until the covers are counted (and asked about, if many are missing)
+    applyJobStops();   // before the workers start: a stopped job never begins
     stats.start(Store::Dir);
     levels.start(Store::Dir);
     sideW = store.sidebarCollapsed ? css::SideWCollapsed : css::SideW;
@@ -72,10 +82,14 @@ bool App::init() {
     loader.start();
     player.init();   // the UI still runs without audio, so a failure is not fatal
     player.setVolume(store.volume);
+    player.setEq(store.eq);
     volumeShown = store.volume;
     startMark("audio");
     if (store.background) bgConnect();
     startMark("player");
+    // Settings → Updates: the last check's list, read from the card (nothing goes online here unless allowed and asked for)
+    updater.start(Store::Dir, selfPath);
+    if (store.updates && store.updateAtStart) checkUpdates(true);
 
     // Closing from the HOME menu ends the process without running shutdown(): hold the exit until the
     // settings and the session are written, and save whenever the app loses focus anyway.
@@ -85,13 +99,19 @@ bool App::init() {
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad_);
 
-    // First start: use a music folder at the top of the SD card if there is one, else ask.
+    // First start: always ask (the user, 2026-10-27). The folder picker at the card's top, and over it, when the card has
+    // a Music folder at its top, a welcome card offering it; Choose another, B or × leave the picker to choose with.
+    std::string found;
     if (store.musicRoot.empty())
         for (const auto& d : listDirs("sdmc:/"))
-            if (strcasecmp(d.c_str(), "music") == 0) { store.musicRoot = "sdmc:/" + d; break; }   // keep the card's own spelling
+            if (strcasecmp(d.c_str(), "music") == 0) { found = "sdmc:/" + d; break; }   // keep the card's own spelling
     rescan();
     pcm_.resize(Spectrum::N);
-    if (store.musicRoot.empty()) navigate(View::PickFolder, -1, "sdmc:/", false);
+    if (store.musicRoot.empty()) {
+        tourAsk = true;   // a first launch: the tour is offered (the welcome card, or once a folder is chosen)
+        navigate(View::PickFolder, -1, "sdmc:/", false);
+        if (!found.empty()) welcomeCard(found);
+    }
     else if (player.remote() && bgAdoptQueue()) {}   // the background player's queue, playing or not, wins
     else if (store.resume) restoreSession();
     startMark("queue");
@@ -106,6 +126,10 @@ void App::useMusicFolder(const std::string& path) {
     rescan();
     navigate(View::Library, -1, {}, false);
     toast(std::to_string(lib.tracks.size()) + " tracks found in " + path);
+    if (tourAsk) {   // a first launch whose folder was chosen in the picker: the tour, offered now
+        tourAsk = false;
+        offerTour();
+    }
 }
 
 void App::rescan(const std::vector<std::string>* given) {
@@ -177,11 +201,19 @@ void App::rescan(const std::vector<std::string>* given) {
     for (int i = 0; i < int(q.order.size()); i++) q.order[i] = i;
     q.pos = -1;
     for (int i = 0; i < int(q.tracks.size()); i++) if (q.tracks[i] == now.track) q.pos = i;
+    // What the background player was sent is remembered by track index, and indexes mean other files now (a rename in
+    // Files kept the same indexes for new paths, so the player kept the old ones): it is sent again, by path
+    bgs.tracks.clear();
     history.clear();
-    areas.clear();
+    // Every list starts at its top again. Reset in place, never freed: a rescan can come in the middle of a frame (the
+    // welcome card's button, the folder picker's "Use this folder"), and Ui still holds this frame's lists; freeing them
+    // here let the next frame write into freed memory, which crashed the first launch's tour (2026-10-28, a data abort in
+    // malloc on the loader thread)
+    for (auto& [key, a] : areas) a = ScrollArea{};
 }
 
 void App::shutdown() {
+    updater.stop();   // a download stops; the files are only swapped when it finished
     setDimmed(false);
     persistNow();
     Store::flush();
@@ -189,15 +221,23 @@ void App::shutdown() {
     levels.stop();
     appletUnhook(&appletCookie_);
     appletSetMediaPlaybackState(false);
+    if (awakeHeld) {   // the console's own idle times again
+        appletSetIdleTimeDetectionExtension(AppletIdleTimeDetectionExtension_None);
+        appletSetAutoSleepDisabled(false);
+    }
     wave.cancel();
     loader.stop();
     if (libCheck_.joinable()) libCheck_.join();
     if (tracksView.thread.joinable()) tracksView.thread.join();
+    if (fileWork.thread.joinable()) fileWork.thread.join();   // a copy finishes before Gatefold goes
+    if (storage.thread.joinable()) storage.thread.join();     // Storage and reset's sizes
+    if (eraseOld_.joinable()) eraseOld_.join();               // a factory reset's old folder (it carries on next launch)
     meta.stop();
     player.shutdown();
     thumbs.stop();
     bg.disconnect();   // the background player carries on by itself
-    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur }) if (t) SDL_DestroyTexture(t);
+    Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
+    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, svTex, hueTex, wheelTex }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
     if (renderer_) SDL_DestroyRenderer(renderer_);
     if (window_) SDL_DestroyWindow(window_);
@@ -207,6 +247,18 @@ void App::shutdown() {
     psmExit();
     plExit();
     romfsExit();
+    net::end();
+    // An update's files that wait (the app's own .nro above all: romfs no longer reads it), a fresh start or a restore;
+    // then, after Restart now, the (new) Gatefold starts again.
+    Updater::finishPending(Store::Dir, selfPath);
+    if (factoryMask_) Updater::factoryReset(Store::Dir, factoryMask_);   // what was ticked (or everything), moved aside; it starts again
+    if (relaunch) {
+#ifdef __SWITCH__
+        if (envHasNextLoad()) envSetNextLoad(selfPath.c_str(), selfPath.c_str());
+#else
+        printf("[updater] Gatefold starts again: %s\n", selfPath.c_str());
+#endif
+    }
     appletUnlockExit();
 }
 
@@ -235,7 +287,13 @@ void App::persistNow(bool sessionOnly) {
     if (!ready_) return;
     sessionAt = time;
     store.volume = volumeShown;
-    if (!sessionOnly) store.save();
+    if (!sessionOnly) {
+        // A colour being tried in the picker is not chosen yet: what it was is saved until Use
+        const int live = pick.field ? *pick.field : 0;
+        if (pick.field) *pick.field = pick.before;
+        store.save();
+        if (pick.field) *pick.field = live;
+    }
     saveStats();
     if (!store.resume) return;
     Session s;
@@ -295,6 +353,14 @@ void App::run() {
         profMark(0);
         draw();
         ui.endFrame();
+#ifndef __SWITCH__
+        // The preview's D-pad audit: hostshim sets GF_AUDIT from the script's "audit <label>"
+        if (const char* a = getenv("GF_AUDIT"); a && *a) {
+            static FILE* out = fopen("dpad-audit.txt", "w");
+            if (out) ui.audit(a, out);
+            _putenv("GF_AUDIT=");
+        }
+#endif
         frameMs_[frameAt_] = float(interval * 1000);
         workMs_[frameAt_] = float(double(SDL_GetPerformanceCounter() - nowTicks) / freq * 1000);
         frameAt_ = (frameAt_ + 1) % 120;
@@ -308,6 +374,22 @@ void App::run() {
 }
 
 // ============================================================ input
+
+/** + (or a long touch, held): the menu of the row under focus. A long touch on something without one (a button)
+ *  does nothing, without the toasts or Now playing's own track. */
+void App::plusMenu(bool held) {
+    if (route.view == View::Playlists && !canvas) {   // the Playlists page: the playlist's menu (Move, Icon, Rename)
+        if (plHoverShown >= 0) openPlaylistMenu(plHoverShown);
+        else if (!held) toast(plHoverShown == -1 ? "Liked stays first" : "Select a playlist, then press +");
+    } else if (route.view == View::Files && !canvas) {   // Files: the menu of the row under focus
+        if (!files.hover.empty()) openFileMenu(files.hover);
+        else if (!held) toast("Select a file or folder, then press +");
+    } else {
+        const int t = hoverTrackShown >= 0 ? hoverTrackShown : !held && (route.view == View::Now || canvas) ? now.track : -1;
+        if (t >= 0) openTrackMenu(t, hoverTrackShown >= 0 ? hoverQueueShown : -1, hoverUpNextShown);
+        else if (!held) toast("Select a track, then press +");
+    }
+}
 
 void App::input() {
     SDL_Event e;
@@ -329,21 +411,21 @@ void App::input() {
     // ... and the screen out of its dimming. That first press only wakes it: it does nothing else.
     {
         const HidAnalogStickState l0 = padGetStickPos(&pad_, 0), r0 = padGetStickPos(&pad_, 1);
-        const bool any = down || touched || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
+        const bool any = down || held || touched || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
         idleFor = any ? 0 : idleFor + dt;
         if (any && dimmed) { setDimmed(false); down = 0; }
     }
 
     // + opens the track menu for the focused track (or the one playing); HOME closes the app, so + no longer exits.
-    const bool notice = coverNotice == 1 || sleepPromptAt > 0;   // the overlay covers' modal (drawCoverNotice), the sleep card
+    const bool notice = coverNotice == 1 || appCoverNotice == 1 || sleepPromptAt > 0 || tourStep >= 0;   // … and the tour   // the overlay covers' modal (drawCoverNotice), the sleep card
     if ((down & HidNpadButton_Plus) && !notice) {
         if (sheet.page != Sheet::Closed) closeSheet();
-        else {
-            const int t = hoverTrackShown >= 0 ? hoverTrackShown : (route.view == View::Now || canvas) ? now.track : -1;
-            if (t >= 0) openTrackMenu(t, hoverTrackShown >= 0 ? hoverQueueShown : -1, hoverUpNextShown);
-            else toast("Select a track, then press +");
-        }
+        else plusMenu(false);
     }
+    // A finger held on a row (the user, 2026-10-27): what + opens. Ui focuses the row; the rows say what they hold
+    // while they are drawn, and the frame after that publishes it (the …Shown values), so it opens two frames on.
+    if (ui.touchHeld()) plusAfterHold = 2;
+    else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice) plusMenu(true);
     const bool modal = sheet.page != Sheet::Closed || notice;
     if (!modal && (down & HidNpadButton_Minus)) openCanvas(!canvas);
     // Left stick: a pointer for what the D-pad reaches badly (the player bar's right end, small
@@ -381,7 +463,8 @@ void App::input() {
     // A picked-up queue row (the track menu's Move): A or B puts it down, as with a slider; a
     // finger, the pointer or leaving the page put it down too.
     if (grab.pos >= 0) {
-        const View gv = grab.upNext ? View::Now : View::Queue;
+        const View gv = grab.kind == Grab::Playlists ? View::Playlists : grab.kind == Grab::Tabs ? View::Settings
+                      : grab.upNext ? View::Now : View::Queue;
         if ((down & (HidNpadButton_A | HidNpadButton_B)) || touched || pointerMoved || modal || canvas || route.view != gv) {
             grabDrop();
             down &= ~u64(HidNpadButton_A | HidNpadButton_B);
@@ -397,8 +480,10 @@ void App::input() {
     } else if (down & HidNpadButton_A) {
         ui.activate();
     }
+    ui.padHeld(held & HidNpadButton_A);   // a Hold item (the equalizer buttons) acts when A is let go, or on a long press
     // B puts a picked-up slider down before it goes back.
-    if (down & HidNpadButton_B) ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
+    if (down & HidNpadButton_B)
+        ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : tourStep >= 0 ? tourBack() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
     if (down & HidNpadButton_X) togglePlay();
     if (!modal && (down & HidNpadButton_Y)) openSearch();
     if (down & HidNpadButton_L) prev();
@@ -416,8 +501,9 @@ void App::input() {
         if (rLeft.step(lf, dt) && grab.cols > 1) grabStep(-1);
         if (rRight.step(rt, dt) && grab.cols > 1) grabStep(1);
     } else {
-        if (rUp.step(up, dt)) ui.navigate(0, -1);
-        if (rDown.step(dn, dt)) ui.navigate(0, 1);
+        const bool square = ui.focusIsSlider2D();   // a colour square picked up with A: ↑/↓ move it too
+        if (rUp.step(up, dt)) square ? ui.slideY(-1) : ui.navigate(0, -1);
+        if (rDown.step(dn, dt)) square ? ui.slideY(1) : ui.navigate(0, 1);
     }
     const bool slider = ui.focusIsSlider();
     // Settings: → from the category list goes to the top of its options (spatially the title bar's search
@@ -452,7 +538,21 @@ void App::update() {
     if (coverWaiting_) { coverWaiting_ = false; applyCover(coverWait_); coverWait_ = TrackLoader::Result{}; }
     else if (TrackLoader::Result r; loader.take(r)) applyLoaded(r);
     bgUpdate();
+    updateTick();   // Settings → Updates: what the updater's worker finished
+    player.update();
     if (player.takeFinished()) next(true);
+    if (player.remote() && time - bgListsAt > 5) { bgListsAt = time; writeBgPlaylists(); }
+    // Crossfade, in Gatefold's own player: over the last seconds of the track, into the next one.
+    if (!player.remote() && store.crossfade > 0 && !xfadeChecked && isPlaying() && now.track >= 0) {
+        const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
+        const double left = dur - player.position();
+        if (dur > 0 && left <= store.crossfade && left > 0.25) {
+            xfadeChecked = true;
+            // A track shorter than two fades plays whole: the fade takes at most half of it.
+            const int p = dur > store.crossfade * 2 ? crossfadeNext(left) : -1;
+            if (p >= 0) playAt(p, left);
+        }
+    }
 
     // Play statistics. Gatefold counts what it plays itself; while the background player plays, it
     // counts (bg-plays.txt) and Gatefold only takes its counts in.
@@ -477,6 +577,7 @@ void App::update() {
     updateSleep();
     sampleBattery();
     updateLevels();
+    updateFileWork();
 
     // Gatefold crossfades the palette over --tx (1.1 s) with an ease-out curve.
     pal = store.colourTransition < 0.05f ? target : paletteMix(pal, target, 1 - std::exp(-dt / (store.colourTransition / 3.6f)));
@@ -506,7 +607,30 @@ void App::update() {
     // The overlay's covers: when many are missing, say so once (drawCoverNotice). Looked at once the
     // library has settled a little after launch, and only with the background player connected.
     // It is a small modal: focus goes to it, B or Not now closes it. Not over the Canvas or the track menu.
-    if (coverNotice == 0 && player.remote() && thumbs.running() && time > 6 && !lib.tracks.empty() && !canvas && sheet.page == Sheet::Closed) {
+    // First the app's own covers (the user, 2026-10-27): once every track's tags are in, counted; more than a tenth
+    // missing (a first launch, a cleared cache) asks before the sweep runs, else it just goes on. The overlay's after.
+    if (appCoverNotice == 0 && !lib.tracks.empty() && meta.taggedCount() >= int(lib.tracks.size()) && time > 3 && !canvas &&
+        sheet.page == Sheet::Closed && sleepPromptAt <= 0 && !tourPending && tourStep < 0) {   // never over the tour: after it
+        if (!coversHeld) appCoverNotice = 2;   // stopped by you (Settings): nothing to ask
+        else if (std::min(meta.coversCached(), int(lib.tracks.size())) * 10 < int(lib.tracks.size()) * 9) {
+            appCoverNotice = 1;
+            coverMissing = int(lib.tracks.size()) - std::min(meta.coversCached(), int(lib.tracks.size()));
+            coverNoticeAt = time;
+            noticeFocus_ = ui.focusedId();
+        } else {
+            appCoverNotice = 2;
+            releaseCovers();
+        }
+    }
+    // The tour the welcome card asked for: at once, as soon as the folder's files are listed (seconds); the tags are read
+    // during it (the user, 2026-10-28: reading a big library took minutes, and the app was in use by then), and the
+    // covers question waits for it to end
+    if (tourPending && tourStep < 0 && coverNotice != 1 && appCoverNotice != 1 && sheet.page == Sheet::Closed && sleepPromptAt <= 0 &&
+        !lib.tracks.empty()) {
+        tourPending = false;
+        startTour();
+    }
+    if (coverNotice == 0 && appCoverNotice == 2 && !tourPending && tourStep < 0 && player.remote() && thumbs.running() && !store.stopThumbs && time > 6 && !lib.tracks.empty() && !canvas && sheet.page == Sheet::Closed) {
         coverMissing = 0;
         for (const auto& t : lib.tracks) coverMissing += !thumbs.has(t.path);
         coverNotice = coverMissing * 10 > int(lib.tracks.size()) ? 1 : 2;
@@ -515,15 +639,19 @@ void App::update() {
     }
     if (coverNotice == 1 && !player.remote()) closeCoverNotice();
 
-    // The sidebar's progress card: a job that has run for a second shows, and fades out once nothing runs.
+    // The sidebar's progress cards: each job that has run for a second shows, and fades out once it is done (or stopped).
     {
-        Job j;
-        const bool busy = backgroundJob(j);
-        jobSince = busy ? jobSince + dt : 0;
-        if (busy) jobLast = j;
-        const float want = busy && jobSince > 1 ? 1.f : 0.f;
-        jobShown += (want - jobShown) * (1 - std::exp(-dt / 0.15f));
-        if (jobShown < 0.005f && want == 0) jobShown = 0;
+        Job jobs[JobSlots];
+        bool busy[JobSlots] = {};
+        backgroundJobs(jobs, busy);
+        for (int i = 0; i < JobSlots; i++) {
+            JobCard& c = jobCards[i];
+            c.since = busy[i] ? c.since + dt : 0;
+            if (busy[i]) c.job = jobs[i];
+            const float want = busy[i] && c.since > 1 ? 1.f : 0.f;
+            c.shown += (want - c.shown) * (1 - std::exp(-dt / 0.15f));
+            if (c.shown < 0.005f && want == 0) c.shown = 0;
+        }
     }
 
     // The launch check of the music folder: a rescan only if the card's files are not the remembered ones.
@@ -657,8 +785,25 @@ int App::routeGenre() const {
     return it == genreByKey.end() ? -1 : it->second;
 }
 
+/** Before a page that belongs to a sidebar tab (an album, an artist, a genre): its own tab when shown, else Library
+ *  (which lights for it), else nowhere to show it from: a toast says which tab to show. */
+bool App::tabFor(int tab, const char* page) {
+    if (!(store.hiddenTabs & Store::tabBit(tab))) {
+        if (tab == Store::TabAlbums) libFrom = View::Albums;
+        if (tab == Store::TabFolders) folderFrom = View::Folders;
+        return true;
+    }
+    if (!(store.hiddenTabs & Store::tabBit(Store::TabLibrary))) {
+        if (tab == Store::TabAlbums) libFrom = View::Library;
+        if (tab == Store::TabFolders) folderFrom = View::Library;
+        return true;
+    }
+    toast(std::string("To see the ") + page + ", show " + Store::tabName(tab) + " or Library in Settings › Appearance › Sidebar");
+    return false;
+}
+
 void App::openGenre(const std::string& name) {
-    if (!name.empty()) navigate(View::Genre, -1, name);
+    if (!name.empty() && tabFor(Store::TabGenres, "genre")) navigate(View::Genre, -1, name);
 }
 
 int App::routeAlbum() const {
@@ -675,7 +820,14 @@ void App::openAlbum(int a) {
     if (a >= 0 && a < int(lib.albums.size())) navigate(View::Album, -1, lib.albums[a].key);
 }
 
-void App::openArtist(const std::string& name) { navigate(View::Artist, -1, name.empty() ? "Unknown artist" : name); }
+/** An album from outside its grids (Now playing, the track menu, Files): the tab it lights follows tabFor. */
+void App::goToAlbum(int a) {
+    if (a >= 0 && tabFor(Store::TabAlbums, "album")) openAlbum(a);
+}
+
+void App::openArtist(const std::string& name) {
+    if (tabFor(Store::TabArtists, "artist")) navigate(View::Artist, -1, name.empty() ? "Unknown artist" : name);
+}
 
 // ============================================================ play queue
 
@@ -702,11 +854,15 @@ void App::playTracks(const std::vector<int>& tracks, int startPos, const std::st
     }
 }
 
-void App::playAt(int orderPos) {
+void App::playAt(int orderPos, double fade) {
     if (q.order.empty()) return;
     q.pos = std::clamp(orderPos, 0, int(q.order.size()) - 1);
-    loadTrack(q.tracks[q.order[q.pos]]);
-    if (!player.loaded()) {
+    loadTrack(q.tracks[q.order[q.pos]], false, true, fade);
+    // The background player skips an unplayable file itself and says so (errorGen, bgUpdate); its polled
+    // state is a frame old here, and on a fresh install it still said "no queue", which skipped every track.
+    if (player.remote()) {
+        q.failed = 0;
+    } else if (!player.loaded()) {
         // Unplayable file: say so, skip it, but never loop forever over a list of broken files.
         toast("Can't play “" + baseName(lib.tracks[q.tracks[q.order[q.pos]]].path) + "”");
         if (++q.failed < int(q.order.size())) next(false);
@@ -722,20 +878,91 @@ void App::next(bool natural) {
     if (natural && stopAfterCurrent) {
         stopAfterCurrent = false;
         player.stop();
-        appletSetMediaPlaybackState(false);
         return;
     }
     int p = q.pos + 1;
     if (p >= int(q.order.size())) {
         if (store.order == Order::Default && natural) {
             player.stop();
-            appletSetMediaPlaybackState(false);
             return;
         }
         if (store.order == Order::Shuffle) { grabDrop(); std::shuffle(q.order.begin(), q.order.end(), rng); }
         p = 0;
     }
     playAt(p);
+}
+
+/**
+ * The rules of next(true), without doing anything: none at Repeat track, Stop after this track, the end of
+ * the list, a reshuffle at the end, a sleep timer ending first, and (by default) between consecutive tracks
+ * of one album, which keep their gapless join.
+ */
+int App::crossfadeNext(double left) const {
+    if (q.order.empty() || store.order == Order::RepeatOne || stopAfterCurrent) return -1;
+    const double sl = sleepLeft();
+    if (sl > 0 && sl <= left + store.crossfade) return -1;
+    const int p = q.pos + 1;
+    if (p >= int(q.order.size())) return -1;   // the end, or a new round (and a reshuffle): as before
+    if (store.xfadeNotInAlbum) {
+        const int a = lib.tracks[now.track].albumIdx, b = lib.tracks[q.tracks[q.order[p]]].albumIdx;
+        if (a >= 0 && a == b) return -1;
+    }
+    return p;
+}
+
+bool App::bgShown() const {
+#ifndef __SWITCH__
+    static const bool fake = getenv("GF_BGCFG") != nullptr;   // the preview has no background player: its settings, to look at
+    if (fake) return true;
+#endif
+    return player.remote() && bgs.cfgRead;
+}
+
+uint64_t App::listHash(const std::string& name) {
+    uint64_t h = 0xcbf29ce484222325ULL;   // gfbgHash (FNV-1a 64), as the player hashes the "#name" lines
+    for (unsigned char c : name) { h ^= c; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+std::string App::listName(uint64_t hash) const {
+    if (!hash) return {};
+    if (hash == listHash("Liked")) return "Liked";
+    for (const auto& p : store.playlists) if (listHash(p.name) == hash) return p.name;
+    return {};
+}
+
+/**
+ * GFBG_PLAYLISTS: Liked, then every playlist in the sidebar (yours, folder ones, smart ones as they stand now) as
+ * "#name" and its tracks' paths. The background player reads the one a game event asks for; the overlay the names.
+ */
+void App::writeBgPlaylists() {
+    std::string out;
+    out.reserve(64 * 1024);
+    out += "#Liked\n";
+    for (const auto& p : store.liked) { out += p; out += '\n'; }
+    for (const auto& pl : store.playlists) {
+        out += '#';
+        out += pl.name;
+        out += '\n';
+        if (pl.own()) {
+            for (const auto& p : pl.tracks) { out += p; out += '\n'; }
+        } else {
+            const std::vector<int> t = pl.smart() ? smartTracks(pl.path) : lib.tracksUnder(lib.folderByPath(pl.path));
+            for (int i : t) { out += lib.tracks[size_t(i)].path; out += '\n'; }
+        }
+    }
+    const uint64_t sig = listHash(out);
+    if (sig == bgListsSig) return;
+    bgListsSig = sig;
+    store.writeFile("bg-playlists.txt", std::move(out));
+}
+
+void App::setEq(const GfbgEq& e) {
+    store.eq = e;
+    gfEqClamp(&store.eq);
+    player.setEq(store.eq);
+    eqDirty = true;
+    persistSoon(1.0f);
 }
 
 void App::prev() {
@@ -751,7 +978,6 @@ void App::togglePlay() {
         return;
     }
     player.togglePause();
-    appletSetMediaPlaybackState(!player.paused());
 }
 
 void App::seekBy(double d) {
@@ -906,7 +1132,7 @@ void App::updateSleep() {
         const double left = sleepUntil - time;
         if (left <= 0) {
             sleepUntil = 0;
-            if (isPlaying()) { player.togglePause(); appletSetMediaPlaybackState(false); }
+            if (isPlaying()) player.togglePause();
             if (sleepFading) player.setVolume(volumeShown);
             sleepFading = false;
             sleepEnded(true);
@@ -920,8 +1146,18 @@ void App::updateSleep() {
     if (isPlaying()) sleepReleased = false;
     const bool want = store.keepAwake && !sleepReleased;
     if (want != awakeHeld) {
+        // (1.1 called appletSetAutoSleepTimeAndDimmingTimeEnabled, which only an overlay applet may: from Gatefold it did
+        // nothing, so the console dimmed by itself whenever the music was paused.) An application's own ways: the idle
+        // time stretched as far as it goes, and auto-sleep off.
         awakeHeld = want;
-        appletSetAutoSleepTimeAndDimmingTimeEnabled(!want);
+        appletSetIdleTimeDetectionExtension(want ? AppletIdleTimeDetectionExtension_ExtendedUnsafe : AppletIdleTimeDetectionExtension_None);
+        appletSetAutoSleepDisabled(want);
+    }
+    // "Media playing" keeps the screen from dimming and the console from sleeping: while music plays, and all the time
+    // while Keep awake holds (Gatefold's own dimming, below, then decides). Set from here alone, once per change.
+    if (const int media = (isPlaying() || want) ? 1 : 0; media != mediaState) {
+        mediaState = media;
+        appletSetMediaPlaybackState(media != 0);
     }
     // ... and Dim the screen, after store.dimAfter minutes without input (only then: else the system dims).
     const bool dim = want && store.dimAfter > 0 && idleFor >= store.dimAfter * 60.0 && sleepPromptAt == 0;
@@ -1109,17 +1345,45 @@ void App::queuePlayNext(int pos) {
     queueMove(pos, pos < q.pos ? q.pos : q.pos + 1);
 }
 
-/** Clear keeps the track playing, so the music does not stop. */
+/** Clear empties the queue, the track playing too: the music stops, as with the overlay's Remove All (the user, 2026-10-27;
+ *  1.1.0 kept the track playing). */
 void App::queueClear() {
-    const int cur = currentQueuePos();
-    if (cur < 0) { q.tracks.clear(); q.order.clear(); q.pos = -1; persistSoon(0.5f); return; }
-    q.tracks = { q.tracks[cur] };
-    q.order = { 0 };
-    q.pos = 0;
-    queueEdited();
+    grabDrop();
+    q.tracks.clear();
+    q.order.clear();
+    q.pos = -1;
+    q.name.clear();
+    q.failed = 0;
+    stopAfterCurrent = false;
+    if (player.remote()) {
+        // An empty queue stops the background player; sent here, as bgSyncQueue never sends an empty one
+        BgQueue none;
+        none.mode = int(store.order);
+        bg.setQueue(none);
+        bgs.tracks.clear();
+        bgs.order.clear();
+        bgs.name.clear();
+        bgs.mode = none.mode;
+    } else {
+        player.stop();
+    }
+    forgetNowPlaying();
+    persistSoon(0.5f);
 }
 
 void App::grabStep(int d) {
+    if (grab.kind == Grab::Playlists) {   // the Playlists page: the playlist itself moves (its rows keep their ids)
+        const int to = std::clamp(grab.pos + d, 0, int(store.playlists.size()) - 1);
+        if (to != grab.pos) { movePlaylist(grab.pos, to); grab.pos = to; }
+        ui.setPadMode(true);
+        return;
+    }
+    if (grab.kind == Grab::Tabs) {        // Settings → Appearance → Sidebar: a tab
+        const int to = std::clamp(grab.pos + d, 0, int(store.tabOrder.size()) - 1);
+        if (to != grab.pos) { std::swap(store.tabOrder[size_t(grab.pos)], store.tabOrder[size_t(to)]); grab.pos = to; persistSoon(0.3f); }
+        ui.setPadMode(true);
+        return;
+    }
     const int n = int(q.order.size());
     if (grab.pos < 0 || grab.pos >= n) { grabDrop(); return; }
     // In Up next the row stays after the track playing (what lies before it has been played),
@@ -1144,8 +1408,11 @@ void App::grabDrop() { grab = Grab{}; }
  * lyrics stay as they were (frozen where they were), and then everything changes at once: showing the
  * library's tags first made the lyrics read "No lyrics" and the Canvas text jump for a frame or two.
  */
-void App::loadTrack(int trackIdx, bool paused, bool start) {
+void App::loadTrack(int trackIdx, bool paused, bool start, double fade) {
     const Track& t = lib.tracks[trackIdx];
+    // A crossfade is set: a track changed by hand fades quickly instead of cutting (Player: only while one plays).
+    if (fade <= 0 && start && !paused && store.crossfade > 0 && !player.remote() && isPlaying()) fade = 0.3;
+    xfadeChecked = false;
     lyricsHold = player.loaded() ? player.position() : 0;
     const bool shown = now.track >= 0 && !now.info.title.empty();
     now.track = trackIdx;
@@ -1177,14 +1444,12 @@ void App::loadTrack(int trackIdx, bool paused, bool start) {
     wave.request(t.path);
     meta.wantTags(trackIdx);
     if (!start) return;
-    if (player.remote()) {
-        bgSyncQueue();
+    if (player.remote() && bgSyncQueue(false)) {
         bg.playAt(q.pos, paused, 0);
         bgs.awaitUntil = time + 1.5;
-        if (!paused) appletSetMediaPlaybackState(true);
         return;
     }
-    if (player.load(t.path, paused) && !paused) appletSetMediaPlaybackState(true);
+    player.load(t.path, paused, fade);
 }
 
 // ============================================================ the background player
@@ -1206,12 +1471,35 @@ void App::bgConnect() {
     sleepGenSeen = s.sleepGen;   // a timer that ran out before Gatefold opened is not news
     levelModeSent = -1;          // tell it the levelling mode again
     bgs.cfgRead = bg.config(bgs.cfg);
+    // The equalizer: the player's copy is the one heard (the overlay may have changed it meanwhile).
+    bgs.eqGen = s.eqGen;
+    if (GfbgEq e; bg.eq(e)) { store.eq = e; player.setEq(e); }
+    eqDirty = false;
 }
 
 /** Takes the background player's queue as Gatefold's own (at launch, and after the overlay reshuffled it). */
 bool App::bgAdoptQueue() {
     BgQueue bq;
-    if (!bg.getQueue(bq) || bq.paths.empty()) return false;
+    if (!bg.getQueue(bq)) return false;
+    if (bq.paths.empty()) {
+        // Emptied in the overlay (Remove All): Gatefold's queue goes too. An empty queue from anyone else (a player just
+        // started with nothing) is not news: then Gatefold keeps, or at launch restores, its own. Before, Gatefold kept
+        // its queue either way, and at its next launch restored it and sent it back to the player.
+        if (bg.state().queueBy != BgClient::ByOverlay) return false;
+        grabDrop();
+        q.tracks.clear();
+        q.order.clear();
+        q.pos = -1;
+        q.name.clear();
+        q.failed = 0;
+        bgs.tracks.clear();
+        bgs.order.clear();
+        bgs.name.clear();
+        bgs.mode = int(store.order);
+        forgetNowPlaying();
+        persistSoon(0.5f);   // the session too: an empty one restores nothing
+        return true;
+    }
     std::vector<int> keep, tracks;   // its index → ours, −1 for files this library does not have
     for (const auto& p : bq.paths) {
         auto it = pathIndex.find(p);
@@ -1247,11 +1535,13 @@ bool App::bgAdoptQueue() {
     return true;
 }
 
-/** Sends Gatefold's queue when it changed here: a new list, a reshuffle, an order change, a track queued. */
-void App::bgSyncQueue() {
+/** Sends Gatefold's queue when it changed here: a new list, a reshuffle, an order change, a track queued. False when the
+ *  background player could not take it (too big for its memory): Gatefold plays by itself from then on (reload: and
+ *  carries on with the track playing, where it was). */
+bool App::bgSyncQueue(bool reload) {
     // An empty queue here (no music folder yet, a library that lacks its files) never clears the player's.
-    if (!player.remote() || q.tracks.empty()) return;
-    if (q.tracks == bgs.tracks && q.order == bgs.order && int(store.order) == bgs.mode && q.name == bgs.name) return;
+    if (!player.remote() || q.tracks.empty()) return player.remote();
+    if (q.tracks == bgs.tracks && q.order == bgs.order && int(store.order) == bgs.mode && q.name == bgs.name) return true;
     BgQueue bq;
     bq.name = q.name;
     bq.paths.reserve(q.tracks.size());
@@ -1259,12 +1549,26 @@ void App::bgSyncQueue() {
     bq.order = q.order;
     bq.pos = q.pos;
     bq.mode = int(store.order);
-    if (!bg.setQueue(bq)) return;
+    if (!bg.setQueue(bq)) {
+        if (!bg.queueRefused()) return false;
+        const bool had = now.track >= 0 && q.pos >= 0, playing = isPlaying();
+        const double at = player.loaded() ? player.position() : 0;
+        bg.stop();
+        bg.disconnect();
+        player.setRemote(nullptr);
+        toast("This queue is too big for the background player: Gatefold plays it itself");
+        if (reload && had) {
+            loadTrack(q.tracks[q.order[q.pos]], !playing);
+            if (at > 1) player.seek(at);
+        }
+        return false;
+    }
     for (int t : q.tracks) thumbFor(t, false);
     bgs.tracks = q.tracks;
     bgs.order = q.order;
     bgs.mode = bq.mode;
     bgs.name = q.name;
+    return true;
 }
 
 /** Every frame while connected: what the player did on its own (next track, the overlay's buttons), and ours to it. */
@@ -1275,7 +1579,7 @@ void App::bgUpdate() {
         toast("The background player stopped, so Gatefold plays on its own");
         return;
     }
-    bgSyncQueue();
+    if (!bgSyncQueue()) return;   // too big for it: Gatefold plays by itself now
     const BgState& s = bg.state();
     if (s.queueGen != bgs.queueGen) {
         bgs.queueGen = s.queueGen;
@@ -1296,6 +1600,21 @@ void App::bgUpdate() {
     if (std::fabs(s.volume - bgs.volume) > 0.0005f) {
         bgs.volume = s.volume;
         if (std::fabs(s.volume - volumeShown) > 0.0005f) volumeShown = s.volume;   // the overlay moved it
+    }
+    // Crossfade's settings, whenever they differ from what it was told.
+    if (store.crossfade != bgs.xfadeSent || int(store.xfadeNotInAlbum) != bgs.xfadeFlagSent) {
+        bg.setCrossfade(store.crossfade, store.xfadeNotInAlbum);
+        bgs.xfadeSent = store.crossfade;
+        bgs.xfadeFlagSent = store.xfadeNotInAlbum;
+    }
+    // The equalizer: ours when it changed here (a slider: at most every 0.1 s), else the player's when the overlay changed it.
+    if (eqDirty && time - eqSentAt >= 0.1) {
+        bg.setEq(store.eq);
+        eqDirty = false;
+        eqSentAt = time;
+    } else if (!eqDirty && s.eqGen != bgs.eqGen) {
+        bgs.eqGen = s.eqGen;
+        if (GfbgEq e; bg.eq(e) && memcmp(&e, &store.eq, sizeof e) != 0) { store.eq = e; player.setEq(e); persistSoon(1.0f); }
     }
 }
 
@@ -1326,6 +1645,153 @@ void App::addToPlaylist(int playlist, int track) {
     toast("Added to “" + p.name + "”");
 }
 
+// ============================================================ playlist files (m3u.hpp)
+
+/**
+ * A playlist file's lines as library tracks, in its order. Each line is tried as written (sdmc:/…, "/…" from the
+ * card's root, or relative to the file), then the same path in any case (FAT ignores it), then, for a path from
+ * elsewhere (a PC's "C:/Music/…"), the library file of that name that shares the most folders from the end.
+ */
+std::vector<int> App::resolvePlaylistFile(const std::string& file, int& missing) {
+    missing = 0;
+    std::vector<M3uLine> lines;
+    if (!readM3u(file, lines)) return {};
+    const std::string dir = file.substr(0, file.find_last_of('/'));
+    std::unordered_map<std::string, int> byLower;
+    std::unordered_multimap<std::string, int> byName;
+    for (int i = 0; i < int(lib.tracks.size()); i++) {
+        byLower.emplace(lower(lib.tracks[i].path), i);
+        byName.emplace(lower(baseName(lib.tracks[i].path)), i);
+    }
+    auto parts = [](const std::string& p) {
+        std::vector<std::string> v;
+        size_t at = 0;
+        while (at <= p.size()) {
+            size_t s = p.find('/', at);
+            if (s == std::string::npos) s = p.size();
+            if (s > at) v.push_back(lower(p.substr(at, s - at)));
+            at = s + 1;
+        }
+        return v;
+    };
+    std::vector<int> out;
+    for (const M3uLine& l : lines) {
+        const std::string& p = l.path;
+        std::string cand;
+        if (p.compare(0, 6, "sdmc:/") == 0) cand = p;
+        else if (!p.empty() && p[0] == '/') cand = "sdmc:" + p;
+        else if (!(p.size() > 1 && p[1] == ':')) cand = dir + "/" + p;   // a drive letter is someone else's card
+        int t = -1;
+        if (!cand.empty()) {
+            cand = normalisePath(cand);
+            if (auto it = pathIndex.find(cand); it != pathIndex.end()) t = it->second;
+            else if (auto lt = byLower.find(lower(cand)); lt != byLower.end()) t = lt->second;
+        }
+        if (t < 0) {
+            const std::vector<std::string> want = parts(p);
+            const auto range = byName.equal_range(lower(baseName(p)));
+            int best = 0;
+            for (auto it = range.first; it != range.second; ++it) {
+                const std::vector<std::string> have = parts(lib.tracks[it->second].path);
+                int n = 0;
+                while (n < int(want.size()) && n < int(have.size()) && want[want.size() - 1 - n] == have[have.size() - 1 - n]) n++;
+                if (n > best) { best = n; t = it->second; }
+            }
+        }
+        if (t >= 0) out.push_back(t);
+        else missing++;
+    }
+    return out;
+}
+
+void App::openPlaylistFile(const std::string& file) {
+    const Id back = sheet.page != Sheet::Closed ? sheet.returnFocus : ui.focusedId();
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::PlFile;
+    sheet.dir = file;
+    sheet.returnFocus = back;
+    sheet.fileTracks = resolvePlaylistFile(file, sheet.fileMissing);
+    playlistPickerAt = file.substr(0, file.find_last_of('/'));
+    ui.focusDefault();
+}
+
+/** Starts where the last file was picked this session, else at the card's root. */
+void App::openPlaylistPicker() {
+    closeSheet();
+    std::string at = playlistPickerAt;
+    struct stat st;
+    if (at.empty() || stat(at.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) at = store.importDir;   // Settings → Storage and reset
+    if (at.empty() || stat(at.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) at = "sdmc:/";
+    navigate(View::PickPlaylist, -1, at);
+}
+
+void App::leavePlaylistPicker() {
+    if (route.view == View::PickPlaylist || route.view == View::PickExport) route.query = "sdmc:/";   // as if at the root: back() leaves
+    back();
+}
+
+/** Starts in the folder last exported to this session, else <music folder>/Playlists if there is one, else the music folder. */
+void App::openExportPicker(const std::string& name, const std::vector<int>& tracks) {
+    if (tracks.empty()) { toast("Nothing to export: the playlist is empty"); return; }
+    exportName = name.empty() ? "Playlist" : name;
+    exportTracks = tracks;
+    auto isDir = [](const std::string& p) {
+        struct stat st;
+        return !p.empty() && stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    };
+    std::string at = exportPickerAt;
+    if (!isDir(at)) at = store.exportDir;   // Settings → Storage and reset
+    if (!isDir(at) && !lib.roots.empty()) at = isDir(lib.roots[0] + "/Playlists") ? lib.roots[0] + "/Playlists" : lib.roots[0];
+    if (!isDir(at)) at = "sdmc:/";
+    navigate(View::PickExport, -1, at);
+}
+
+/** <dir>/<name>.m3u8, the paths relative to it (writeM3u), so it works on a PC copy of the card too. */
+void App::exportPlaylist(const std::string& dir) {
+    std::string safe = exportName;
+    for (char& c : safe) if (strchr("/\\:*?\"<>|", c)) c = ' ';
+    const std::string file = (dir.back() == '/' ? dir : dir + "/") + safe + ".m3u8";
+    auto write = [this, dir, file, safe] {
+        std::vector<M3uTrack> out;
+        out.reserve(exportTracks.size());
+        for (int t : exportTracks) {
+            if (t < 0 || t >= int(lib.tracks.size())) continue;   // the library was rebuilt meanwhile
+            const Track& tr = lib.tracks[size_t(t)];
+            out.push_back({ tr.path, tr.artist, tr.title, tr.duration });
+        }
+        if (!writeM3u(file, exportName, out)) { toast("Could not write " + file); return; }
+        exportPickerAt = dir;
+        pickerGen++;   // the next export opens here: its listing shows this file
+        const size_t n = out.size();
+        leavePlaylistPicker();
+        toast("Exported " + std::to_string(n) + (n == 1 ? " track to " : " tracks to ") + safe + ".m3u8 in " +
+              (dir == "sdmc:/" ? std::string("the SD card") : baseName(dir)));
+    };
+    struct stat st;
+    if (stat(file.c_str(), &st) != 0) { write(); return; }
+    confirm(nullptr, "Export", safe + ".m3u8", "Already in " + dir, "Replace the playlist file that is there?",
+            "The file there is overwritten with this playlist's tracks.", "Replace", write);
+}
+
+void App::confirm(const char* icon, const std::string& kicker, const std::string& title, const std::string& sub, const std::string& question,
+                  const std::string& text, const std::string& button, std::function<void()> yes) {
+    const Id back = sheet.page != Sheet::Closed ? sheet.returnFocus : ui.focusedId();
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::Confirm;
+    sheet.returnFocus = back;
+    sheet.askIcon = icon;
+    sheet.askKicker = kicker;
+    sheet.askTitle = title;
+    sheet.askSub = sub;
+    sheet.askQuestion = question;
+    sheet.askText = text;
+    sheet.askButton = button;
+    sheet.askYes = std::move(yes);
+    ui.focusDefault();
+}
+
 /** Settings → Playback → Background player: hands the track over, at the same place, either way. */
 void App::setBackground(bool on) {
     store.background = on;
@@ -1339,7 +1805,11 @@ void App::setBackground(bool on) {
         if (!player.remote()) { toast("The background player is not installed"); return; }
         bgs.tracks.clear();   // send ours
         if (had) {
-            bgSyncQueue();
+            if (!bgSyncQueue(false)) {   // too big for it (it said so): Gatefold carries on by itself
+                loadTrack(q.tracks[q.order[q.pos]], !playing);
+                if (at > 1) player.seek(at);
+                return;
+            }
             bg.playAt(q.pos, !playing, at);
             bgs.awaitUntil = time + 1.5;
         }
@@ -1388,6 +1858,7 @@ void App::applyLoaded(TrackLoader::Result& r) {
         }
         now.info = std::move(in);
         now.lyricsSource = r.sidecar ? ".lrc file" : "Tags";
+        now.lyricsFromFile = r.sidecar;
         parseLyrics(r.lyrics);
         // The new texts render this frame; the cover is uploaded the next one (update), not both at once.
         coverWait_ = std::move(r);
@@ -1395,6 +1866,23 @@ void App::applyLoaded(TrackLoader::Result& r) {
         return;
     }
     applyCover(r);
+}
+
+void App::forgetNowPlaying() {
+    loadGen++;   // what the loader still reads for the old track is dropped
+    now.track = -1;
+    now.info = TrackInfo{};
+    now.lyrics.clear();
+    now.synced = false;
+    now.loading = false;
+    // The cover fades out, as it fades between tracks
+    if (now.prevCover) SDL_DestroyTexture(now.prevCover);
+    if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
+    now.prevCover = now.cover;
+    now.prevBlur = now.blur;
+    now.cover = now.blur = nullptr;
+    now.fade = 0;
+    savedTrack = -1;
 }
 
 /** The loaded cover: uploaded, crossfaded in, and the palette from it. */
@@ -1432,6 +1920,7 @@ void App::applyCover(TrackLoader::Result& r) {
 void App::parseLyrics(const std::string& text) {
     now.lyrics.clear();
     now.synced = false;
+    now.lrcOffset = 0;
     size_t start = 0;
     while (start <= text.size()) {
         size_t end = text.find('\n', start);
@@ -1448,6 +1937,7 @@ void App::parseLyrics(const std::string& text) {
             double ss = 0;
             if (sscanf(line.c_str() + p + 1, "%d:%lf", &mm, &ss) == 2) stamps.push_back(mm * 60 + ss);
             else if (!stamps.empty()) break;
+            else if (!line.compare(p + 1, 7, "offset:")) now.lrcOffset = atof(line.c_str() + p + 8) / 1000;   // ms; + is sooner
             p = close + 1;
         }
         std::string body = line.substr(p);
@@ -1462,9 +1952,30 @@ void App::parseLyrics(const std::string& text) {
     }
     if (now.synced) {
         std::erase_if(now.lyrics, [](const LyricLine& l) { return l.t < 0; });
+        // [offset:] as LRC defines it: a positive offset shows every line that much sooner
+        if (now.lrcOffset != 0) for (LyricLine& l : now.lyrics) l.t = std::max(0.0, l.t - now.lrcOffset);
         std::stable_sort(now.lyrics.begin(), now.lyrics.end(), [](const LyricLine& a, const LyricLine& b) { return a.t < b.t; });
     }
     while (!now.lyrics.empty() && now.lyrics.back().text.empty() && !now.synced) now.lyrics.pop_back();
+}
+
+float App::lyricNudge() const {
+    if (now.track < 0) return 0;
+    const auto it = store.lyricNudge.find(lib.tracks[now.track].path);
+    return it == store.lyricNudge.end() ? 0 : it->second;
+}
+
+void App::nudgeLyrics(float by) {
+    if (now.track < 0) return;
+    const std::string& path = lib.tracks[now.track].path;
+    const float v = by == 0 ? 0 : std::clamp(std::round((lyricNudge() + by) * 10) / 10, -10.f, 10.f);
+    if (std::fabs(v) < 0.05f) store.lyricNudge.erase(path);
+    else store.lyricNudge[path] = v;
+    store.saveLyricNudges();
+}
+
+void App::seekLyric(int line) {
+    if (line >= 0 && line < int(now.lyrics.size()) && now.lyrics[line].t >= 0) player.seek(std::max(0.0, now.lyrics[line].t + lyricNudge()));
 }
 
 // ============================================================ navigation
@@ -1473,6 +1984,9 @@ ScrollArea& App::area(const char* key, int ref) { return areas[uid(key, ref)]; }
 
 void App::navigate(View v, int ref, const std::string& query, bool push) {
     canvas = false;
+    // A picker opened from elsewhere lists afresh: the card may have changed meanwhile (an export, Files)
+    auto picker = [](View x) { return x == View::PickFolder || x == View::PickPlaylist || x == View::PickExport; };
+    if (picker(v) && !picker(route.view)) pickerGen++;
     // Into the folder pages: from Library → Folders they stay Library's in the sidebar; moving between
     // folders keeps whichever it was.
     if (v == View::Folders && route.view != View::Folders) folderFrom = route.view == View::Library ? View::Library : View::Folders;
@@ -1519,6 +2033,11 @@ Palette App::customPalette() const {
     c.accent = c.hasAccent ? rgb(store.customAccent) : coverPal.accent;
     c.hasAccent = true;   // theme.js: a custom theme always has its accent
     if (c.hasAccent2) c.accent2 = rgb(store.customAccent2);
+    // Brightness: on a dark or a light background, your colours read as a cover's; As picked keeps your background
+    // (with "A" for the background there is none to keep: the Brightness of From the cover applies)
+    if (store.customMode == 0) c.mode = PaletteOpts::Dark;
+    else if (store.customMode == 1) c.mode = PaletteOpts::Light;
+    else if (c.hasBg) c.mode = PaletteOpts::Auto;
     return paletteCustom(c);
 }
 
@@ -1567,6 +2086,32 @@ void App::openCanvas(bool on) {
 
 void App::back() {
     if (canvas) { openCanvas(false); return; }
+    // The playlist browsers (import, export): B goes to the folder above; at the SD card's root it leaves them.
+    if (route.view == View::PickPlaylist || route.view == View::PickExport) {
+        const std::string& p = route.query;
+        const size_t s = p.find_last_of('/');
+        if (!(p.empty() || p == "sdmc:/" || p == "sdmc:")) {
+            const std::string child = p;
+            navigate(route.view, -1, s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s), false);
+            ui.focus(uid("pk.dir", int(uid(child) & 0x7fffffff)));
+            return;
+        }
+        while (!history.empty() && (history.back().view == View::PickPlaylist || history.back().view == View::PickExport)) history.pop_back();
+    }
+    // Files: B leaves Select first
+    if (route.view == View::Files && files.selecting) {
+        files.selecting = false;
+        files.selected.clear();
+        return;
+    }
+    // Files: B goes to the folder above (the one come from is focused); at the SD card's root it leaves as any page.
+    if (route.view == View::Files && !(route.query.empty() || route.query == "sdmc:/" || route.query == "sdmc:")) {
+        const std::string& p = route.query;
+        const size_t s = p.find_last_of('/');
+        files.focusAfter = p;
+        navigate(View::Files, -1, s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s), false);
+        return;
+    }
     // Settings: from a category's options, B goes back to that category in the list; only from the list does it leave.
     if (const SDL_FRect f = ui.rectOf(ui.focusedId());
         route.view == View::Settings && f.x >= settingsPaneX && f.y >= css::TbH && f.y + f.h <= css::H - css::BarH) {
@@ -1673,8 +2218,23 @@ std::string App::trackSub(int t) const {
 }
 
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    // The running .nro (hbloader gives its path), where an update's new one is swapped in
+    std::string self = "sdmc:/switch/Gatefold/Gatefold.nro";
+#ifdef __SWITCH__
+    if (argc > 0 && argv[0] && strncmp(argv[0], "sdmc:/", 6) == 0 && strstr(argv[0], ".nro")) self = argv[0];
+    // An update installed while Gatefold was closed some other way (the console restarted): its .nro is swapped in
+    // before anything reads this one, and the new one starts instead.
+    if (Updater::finishPending(Store::Dir, self) && envHasNextLoad()) {
+        envSetNextLoad(self.c_str(), self.c_str());
+        return 0;
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     App app;
+    app.selfPath = self;
     if (app.init()) app.run();
     app.shutdown();
     return 0;

@@ -273,12 +273,13 @@ void MetaCache::run() {
         {
             std::unique_lock<std::mutex> lk(m_);
             const int n = int(paths_.size());
-            const bool sweeping = sweep_ < n || (artSweep_ < n && std::chrono::steady_clock::now() >= artBegin_);
+            const bool artDue = artSweep_ < n && !artPaused_ && std::chrono::steady_clock::now() >= artBegin_;
+            const bool sweeping = sweep_ < n || artDue;
             cv_.wait_for(lk, std::chrono::milliseconds(urgent_.empty() && sweeping ? 2 : 500), [&] { return quit_ || !urgent_.empty(); });
             if (quit_) return;
             if (!urgent_.empty()) { job = urgent_.front(); urgent_.pop_front(); }
             else if (sweep_ < n) job = { false, sweep_++ };
-            else if (artSweep_ < n && std::chrono::steady_clock::now() >= artBegin_) { job = { true, artSweep_++, true }; artSweepPos_ = artSweep_; }
+            else if (artDue) { job = { true, artSweep_++, true }; artSweepPos_ = artSweep_; }
             else continue;
         }
 
@@ -485,7 +486,8 @@ void MetaCache::saveArtMap() {
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
     for (const auto& [h, e] : artMap_) fprintf(f, "%s\t%s\t%s\n", hex16(h).c_str(), e.file.c_str(), e.key.c_str());
-    fclose(f);
+    const bool ok = !ferror(f);
+    if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }   // a full SD card: the old map stays whole
     remove(dst.c_str());
     rename(tmp.c_str(), dst.c_str());
 }
@@ -542,14 +544,26 @@ void MetaCache::load() {
 }
 
 void MetaCache::save() {
-    FILE* f = fopen(cacheFile_.c_str(), "wb");
+    // Next to the old one and renamed over it: a cut write (power, a full SD card) left half a cache
+    const std::string tmp = cacheFile_ + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
     for (const auto& t : lib_->tracks)
         if (t.tagged)
             fprintf(f, "%s\t%s\t%s\t%s\t%s\t%.3f\t%s\t%d\t%s\n", field(t.path).c_str(), field(t.title).c_str(), field(t.artist).c_str(),
                     field(t.album).c_str(), field(t.date).c_str(), t.duration, field(t.albumArtist).c_str(), t.trackNo, field(t.genre).c_str());
-    fclose(f);
+    const bool ok = !ferror(f);
+    if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }
+    remove(cacheFile_.c_str());
+    rename(tmp.c_str(), cacheFile_.c_str());
     dirty_ = false;
+}
+
+void MetaCache::clearCovers() {
+    artMap_.clear();
+    artByKey_.clear();
+    artCount_ = 0;
+    remove((artDir_ + "/map.tsv").c_str());
 }
 
 void MetaCache::clearDiskCache() {

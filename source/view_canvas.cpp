@@ -87,7 +87,7 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
         a *= rel < 0.18f ? clampf(rel / 0.18f, 0, 1) : rel > 0.72f ? clampf((1 - rel) / 0.28f, 0, 1) : 1.f;
         a *= alpha;
         if (a <= 0.01f) continue;
-        if (alpha > 0.5f && ui.item(uid("cv.ln", int(i)), { x, by, w, bh }, 8) && now.lyrics[i].t >= 0) player.seek(now.lyrics[i].t);
+        if (alpha > 0.5f && ui.item(uid("cv.ln", int(i)), { x, by, w, bh }, 8)) seekLyric(int(i));
         float ly = by + pad;
         if (now.lyrics[i].text.empty()) {   // a break: Gatefold's three dots, sized with the lines (7 px at the panel's size)
             lyricDots(x, ly + lineH / 2, std::clamp(std::round(size * 0.24f), 7.f, 14.f), pal.text, a, d == 0);
@@ -341,9 +341,9 @@ void App::drawCanvas() {
     g.textC(fmtTime(player.position()), timeF, padX, timeCy, pal.text2, ctlA);
     g.textC(fmtTime(dur), timeF, css::W - padX, timeCy, pal.text2, ctlA, Align::Right);
     // disabled: greyed like the layouts that cannot show, and neither focusable nor pressable
-    auto cvBtn = [&](Id id, const char* icon, float cx, float cy, float size, bool big, bool on = false, bool disabled = false) {
+    auto cvBtn = [&](Id id, const char* icon, float cx, float cy, float size, bool big, bool on = false, bool disabled = false, uint8_t flags = 0) {
         bool hit = false;
-        if (live && !disabled) hit = ui.item(id, { cx - size / 2, cy - size / 2, size, size }, size / 2, big ? DefaultFocus : 0);
+        if (live && !disabled) hit = ui.item(id, { cx - size / 2, cy - size / 2, size, size }, size / 2, uint8_t((big ? DefaultFocus : 0) | flags));
         const bool hot = !disabled && (ui.pressed(id) || (ui.focused(id) && ui.showFocusRing()));
         const float s = ui.pressed(id) ? 0.94f : 1.f;
         if (big) g.circle(cx, cy, size / 2 * s, pal.accent, ctlA);
@@ -366,7 +366,11 @@ void App::drawCanvas() {
     const double sleepLeftNow = sleepLeft();
     const Font sleepF{ 13, Weight::SemiBold };
     const float sleepW = sleepLeftNow > 0 ? 42 + g.measure("88:88", sleepF) + 4 : 42;
-    const float totalW = segW + 8 + volW + 8 + sleepW + 8 + 42 + 8 + 42;
+    // The lyrics' timing, while synced lyrics show (the Cover and Lyrics layouts, with the lyrics switch on)
+    const bool syncShown = canvasLayoutShown() != 2 && store.canvasLyrics && lyricTimingShown();
+    const Font syncF{ 13, Weight::SemiBold };
+    const float syncW = syncShown ? lyricSyncControl(nullptr, 0, 0, 42, syncF, 0, false) : 0;
+    const float totalW = segW + 8 + volW + 8 + sleepW + 8 + (syncShown ? syncW + 8 : 0) + 42 + 8 + 42 + 8 + 42;
     float x = mid - totalW / 2;
     const float cy = toolsCy + slide;
     g.roundRect(x, cy - 19, segW, 38, 19, pal.text, 0.08f * ctlA);
@@ -422,11 +426,37 @@ void App::drawCanvas() {
         if (sleepLeftNow > 0) g.textC(fmtTime(std::ceil(sleepLeftNow)), sleepF, x + 38, cy, pal.accentInk, ctlA);
     }
     x += sleepW + 8;
+    if (syncShown) {
+        lyricSyncControl("cv.sync", x, cy, 42, syncF, ctlA, live);   // not pressable while the controls are hidden
+        x += syncW + 8;
+    }
     // The lyrics switch, greyed while the track has none (nothing it could show or hide)
     const bool noLyrics = now.track >= 0 && !now.loading && now.lyrics.empty();
     if (cvBtn(uid("cv.lyrics"), ICON_QUOTE, x + 21, cy, 42, false, store.canvasLyrics, noLyrics)) { store.canvasLyrics = !store.canvasLyrics; store.save(); }
     x += 42 + 8;
+    // The equalizer, as the player bar's: lit while on; a press turns it on or off, a long press opens its settings
+    if (cvBtn(uid("cv.eq"), ICON_EQ, x + 21, cy, 42, false, store.eq.on != 0, false, Hold)) toggleEq();
+    if (live && ui.longPressed(uid("cv.eq"))) { openCanvas(false); openEqualizer(); }
+    x += 42 + 8;
     if (cvBtn(uid("cv.close"), ICON_X, x + 21, cy, 42, false)) openCanvas(false);
+    if (live) {
+        // The D-pad on the bottom row: Up goes to the nearest of previous, play and next (the seek line spans the width
+        // and was nearer by the layout); previous and next keep Left/Right to themselves (they dropped to the row below)
+        const Id trans[3] = { uid("cv.prev"), uid("cv.play"), uid("cv.next") };
+        const float tx[3] = { mid - 30 - 14 - 21, mid, mid + 30 + 14 + 21 };
+        std::vector<Id> row = { uid("cv.layout", 0), uid("cv.layout", 1), uid("cv.layout", 2), uid("cv.mute"), uid("cv.vol"), uid("cv.sleep"),
+                                uid("cv.sync", 0), uid("cv.sync", 1), uid("cv.sync", 2), uid("cv.lyrics"), uid("cv.eq"), uid("cv.close") };
+        for (Id id : row) {
+            const SDL_FRect r = ui.rectOf(id);
+            if (r.w <= 0) continue;
+            int k = 0;
+            for (int j = 1; j < 3; j++)
+                if (std::fabs(tx[j] - (r.x + r.w / 2)) < std::fabs(tx[k] - (r.x + r.w / 2))) k = j;
+            ui.link(id, 0, -1, trans[k]);
+        }
+        ui.link(trans[0], -1, 0, 0);
+        ui.link(trans[2], 1, 0, 0);
+    }
     g.setGhost(wasGhost);
     g.setShift(0, 0);
 }

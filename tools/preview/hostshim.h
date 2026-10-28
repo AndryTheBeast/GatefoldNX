@@ -39,6 +39,7 @@ int hostStat(const char* p, struct stat* s);
 int hostMkdir(const char* p, int mode);
 int hostRemove(const char* p);
 int hostRename(const char* a, const char* b);
+int hostRmdir(const char* p);
 TTF_Font* hostOpenFont(const char* p, int size);
 Mix_Music* hostLoadMUS(const char* p);
 void hostPresent(SDL_Renderer* r);
@@ -49,6 +50,7 @@ const char* hostPath(const char* p);
 #define mkdir(p, m) hostMkdir(p, m)
 #define remove(p) hostRemove(p)
 #define rename(a, b) hostRename(a, b)
+#define rmdir(p) hostRmdir(p)
 #define TTF_OpenFont(p, s) hostOpenFont(p, s)
 #define Mix_LoadMUS(p) hostLoadMUS(p)
 #define SDL_RenderPresent(r) hostPresent(r)

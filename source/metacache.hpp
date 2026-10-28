@@ -62,7 +62,13 @@ public:
     int coversCached() const { return artCount_; }
     /** The cover sweep's place in the library: running while 0 < sweepPos() < tracks. */
     int sweepPos() const { return artSweepPos_; }
+    /** Stops (or resumes) the cover sweep; covers shown on screen are still made. Settings and the progress card. */
+    void pauseCovers(bool p) { artPaused_ = p; cv_.notify_all(); }
+    bool coversPaused() const { return artPaused_; }
     void clearDiskCache();
+    /** Settings → Storage and reset: the covers' disk cache (art/) only, the worker stopped first (stop()). */
+    void clearCovers();
+    const std::string& artDir() const { return artDir_; }
 
 private:
     struct Job { bool art; int idx; bool cacheOnly = false; };   // cacheOnly: the cover sweep, nothing to show
@@ -112,6 +118,7 @@ private:
     std::vector<ArtResult> artDone_;
     std::unordered_set<std::string> folderDecoded_;   // folder images with a live slot (guarded by m_)
     std::atomic<bool> quit_{ false };
+    std::atomic<bool> artPaused_{ false };
     int tagged_ = 0;
     bool dirty_ = false;
     std::vector<std::string> paths_, folders_;   // worker-side copies
