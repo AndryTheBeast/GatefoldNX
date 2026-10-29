@@ -194,6 +194,7 @@ void Store::load() {
         else if (k == "pointerSpeed") pointerSpeed = std::clamp(float(atof(v.c_str())), 0.f, 1.f);
         else if (k == "pointerAccel") pointerAccel = v == "1";
         else if (k == "frameTimes") frameTimes = v == "1";
+        else if (k == "automixModel") automixModel = v;
         else if (k == "keepAwake") keepAwake = v == "1";
         else if (k == "levelMode") levelMode = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "levelTarget") levelTarget = std::clamp(atoi(v.c_str()), -23, -6);
@@ -271,6 +272,22 @@ void Store::load() {
             cur->tracks.push_back(l);
         }
     }
+    for (const auto& l : readLines(path("automix-lists.tsv"))) {   // Automix playlists: name, manual, waiting, pin
+        std::vector<std::string> f;
+        for (size_t a = 0, b; a <= l.size(); a = b + 1) {
+            b = l.find('\t', a);
+            if (b == std::string::npos) b = l.size();
+            f.push_back(l.substr(a, b - a));
+        }
+        if (f.size() < 4) continue;
+        for (auto& p : playlists)
+            if (p.own() && p.name == f[0]) {
+                p.automix = true;
+                p.manual = f[1] == "1";
+                p.waiting = f[2] == "1";
+                p.pin = f[3];
+            }
+    }
     liked = readLines(path("liked.txt"));
     eqUser.clear();
     for (const auto& l : readLines(path("eq-presets.txt"))) {
@@ -302,6 +319,23 @@ void Store::load() {
         const size_t tab = l.find('\t');
         if (tab != std::string::npos) lyricNudge[l.substr(0, tab)] = std::clamp(float(atof(l.c_str() + tab + 1)), -10.f, 10.f);
     }
+    joins.clear();
+    for (const auto& l : readLines(path("mixes.tsv"))) {   // the key's three fields, then the join
+        const size_t tab = l.rfind('\t');
+        if (tab != std::string::npos && tab > 0) joins[l.substr(0, tab)] = l.substr(tab + 1);
+    }
+}
+
+/** mixes.tsv: "playlist<TAB>path A<TAB>path B<TAB>join", Automix's joins edited on playlist pages. */
+void Store::saveJoins() const {
+    std::string out;
+    for (const auto& [k, j] : joins) {
+        out += k;
+        out += '\t';
+        out += j;
+        out += '\n';
+    }
+    writeFile("mixes.tsv", std::move(out));
 }
 
 /** lyric-offsets.tsv: "path<TAB>seconds", the lyrics nudge per track (written by the writer thread). */
@@ -363,6 +397,7 @@ void Store::save() const {
             tracksSort, tracksDesc);
     appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\nviewGenre=%d\n", double(pointerSpeed), pointerAccel, frameTimes, viewGenre);
     appendf(f, "keepAwake=%d\ndimAfter=%d\nsleepConsole=%d\n", keepAwake, dimAfter, sleepConsole);
+    if (!automixModel.empty()) appendf(f, "automixModel=%s\n", automixModel.c_str());
     appendf(f, "batteryPercent=%d\nbatteryEstimate=%d\n", batteryPercent, batteryEstimate);
     appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\n", stopCovers, stopThumbs, stopLevels);
     appendf(f, "lyricTiming=%d\nlyricTimingFor=%d\n", lyricTiming, lyricTimingFor);
@@ -404,6 +439,11 @@ void Store::save() const {
         for (const auto& t : p.tracks) appendf(own, "%s\n", t.c_str());
     }
     writer().put(path("lists.txt"), std::move(own), true);
+    // Automix playlists: "name<TAB>manual<TAB>waiting<TAB>pin" (a file of their own, so older versions read the rest)
+    std::string am;
+    for (const auto& p : playlists)
+        if (p.own() && p.automix) appendf(am, "%s\t%d\t%d\t%s\n", p.name.c_str(), p.manual ? 1 : 0, p.waiting ? 1 : 0, p.pin.c_str());
+    writer().put(path("automix-lists.tsv"), std::move(am), true);
     std::string lk;
     for (const auto& p : liked) appendf(lk, "%s\n", p.c_str());
     writer().put(path("liked.txt"), std::move(lk), true);

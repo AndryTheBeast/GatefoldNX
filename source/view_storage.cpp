@@ -143,6 +143,7 @@ void App::scanStorage() {
         measure(dir + "/art", u[0]);
         measure(dir + "/thumbs", u[1]);
         measure(dir + "/loudness.tsv", u[2]);
+        measure(dir + "/mix.tsv", u[2]);
         measure(dir + "/gains.bin", u[2]);
         measure(dir + "/tags.tsv", u[3]);
         for (const auto& n : entries(backups))   // only Gatefold's own backups, whatever else that folder holds
@@ -170,7 +171,7 @@ void App::clearStorage(int which) {
     static const char* texts[6] = {
         "The small copies of every cover that lists show. Gatefold makes them again in the background, a few minutes for a large library.",
         "The covers the overlay shows. Made again for each queue sent to the background player, or all of them from Settings › Playback.",
-        "Every track's measured loudness. With volume levelling on, the library is measured again in the background; until then tracks play unlevelled.",
+        "Every track's measured loudness and Automix's analysis. With volume levelling or Automix on, the library is measured again in the background; until then tracks play unlevelled and join with a plain fade.",
         "The tags read from your files. Every file is read again now, as Library's \"Read all tags again\" does; your own tag edits stay.",
         "Every settings backup made before an install or a restore. Going back to them is no longer possible; your settings now stay.",
         "Release zips kept from an install that did not finish. The release list stays.",
@@ -211,6 +212,7 @@ void App::clearStorage(int which) {
                 case 2:
                     levels.forget();
                     store.writeFile("loudness.tsv", levels.serialise());
+                    store.writeFile("mix.tsv", levels.serialiseMix());
                     levelEpoch = ~0u;
                     levelFirst.clear();
                     gainsDirty = true;

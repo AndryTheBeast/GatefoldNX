@@ -34,11 +34,19 @@ void App::drawTrackList(float x, float y, float w, float h) {
         placeholder = ICON_HEART;
     } else if (route.ref < int(store.playlists.size())) {
         const FolderPlaylist& p = store.playlists[route.ref];
-        kick = p.own() ? "Playlist" : p.smart() ? "Smart playlist" : "Folder playlist";
+        kick = p.own() ? (p.automix ? "Automix playlist" : "Playlist") : p.smart() ? "Smart playlist" : "Folder playlist";
         title = playName = p.name;
         placeholder = playlistIcon(route.ref);
     }
     sub = fmtTotal(tracks);
+    if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size())) {   // an Automix playlist building up
+        const FolderPlaylist& p = store.playlists[route.ref];
+        if (p.automix && p.waiting && !p.manual) {
+            int more = 0;
+            for (const auto& path : p.tracks) more += pathIndex.count(path) && !automixReady(path) ? 1 : 0;
+            if (more > 0) sub += "  ·  " + std::to_string(more) + (more == 1 ? " more song being analysed" : " more songs being analysed");
+        }
+    }
     if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && !store.playlists[route.ref].own()) {
         const FolderPlaylist& p = store.playlists[route.ref];
         sub = (p.smart() ? smartSummary(p.path) : p.path) + "  ·  " + sub;
@@ -50,6 +58,10 @@ void App::drawTrackList(float x, float y, float w, float h) {
     ui.pushArea(&sa);
     const float oy = y - sa.y;
     const ListMode mode = ListMode(store.viewPlaylist);
+    // Mix: room between the rows for the joins (a playlist's page, not the grid)
+    const bool mixable = v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].automix &&
+                         tracks.size() > 1;   // Automix playlists only
+    const float joinGap = mixable && mixView && mode != ListMode::Grid ? 46 : 0;
 
     // .pl-head: cover, kicker, title, sub, actions
     const float cx = x + 28, cyTop = oy + 18;
@@ -76,10 +88,10 @@ void App::drawTrackList(float x, float y, float w, float h) {
     {
         const Font bf{ css::Sm, Weight::SemiBold };
         auto bw = [&](const char* label) { return 16 + 24 + g.measure(label, bf) + 16 + 8.f; };
-        float need = bw("Play") + bw("Shuffle");
+        float need = bw("Play") + bw("Shuffle") + (mixable ? bw("Mix") : 0);
         if (v == View::Queue) need += bw("Current track") + bw("Clear");
         else if (v == View::Search) need += bw("New search");
-        else if (ownPage && !store.playlists[ref].folder()) need += bw("Delete") + bw("Rename");
+        else if (ownPage && !store.playlists[ref].folder()) need += bw("Delete") + bw("Rename") + (store.playlists[ref].automix ? bw("Order again") : 0);
         else if (ref >= 0) need += bw("Open folder") + bw("Delete");
         if (v == View::List && bgShown()) need += bw("Games");
         if (v != View::Search) need += bw("Export");
@@ -106,6 +118,10 @@ void App::drawTrackList(float x, float y, float w, float h) {
     if (clicked && !tracks.empty()) { if (v == View::Queue) playAt(0); else playTracks(tracks, 0, playName); }
     bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
     if (clicked && !tracks.empty()) playTracks(tracks, 0, playName, true);
+    if (mixable && action("pl.mix", ICON_SLIDERS, "Mix", mixView)) {
+        mixView = !mixView;
+        if (mixView && mode == ListMode::Grid) store.viewPlaylist = int(ListMode::Covers);   // the joins sit between rows
+    }
     if (v == View::Queue) {
         clicked = action("pl.jump", ICON_DISC, "Current track");
         const int cur = q.pos;   // the list is in play order
@@ -126,6 +142,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
         if (action("pl.search", ICON_SEARCH, "New search")) openSearch();
     } else if (v == View::List && ref >= 0 && ref < int(store.playlists.size()) && !store.playlists[ref].folder()) {
         if (action("pl.rename", ICON_TAG, "Rename")) renamePlaylist(ref);
+        // an Automix playlist: ordered again for the best joins (also after it was moved by hand: lit then)
+        if (store.playlists[ref].automix && action("pl.order", ICON_LINK, "Order again", store.playlists[ref].manual)) orderAutomixList(ref, true);
     } else if (ref >= 0 && ref < int(store.playlists.size())) {
         if (action("pl.folder", ICON_FOLDER, "Open folder")) navigate(View::Folders, lib.folderByPath(store.playlists[ref].path));
     }
@@ -193,12 +211,37 @@ void App::drawTrackList(float x, float y, float w, float h) {
         g.textC(msg, { css::Lg, Weight::SemiBold }, x + w / 2, ly + 90, pal.text2, 1, Align::Center);
     }
     g.clip(x, y, w, h);
-    bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos : -1;
+    bodyGrab = v == View::Queue && grab.kind == Grab::Queue && !grab.upNext ? grab.pos
+             : v == View::List && grab.kind == Grab::List && grab.ref == route.ref ? grab.pos : -1;
     const float bodyH = drawTrackBody("pl", tracks, x, ly, w, y, h, mode, false, [&](int i) {
         if (v == View::Queue) playAt(i);   // i is the position in play order
         else playTracks(tracks, i, playName);
-    });
+    }, joinGap);
     bodyGrab = -1;
+    // Mix: after each track (but the last) a line down to the next, and on it a pill saying the two are joined by Automix
+    // (Spotify's "Auto"). Only a sign for 2.0 (the user, 2026-10-29: "all in on Auto"; editing a join later perhaps): it
+    // opens nothing and takes no focus. (The join editor, view_join.cpp, stays in the code, out of reach.)
+    if (joinGap > 0) {
+        const std::vector<ListEntry> layout = listLayout(tracks, w, mode, joinGap);
+        const bool covers = mode == ListMode::Covers;
+        const float lx = covers ? x + 14 + 16 + 44 + 14 + (60 - 4 - 16) / 2.f : x + 14 + 16 + 30;   // the cover's middle; by the number
+        const Font lf{ css::Sm, Weight::SemiBold };
+        for (const ListEntry& e : layout) {
+            if (e.kind != ListEntry::Row || e.index + 1 >= int(tracks.size())) continue;
+            const float g0 = ly + e.y + (covers ? e.h - 4 : e.h), g1 = ly + e.y + e.h + joinGap;
+            if (g1 < y - 4 || g0 > y + h + 4) continue;
+            const char* label = automix::name(automix::Preset::Auto);
+            const float ph = 30, pt = (g0 + g1) / 2 - ph / 2, pl = lx - 15, pw = 4 + 22 + 10 + g.measure(label, lf) + 12;   // (no chevron: nothing to open)
+            // the two lines linking the tracks, above and below the pill
+            g.rect(lx - 1, g0 + 3, 2, pt - g0 - 3, pal.text, 0.22f);
+            g.rect(lx - 1, pt + ph, 2, g1 - (pt + ph) - 3, pal.text, 0.22f);
+            g.roundRect(pl, pt, pw, ph, 10, pal.surface2);
+            g.roundRect(pl, pt, pw, ph, 10, pal.text, 0.05f);
+            g.roundRect(pl + 4, pt + 4, 22, 22, 6, pal.accent, 1.f);
+            g.icon(ICON_SPARKLE, pl + 15, pt + 15, 14, pal.onAccent);
+            g.textC(label, lf, pl + 36, pt + ph / 2, pal.text, 1);
+        }
+    }
     if (v == View::Queue) {
         if (bodyFocus >= 0) hoverQueue = bodyFocus;
         if (grab.pos >= 0 && grab.kind == Grab::Queue && !grab.upNext) grab.cols = bodyCols;

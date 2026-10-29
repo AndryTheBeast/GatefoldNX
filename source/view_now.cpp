@@ -18,27 +18,24 @@ void App::drawNow(float x, float y, float w, float h) {
     const float padH = clampf(css::W * 0.04f, 20, 64), gap = clampf(css::W * 0.04f, 24, 64);
     const float art = std::min({ css::H * 0.52f, css::W * 0.40f, 620.f });
     const float iw = std::min(760.f, w - padH * 2 - art - gap);
-    const float ax = x + padH, ay = y + (h - art) / 2;
-    const float ix = ax + art + gap;
     const bool has = now.track >= 0;
-
-    // ---- .np-art-wrap: halo, shadow, cover crossfade, beat "breathing"
-    // viz.js applyBeat: scale 1 + min(.03, beat·.07) from 50% 60%, halo .3 + min(.45, beat·1.1). Settings → Visualizer
-    // scales both (Gatefold's full strength reads as a twitch on a handheld); the scale is eased so a kick swells.
-    // Gatefold's halo behind the cover (and its beat flare) and its drop shadow are left out at the user's
-    // request: on the console's dark backgrounds the halo read as a smudge and the shadow as a dark rim under
-    // the cover. The cover sits on the background as the Canvas's does.
-    const float s = art * (1 + coverBeat), sx = ax + (art - s) / 2, sy = ay + (art - s) * 0.6f;
-    g.roundRect(sx, sy, s, s, 16, pal.surface);
-    const float k = now.fade;
-    if (now.prevCover && k < 1) g.image(now.prevCover, sx, sy, s, s, 16, 1 - k);
-    if (now.cover) g.image(now.cover, sx, sy, s, s, 16, k);
-    if (!now.cover) {
-        // .art-empty
-        g.icon(ICON_MUSIC, sx + s / 2, sy + s / 2 - 14, 64, pal.text3, 0.6f * (1 - (now.prevCover ? 1 - k : 0)));
-        g.textC(has ? "No cover" : "", { css::Base }, sx + s / 2, sy + s / 2 + 38, pal.text3, 1, Align::Center);
+    // Automix joining (automixFocus): the cover glides from its place to the middle of the screen and grows, frosted with
+    // the hint, while the info (and the sidebar and bars: App::draw) fade out; as the join ends it glides back and they return
+    const Focus fc = automixFocus();
+    const float m = fc.move;
+    const float big = std::min(css::H - 140.f, art * 1.35f);
+    const float art2 = art + (big - art) * m;
+    const float rx = x + padH, ry = y + (h - art) / 2;   // at rest
+    const float ax = rx + (css::W / 2.f - big / 2 - rx) * m, ay = ry + (css::H / 2.f - big / 2 - ry) * m;
+    const float ix = x + padH + art + gap + 28 * (1 - fc.ui);   // the info at its own place, drifting right as it fades
+    if (m > 0) {   // drawn last by App::draw, over the bars and outside the page's clip
+        glideCover_ = { ax, ay, art2, art2 };
+        glideOn_ = true;
+    } else {
+        drawNowCover(ax, ay, art2);
     }
-    g.roundStroke(sx, sy, s, s, 16, 1, pal.text, 0.08f);
+    if (fc.ui <= 0.001f) return;   // the info fully faded: not drawn at all (App::draw)
+    if (fc.ui < 1) g.setFade(fc.ui);
 
     // ---- .np-info, measured first so the panel can take what is left
     // .np-title: Inter 760, clamp(30px, 4.2vw, 52px), line-height 1.04; a title that needs two lines steps down
@@ -76,7 +73,8 @@ void App::drawNow(float x, float y, float w, float h) {
 
     // .np-kicker
     eqGlyph(ix, cy + 8, pal.accentInk);
-    kicker(!has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused", ix + 13 + 10, cy + 8, pal.accentInk, 0.14f);
+    const std::string state = !has ? "Nothing playing" : isPlaying() ? "Playing" : "Paused";
+    kicker(state, ix + 13 + 10, cy + 8, pal.accentInk, 0.14f);
     cy += 17 + 4;
     for (const auto& l : title) { g.text(l, titleF, ix - 2, cy - titleF.size * 0.08f, pal.text, 1, Align::Left, int(iw)); cy += titleLH; }
     cy += 2 + 4;
@@ -184,6 +182,54 @@ void App::drawNow(float x, float y, float w, float h) {
     if (npTab == 0) drawUpNext(ix, cy, iw, ph);
     else if (npTab == 1) drawLyrics(ix, cy, iw, ph);
     else drawPaletteTab(ix, cy, iw, ph);
+    g.setFade(1);
+}
+
+/**
+ * Now playing's cover at (x, y), `art` wide: the cover crossfade (the new one over the old, so a frosted or glass layer
+ * over them never thins mid-way), its bass pulse, and Automix's frost and hint during a join.
+ * viz.js applyBeat: scale 1 + min(.03, beat·.07) from 50% 60%, halo .3 + min(.45, beat·1.1). Settings → Visualizer scales
+ * both (Gatefold's full strength reads as a twitch on a handheld); the scale is eased so a kick swells. Gatefold's halo
+ * behind the cover (and its beat flare) and its drop shadow are left out at the user's request: on the console's dark
+ * backgrounds the halo read as a smudge and the shadow as a dark rim under the cover.
+ */
+void App::drawNowCover(float ax, float ay, float art) {
+    const bool has = now.track >= 0;
+    const float s = art * (1 + coverBeat), sx = ax + (art - s) / 2, sy = ay + (art - s) * 0.6f;
+    g.roundRect(sx, sy, s, s, 16, pal.surface);
+    const float k = now.fade;
+    if (now.prevCover && k < 1) g.image(now.prevCover, sx, sy, s, s, 16, 1);
+    if (now.cover) g.image(now.cover, sx, sy, s, s, 16, k);
+    if (!now.cover) {
+        // .art-empty
+        g.icon(ICON_MUSIC, sx + s / 2, sy + s / 2 - 14, 64, pal.text3, 0.6f * (1 - (now.prevCover ? 1 - k : 0)));
+        g.textC(has ? "No cover" : "", { css::Base }, sx + s / 2, sy + s / 2 + 38, pal.text3, 1, Align::Center);
+    }
+    if (has && time < mixUntil && !player.remote()) drawAutomixCover(sx, sy, s, ax + art / 2, ay + art / 2, art);   // the hint holds still
+    g.roundStroke(sx, sy, s, s, 16, 1, pal.text, 0.08f);
+}
+
+App::Focus App::automixFocus() const {
+    Focus f;
+    if (player.remote() || now.track < 0 || mixUntil <= mixShownAt || time < mixShownAt || time >= mixUntil) return f;
+    auto clamp01 = [](double v) { return float(std::clamp(v, 0.0, 1.0)); };
+    // the cover's pulse rests through every join, eased over 0.4 s each way (the user, 2026-10-28)
+    const float q = std::min(clamp01((time - mixShownAt) / 0.4), clamp01((mixUntil - time) / 0.4));
+    f.quiet = q * q * (3 - 2 * q);
+    if (!store.motion || mixUntil - mixShownAt < 3) return f;   // too short to carry the glide: the frost alone
+    // as the Canvas's layout morph (view_canvas.cpp): 0.9 s, cubic in and out for the move; what leaves fades over the first
+    // 40 % (quadratic), what returns over the last 40 % (cubic ease-out)
+    auto inOut = [](float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; };
+    const float pin = clamp01((time - mixShownAt) / 0.9), pout = clamp01((time - (mixUntil - 0.9)) / 0.9);
+    f.move = inOut(pin) * (1 - inOut(pout));
+    if (pout > 0) {
+        const float r = clamp01((pout - 0.6) / 0.4);
+        f.ui = 1 - (1 - r) * (1 - r) * (1 - r);
+    } else {
+        const float l = 1 - clamp01(pin / 0.4);
+        f.ui = l * l;
+    }
+    return f;
 }
 
 void App::drawSpectrum(float x, float y, float w, float h) {

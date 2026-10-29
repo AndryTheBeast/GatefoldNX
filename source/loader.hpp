@@ -35,6 +35,7 @@ public:
         bool sidecar = false;            // the lyrics came from an .lrc file
         SDL_Surface* cover = nullptr;    // RGBA32, at most 512 px: the GPU path has no mipmaps (Gfx::shrink)
         SDL_Surface* blur = nullptr;     // 12×12, stretched with linear filtering for the backdrop
+        SDL_Surface* frost = nullptr;    // 64×64, blurred (three box passes): the cover frosted while Automix joins
         std::vector<uint8_t> px;         // the 64×64 sample the palette came from (Brightness and Saturation rebuild it)
         Palette pal;
         void release();

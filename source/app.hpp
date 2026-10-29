@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "automix.hpp"
 #include "bgclient.hpp"
 #include "gfx.hpp"
 #include "levels.hpp"
@@ -154,6 +155,8 @@ private:
         SDL_Texture* prevCover = nullptr;
         SDL_Texture* blur = nullptr;
         SDL_Texture* prevBlur = nullptr;
+        SDL_Texture* frost = nullptr;      // the cover blurred smooth (TrackLoader's frost): Automix's join
+        SDL_Texture* prevFrost = nullptr;
         float fade = 1;
         std::vector<LyricLine> lyrics;
         bool synced = false;
@@ -191,9 +194,99 @@ private:
     Levels levels;
     std::vector<std::string> levelFirst, levelAll;   // what was last asked to be measured first, and the library
     unsigned levelEpoch = ~0u, levelGenUsed = ~0u;
+    bool levelAllSent = false;   // the library was handed to the worker (levelling on), not only what Automix needs
     int levelModeSent = -1, levelTargetUsed = 0;
     // Crossfade (Gatefold's own player; the background player does its own): this track's was looked at
     bool xfadeChecked = false;
+    // Automix (automix.hpp): while the join runs, the chip on Now playing says so, until mixUntil
+    double mixUntil = 0;
+    double mixShownAt = 0, mixFrom = 0;   // the chip's start (its animation), and where the join itself begins
+    bool mixAnnounced = false;            // shown, the next track not loaded yet (0.4 s: updateAutomix)
+    automix::Model mixModel() const;      // Settings › Debug's Automix model in dev builds; a release plays automix::Latest
+    /** Automix's hold on Now playing during a join: `move` the cover's glide to the middle (0..1), `ui` how much of the rest
+     *  shows (1: all), `quiet` how far the cover's pulse rests (1: still). As the Canvas's layout morph. */
+    struct Focus { float move = 0, ui = 1, quiet = 0; };
+    Focus automixFocus() const;
+    void drawNowCover(float x, float y, float art);
+    SDL_FRect glideCover_{};   // where drawNow wants the cover while it glides: App::draw draws it last
+    bool glideOn_ = false;
+    std::vector<SDL_FPoint> lapPts_;      // the chip's progress lap (kept: nothing allocated per frame)
+    bool mixPrepared = false;   // the next track opened ahead on the player's worker (Player::prepare)
+    bool stretchBegun = false;   // this track started towards the next one's tempo (Automix v3: Player::beginStretch)
+    // the dev build's audio trace (Player::takeTrace): audio-trace.txt in the config folder, every 5 s something went wrong
+    double traceAt = 0;
+    // ... and each Automix join's frames (the user's console videos, 2026-10-28: the animation dropped frames there): its
+    // frames, average and worst frame time and work, frames over 17 ms; a line when the join ends
+    int joinFrames_ = 0, joinLate_ = 0;
+    double joinSum_ = 0, joinWorst_ = 0, joinWorkSum_ = 0, joinWorkWorst_ = 0;
+    void traceJoinFrame(float frameMs, float workMs);
+    // ... and what the worst one did (the console's first trace, 2026-10-29: one frame of 228 ms of work in a join): refreshes
+    // really missed (a frame of 25 ms or more), when in the join the worst work came, its sections, update's slowest step
+    int joinDrops_ = 0;
+    std::string joinWhy_;
+    double profFrame_[8] = {};   // this frame's sections (profMark)
+    const char* updSlow_ = "";
+    double updSlowMs_ = 0;
+    Uint64 updAt_ = 0;
+    void updMark(const char* step) {
+        const Uint64 t = SDL_GetPerformanceCounter();
+        const double ms = double(t - updAt_) / double(SDL_GetPerformanceFrequency()) * 1000;
+        if (ms > updSlowMs_) { updSlowMs_ = ms; updSlow_ = step; }
+        updAt_ = t;
+    }
+    unsigned traceStarved = 0;
+    std::string audioTrace;
+    std::string mixLabel;
+    // The join editor (view_join.cpp): a playlist's join between two of its tracks, as Spotify's transition editor
+    struct JoinEdit {
+        bool open = false;
+        std::string playlist;              // its name: the joins' key in mixes.tsv (Store::joinKey)
+        int a = -1, b = -1;                // the two tracks (library indices)
+        automix::Join join, kept;          // as edited; as kept (Auto when none)
+        mixan::Info infoA, infoB;          // their analyses (empty: not analysed yet)
+        double durA = 0;
+        // Decoded on a worker when it opens: the first track's last 45 s and the second's first 40 s, 16-bit stereo at
+        // the player's rate, and their loudness every 20 ms for the drawing; then, for Listen, the join rendered
+        std::thread worker;                // one job at a time; joined before the next and when it closes
+        std::atomic<bool> cancel{ false };
+        std::atomic<int> loaded{ 0 };      // 0 reading, 1 ready, 2 could not
+        std::atomic<int> rendered{ 0 };    // 0 none, 1 rendering, 2 ready (pcm), then handed to the player
+        std::vector<int16_t> pcmA, pcmB, pcm;
+        double aFrom = 0;                  // the first track's time at pcmA's start (s)
+        std::vector<float> envA, envB;     // 0..1 every 20 ms
+        double listenFrom = 0;             // the first track's time at the preview's start (s)
+        bool listening = false;
+        int rate = 48000;
+        // a touch drag on the picture: the second track (when it comes in) or the join's end (its length); the time
+        // across the picture is held still while it lasts, and the join as it was when it began
+        double viewT0 = 0, viewT1 = 0;     // the first track's time across the picture: kept while it is open (widened when
+                                           // the join moves out of it), so a dragged track stays where it was let go
+        int drag = 0;                      // 0 none, 1 the second track, 2 the join's end
+        float dragX = 0;
+        double dragT0 = 0, dragT1 = 0;
+        automix::Join dragFrom;
+    } je;
+    // Automix playlists (view_automix.cpp): the picker, and their order
+    struct AutomixPick {
+        bool open = false;
+        int tab = 0;               // Tracks, Albums, Artists, Genres, Folders
+        std::vector<char> sel;     // per library track: ticked
+    } ap;
+    double automixTickAt = 0, automixSavedAt = 0;
+    bool automixReady(const std::string& path) const;   // analysed for Automix (its mix.tsv row)
+    void openAutomixPicker();
+    void closeAutomixPicker();
+    void drawAutomixPicker();
+    void orderAutomixList(int ref, bool announce);
+    void automixListsTick();
+    std::vector<std::string> automixWaitingTracks(size_t max) const;
+    // Automix is only Automix playlists' (the user, 2026-10-28): the queue came from one of them
+    bool automixQueue() const;
+    void automixProgress(int& done, int& total) const;   // their tracks analysed, of all of them
+    void openJoinEditor(const std::string& playlist, int a, int b);
+    void closeJoinEditor();
+    void drawJoinEditor();
+    automix::Plan joinPlan() const;   // the editor's join as it would play
     // The equalizer: a change to send to the background player (at most every 0.1 s while a slider moves)
     bool eqDirty = false;
     double eqSentAt = 0;
@@ -352,7 +445,9 @@ private:
     Uint64 profAt_ = 0;
     void profMark(int section) {
         const Uint64 t = SDL_GetPerformanceCounter();
-        profAcc_[section] += double(t - profAt_) / double(SDL_GetPerformanceFrequency()) * 1000;
+        const double ms = double(t - profAt_) / double(SDL_GetPerformanceFrequency()) * 1000;
+        profAcc_[section] += ms;
+        profFrame_[section] += ms;
         profAt_ = t;
     }
     double frameStatsAt_ = 0;
@@ -386,8 +481,10 @@ private:
 
     void playTracks(const std::vector<int>& tracks, int startPos, const std::string& name, bool shuffle = false);
     /** fade: crossfade into it over that many seconds (Gatefold's own player), 0 cuts or, when a crossfade is set, 0.3 s. */
-    void playAt(int orderPos, double fade = 0);
-    void loadTrack(int trackIdx, bool paused = false, bool start = true, double fade = 0);
+    void playAt(int orderPos, double fade = 0, const automix::Plan* mix = nullptr);
+    void loadTrack(int trackIdx, bool paused = false, bool start = true, double fade = 0, const automix::Plan* mix = nullptr);
+    /** Every frame: Automix's join at the end of this track, planned from both analyses and started on time. */
+    void updateAutomix();
     /** The order position a crossfade at the end of this track goes to, or −1 when this join takes none. */
     int crossfadeNext(double left) const;
     /** Settings → Equalizer: kept, applied here, and sent to the background player. */
@@ -426,7 +523,8 @@ private:
     void queueClear();
     // A queue row picked up with the track menu's Move: the D-pad moves it, A or B puts it down.
     // Also the Playlists page's playlists (+ → Move) and the sidebar's tabs (Settings → Appearance → Move): same keys.
-    struct Grab { enum Kind { Queue, Playlists, Tabs } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; } grab;
+    // List: a track of one of your own playlists (route.ref), by its row on the page
+    struct Grab { enum Kind { Queue, Playlists, Tabs, List } kind = Queue; int pos = -1; bool upNext = false; int cols = 1; int ref = -1; } grab;
     void grabStep(int d);
     void grabDrop();
     void applyLoaded(TrackLoader::Result& r);
@@ -513,6 +611,12 @@ private:
     float button(Id id, const char* icon, const std::string& label, float x, float y, bool primary = false, bool* clicked = nullptr,
                  bool toggled = false, bool danger = false, uint8_t flags = 0, float minW = 0);   // minW: at least this wide, its content centred
     float chip(const std::string& label, float x, float cy, bool accent);
+    float automixChip(const std::string& label, float x, float cy, float k, float alpha, bool lap = true, bool glass = false);   // animated, while Automix joins
+    /** Now playing's cover frosted over during a join (its beat-scaled box), the hint inside, centred on (hx, hy) and sized
+     *  by `rest`: the cover at rest, so the hint holds still while the cover breathes. */
+    void drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float rad = 16);
+    /** A part `p` (0..1) of a rounded box's outline, from the middle of its top edge, clockwise (Automix's progress lap). */
+    void lapPath(float x, float y, float w, float h, float r, float p, std::vector<SDL_FPoint>& pts);
     void kicker(const std::string& s, float x, float cy, const Rgb& c, float spacing = 0.12f);
     void eqGlyph(float x, float cy, const Rgb& c);
     void lyricDots(float x, float cy, float d, const Rgb& c, float alpha, bool current);
@@ -621,10 +725,12 @@ private:
         int index;    // the track's place in the list (the first of a tile row)
         float y, h;   // from the top of the list
     };
-    std::vector<ListEntry> listLayout(const std::vector<int>& tracks, float w, ListMode mode) const;
+    // joinGap: room after each row but the last (a playlist page's Mix: the joins between its tracks)
+    std::vector<ListEntry> listLayout(const std::vector<int>& tracks, float w, ListMode mode, float joinGap = 0) const;
     float listRowY(const std::vector<ListEntry>& layout, int index) const;
     float drawTrackBody(const char* key, const std::vector<int>& tracks, float x, float top, float w, float clipY, float clipH, ListMode mode,
-                        bool extended, const std::function<void(int)>& play);
+                        bool extended, const std::function<void(int)>& play, float joinGap = 0);
+    bool mixView = true;   // an Automix playlist page's Mix (as Spotify's): the joins between its tracks shown, each a pill on a line
     int bodyFocus = -1;   // drawTrackBody: the index of the row or tile under focus, −1 when none
     int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
     int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
@@ -805,6 +911,7 @@ private:
     void openPlaylistMenu(int ref);   // + on the Playlists page: Move, Icon, Rename
     void openPlaylistIcons(int ref);  // the playlist page's icon button: the icon grid at once
     void renamePlaylist(int ref);
+    void renameJoins(const std::string& from, const std::string& to);
     std::string smartSummary(const std::string& spec) const;
     struct SmartCache { unsigned statsGen = ~0u, indexGen = ~0u; int64_t day = -1; std::vector<int> tracks; };
     mutable std::unordered_map<std::string, SmartCache> smartCache_;

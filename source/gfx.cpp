@@ -12,6 +12,7 @@
 namespace {
 
 constexpr float PI = 3.14159265358979f;
+float gFade = 1;   // Gfx::setFade: every colour's alpha goes through sdl()
 
 const char* const kInter[] = { "romfs:/fonts/Inter-Regular.ttf", "romfs:/fonts/Inter-SemiBold.ttf", "romfs:/fonts/Inter-Bold.ttf",
                                "romfs:/fonts/Inter-ExtraBold.ttf" };
@@ -19,7 +20,7 @@ const PlSharedFontType kSystemFonts[] = { PlSharedFontType_Standard, PlSharedFon
                                           PlSharedFontType_ChineseTraditional, PlSharedFontType_KO };
 
 Uint8 byte(float v) { return Uint8(std::lround(std::clamp(v, 0.f, 1.f) * 255)); }
-SDL_Color sdl(const Rgb& c, float a) { return { byte(c.r), byte(c.g), byte(c.b), byte(a) }; }
+SDL_Color sdl(const Rgb& c, float a) { return { byte(c.r), byte(c.g), byte(c.b), byte(a * gFade) }; }
 
 /** Decodes one UTF-8 code point and advances i. */
 Uint32 nextCodepoint(const std::string& s, size_t& i) {
@@ -72,7 +73,15 @@ bool Gfx::init(SDL_Renderer* r) {
             px[y * N + x] = (Uint32(byte(t)) << 24) | 0xffffff;
         }
     SDL_UpdateTexture(vignetteTex_, nullptr, px.data(), N * 4);
-    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_ }) {
+
+    // Band: across, a Gaussian falling to nothing at both sides (band())
+    bandTex_ = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, N, 1);
+    for (int x = 0; x < N; x++) {
+        const float d = (x + 0.5f - N / 2.f) / (N / 2.f);
+        px[x] = (Uint32(byte(std::exp(-4.5f * d * d) * (1 - d * d))) << 24) | 0xffffff;
+    }
+    SDL_UpdateTexture(bandTex_, nullptr, px.data(), N * 4);
+    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_ }) {
         SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
         SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
     }
@@ -86,8 +95,8 @@ void Gfx::shutdown() {
     iconCache_.clear();
     for (auto& [k, f] : fonts_) if (f) TTF_CloseFont(f);
     fonts_.clear();
-    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_ }) if (t) SDL_DestroyTexture(t);
-    glowTex_ = veilTex_ = vignetteTex_ = nullptr;
+    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_ }) if (t) SDL_DestroyTexture(t);
+    glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = nullptr;
     TTF_Quit();
 }
 
@@ -101,7 +110,7 @@ void Gfx::endFrame() {
     // unused for 10 s (the Canvas controls fade for longer than 3 s and come back).
     std::unordered_map<std::string, Cached>* caches[2] = { &textCache_, &iconCache_ };
     const size_t keep[2] = { 320, 96 };
-    if (frame_ % 60 == 0)
+    if (frame_ % 60 == 0 && !holdCache_)
         for (int c = 0; c < 2; c++) {
             if (caches[c]->size() <= keep[c] || !stale_[c].empty()) continue;
             for (const auto& [k, v] : *caches[c]) if (frame_ - v.lastFrame > 600) stale_[c].push_back(k);
@@ -190,6 +199,45 @@ void Gfx::shape(const std::vector<Pt>& pts, float cx, float cy, ColorFn col, SDL
     }
     SDL_RenderGeometry(r_, tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
 }
+
+void Gfx::polyline(const std::vector<SDL_FPoint>& pts, float thick, const Rgb& c, float alpha) {
+    const int n = int(pts.size());
+    if (ghost_ || n < 2) return;
+    const SDL_Color s = sdl(c, alpha);
+    SDL_Color z = s;
+    z.a = 0;
+    const float half = std::max(0.5f, thick / 2 - 0.5f), feather = 1.f;
+    verts_.clear();
+    idx_.clear();
+    // four vertices across each point: transparent, solid, solid, transparent; the normal is the two segments' average,
+    // lengthened at corners (up to twice) so the width holds
+    for (int i = 0; i < n; i++) {
+        const SDL_FPoint a = pts[size_t(std::max(0, i - 1))], b = pts[size_t(std::min(n - 1, i + 1))];
+        float dx = b.x - a.x, dy = b.y - a.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1e-4f) { dx = 1; dy = 0; } else { dx /= len; dy /= len; }
+        float nx = -dy, ny = dx, k = 1;
+        if (i > 0 && i < n - 1) {
+            float ax = pts[size_t(i)].x - a.x, ay = pts[size_t(i)].y - a.y;
+            const float al = std::sqrt(ax * ax + ay * ay);
+            if (al > 1e-4f) { ax /= al; ay /= al; k = std::min(2.f, 1 / std::max(0.5f, std::fabs(-ay * nx + ax * ny))); }
+        }
+        const SDL_FPoint p = pts[size_t(i)];
+        const float w0 = (half + feather) * k, w1 = half * k;
+        verts_.push_back({ { p.x - nx * w0, p.y - ny * w0 }, z, { 0, 0 } });
+        verts_.push_back({ { p.x - nx * w1, p.y - ny * w1 }, s, { 0, 0 } });
+        verts_.push_back({ { p.x + nx * w1, p.y + ny * w1 }, s, { 0, 0 } });
+        verts_.push_back({ { p.x + nx * w0, p.y + ny * w0 }, z, { 0, 0 } });
+    }
+    for (int i = 0; i + 1 < n; i++)
+        for (int k = 0; k < 3; k++) {
+            const int a = i * 4 + k, b = a + 1, c2 = a + 4, d = b + 4;
+            idx_.insert(idx_.end(), { a, b, c2, b, d, c2 });
+        }
+    SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+}
+
+void Gfx::setFade(float f) { gFade = std::clamp(f, 0.f, 1.f); }
 
 void Gfx::fill(const Rgb& c, float alpha) {
     if (ghost_) return;   // a ghost draws nothing
@@ -326,6 +374,70 @@ void Gfx::roundRectCorners(float x, float y, float w, float h, const float* rads
     outline(x, y, w, h, rads, pts);
     const SDL_Color s = sdl(c, alpha);
     shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; });
+}
+
+void Gfx::band(float x, float y, float w, float h, const Rgb& c, float alpha) {
+    if (ghost_ || !bandTex_) return;
+    const SDL_Color s = sdl(c, alpha);
+    SDL_SetTextureColorMod(bandTex_, s.r, s.g, s.b);
+    SDL_SetTextureAlphaMod(bandTex_, s.a);
+    const SDL_FRect dst{ x, y, w, h };
+    SDL_RenderCopyF(r_, bandTex_, nullptr, &dst);
+}
+
+void Gfx::bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha) {
+    if (ghost_ || !bandTex_ || bw <= 0) return;
+    const float x0 = std::max(bx, x), x1 = std::min(bx + bw, x + w);
+    if (x1 <= x0) return;
+    const SDL_Color s = sdl(c, alpha);
+    const float r = h / 2, cy = y + r;
+    // the pill's half height at px: its round ends are half circles
+    auto half = [&](float px) {
+        const float d = px < x + r ? x + r - px : px > x + w - r ? px - (x + w - r) : 0.f;
+        return std::sqrt(std::max(0.f, r * r - d * d));
+    };
+    // columns across the band, each the band's texture at its own u (its soft profile) between the pill's edges, feathered
+    // a pixel there (as Gfx::shape: a hard edge showed its steps round the ends)
+    constexpr int N = 32;
+    SDL_Color z = s;
+    z.a = 0;
+    verts_.clear();
+    idx_.clear();
+    for (int i = 0; i <= N; i++) {
+        const float px = x0 + (x1 - x0) * i / N, hh = half(px), u = std::clamp((px - bx) / bw, 0.f, 1.f);
+        const float in = std::max(0.f, hh - 0.5f), outer = hh + 0.5f;
+        verts_.push_back({ { px, cy - outer }, z, { u, 0.5f } });
+        verts_.push_back({ { px, cy - in }, s, { u, 0.5f } });
+        verts_.push_back({ { px, cy + in }, s, { u, 0.5f } });
+        verts_.push_back({ { px, cy + outer }, z, { u, 0.5f } });
+        if (i > 0) {
+            const int a = 4 * (i - 1), b = 4 * i;
+            for (int k = 0; k < 3; k++) idx_.insert(idx_.end(), { a + k, a + k + 1, b + k, a + k + 1, b + k + 1, b + k });
+        }
+    }
+    SDL_RenderGeometry(r_, bandTex_, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+}
+
+void Gfx::glowAround(float x, float y, float w, float h, float rad, float spread, float spreadX, const Rgb& c, float alpha) {
+    if (ghost_ || alpha <= 0 || w <= 0 || h <= 0) return;
+    std::vector<Pt> pts;
+    outline(x, y, w, h, rad, pts);
+    const int n = int(pts.size());
+    const SDL_Color s = sdl(c, alpha);
+    SDL_Color z = s;
+    z.a = 0;
+    verts_.clear();
+    idx_.clear();
+    // a ring from the edge (alpha) out to `spread` (nothing), interpolated per pixel
+    for (const Pt& p : pts) {
+        verts_.push_back({ { p.x, p.y }, s, {} });
+        verts_.push_back({ { p.x + p.nx * spreadX, p.y + p.ny * spread }, z, {} });
+    }
+    for (int i = 0; i < n; i++) {
+        const int a = 2 * i, b = 2 * ((i + 1) % n);
+        idx_.insert(idx_.end(), { a, a + 1, b, a + 1, b + 1, b });
+    }
+    SDL_RenderGeometry(r_, nullptr, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
 }
 
 void Gfx::glow(float cx, float cy, float rad, const Rgb& c, float alpha) {
@@ -674,7 +786,7 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
 
 // ------------------------------------------------------------------ icons
 
-void Gfx::icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha) {
+void Gfx::icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha, float scale) {
     const int px = int(std::lround(size));
     const std::string key = std::to_string(reinterpret_cast<uintptr_t>(svg)) + ":" + std::to_string(px);
     auto it = iconCache_.find(key);
@@ -697,6 +809,11 @@ void Gfx::icon(const char* svg, float cx, float cy, float size, const Rgb& c, fl
     const SDL_Color s = sdl(c, alpha);
     SDL_SetTextureColorMod(ic.tex, s.r, s.g, s.b);
     SDL_SetTextureAlphaMod(ic.tex, s.a);
+    if (scale != 1) {   // scaled smoothly, at fractional positions
+        const SDL_FRect dst{ cx - ic.w * scale / 2, cy - ic.h * scale / 2, ic.w * scale, ic.h * scale };
+        SDL_RenderCopyF(r_, ic.tex, nullptr, &dst);
+        return;
+    }
     const SDL_FRect dst{ std::round(cx - ic.w / 2.f - shiftX_) + shiftX_, std::round(cy - ic.h / 2.f - shiftY_) + shiftY_, float(ic.w), float(ic.h) };
     SDL_RenderCopyF(r_, ic.tex, nullptr, &dst);
 }

@@ -554,7 +554,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         // Measured: the count beside the label; Stop / Resume while the library is not all measured.
         const size_t measured = std::min(levels.count(), lib.tracks.size());
         const std::string measuredHint =
-            store.levelMode == 0     ? "Starts once levelling is on, with the track playing first"
+            store.levelMode == 0 ? "Starts once levelling is on, with the track playing first (Automix playlists' tracks: always)"
             : store.stopLevels       ? "Stopped. Only the track playing and the next ones are measured until you resume"
             : levels.secondsPerTrack() > 0 ? "In the background while Gatefold is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
                                      : "In the background while Gatefold is open, the track playing first";
@@ -594,7 +594,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                     measuredRow } },
                 { "Crossfade",
                   { segRow("Crossfade", "The end of a track fades into the next one. A track changed by hand fades in 0.3 s; Stop after "
-                                        "this track, Repeat track and a sleep timer's end never fade",
+                                        "this track, Repeat track and a sleep timer's end never fade. Automix playlists mix theirs instead",
+
                            "set.xfade", { "Off", "2", "4", "6", "8", "12 s" },
                            store.crossfade <= 0 ? 0 : store.crossfade <= 2 ? 1 : store.crossfade <= 4 ? 2 : store.crossfade <= 6 ? 3
                                                     : store.crossfade <= 8 ? 4 : 5,
@@ -603,7 +604,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                store.crossfade = secs[i];
                            }),
                     toggleRow("Not within an album", "Tracks of one album that follow each other keep their join, as live and "
-                                                     "gapless albums need",
+                                                     "gapless albums need. Automix playlists still mix them",
                               "set.xfadealbum", store.xfadeNotInAlbum) } },
                 { "Startup", { toggleRow("Resume where I left off", "The queue comes back paused at the same place in the same track",
                                          "set.resume", store.resume) } },
@@ -922,7 +923,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         struct K { const char* label; const char* hint; };
         const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (config/gatefold-nx/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
-                          { "Loudness measurements", "Volume levelling's measurements of each track (loudness.tsv, gains.bin)" },
+                          { "Loudness measurements", "Volume levelling's and Automix's measurements of each track (loudness.tsv, mix.tsv, gains.bin)" },
                           { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv)" },
                           { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
                           { "Downloads", "Release zips kept from an install that did not finish (updates)" } };
@@ -1097,6 +1098,21 @@ void App::drawSettings(float x, float y, float w, float h) {
                 infoRow("Background player memory", "Free on its heap (1.5 MB in all). A crossfade needs 320 KB of it for the second "
                                                     "track, else the join stays gapless",
                         player.remote() ? std::to_string(bg.state().heapFree / 1024) + " KB" : std::string("Not connected")) } } } });
+    {   // Automix's models, to compare on the console (the user, 2026-10-29; automix.hpp): a release plays the newest
+        std::vector<std::string> models;
+        for (int i = 0; i < int(automix::Model::Count); i++) {
+            const std::string n = automix::name(automix::Model(i));
+            models.push_back(n.rfind("Automix ", 0) == 0 ? n.substr(8) : n);   // "V1.0.0"
+        }
+        sections.back().cards.push_back(
+            { "Automix", { segRow("Model", "How the joins are planned and an Automix playlist ordered. The next join uses it; Order again "
+                                           "on a playlist to see its order by it. A release plays the newest",
+                                  "set.mixmodel", models, int(mixModel()), [this](int i) {
+                                      store.automixModel = automix::name(automix::Model(i));
+                                      store.save();
+                                      toast(std::string(automix::name(automix::Model(i))) + " for the next join");
+                                  }) } });
+    }
 #endif
 
     // About

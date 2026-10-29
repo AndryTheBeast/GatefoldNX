@@ -20,10 +20,13 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mixan.hpp"
+
 struct Level {
     float lufs = NAN;   // NaN: could not be measured (silence, or a file FFmpeg cannot read)
     float peak = 0;     // true peak, linear
     float blocks = 0;   // 400 ms blocks above the gates: the track's weight in its album
+    mixan::Info mix;    // Automix's analysis, made in the same decode (mix.tsv)
 };
 
 class Levels {
@@ -41,9 +44,10 @@ public:
     bool loaded() const { return loaded_; }
     bool dirty() const { return dirty_; }
     std::string serialise();   // loudness.tsv; clears dirty
+    std::string serialiseMix() const;   // mix.tsv: written with loudness.tsv, each time
     /** Settings → Storage and reset: every measurement forgotten (loudness.tsv is written again, empty); measured anew as wanted. */
     void forget();
-    size_t count() const { return map_.size(); }
+    size_t count() const { return done_; }   // tracks measured and analysed (one measured before Automix: not yet)
     /** Measuring the library right now (the progress card); and, this run, the seconds between tracks finishing:
      *  the rate the library goes at, with however many workers are measuring. */
     bool busy() const { return busy_.load() > 0; }
@@ -58,6 +62,7 @@ private:
 
     std::unordered_map<std::string, Level> map_;
     unsigned gen_ = 0;
+    size_t done_ = 0;
     bool dirty_ = false, loaded_ = false;
     double measuredS_ = 0;   // the gaps between library tracks finishing (gaps over 30 s, a pause, left out)
     int measuredN_ = 0;

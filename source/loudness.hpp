@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+namespace mixan { class Analyzer; }
+
 namespace loud {
 
 constexpr double Lo = -70, Hi = 10, Bin = 0.1;
@@ -65,8 +67,9 @@ private:
 /**
  * Decodes the whole file (FFmpeg: every format Gatefold plays) and measures it. Stops early,
  * returning false, when *cancel turns true. Not on the main thread: a track takes a moment.
+ * mix, when given, analyses the same samples for Automix (mixan.hpp): one decode for both.
  */
-bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<bool>* cancel);
+bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<bool>* cancel, mixan::Analyzer* mix = nullptr);
 
 /** dB gain from a loudness to a target, both in LUFS. */
 inline double gainTo(double lufs, double target) { return target - lufs; }

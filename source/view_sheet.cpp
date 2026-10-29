@@ -321,6 +321,28 @@ void App::drawSheet() {
         // On one of your own playlists, the track can leave it.
         if (route.view == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].own()) {
             auto& pl = store.playlists[route.ref];
+            // Move: picked up as the queue's rows are (an Automix playlist then keeps this order until Order again)
+            {
+                const std::vector<int> rows = playlistTracks(route.ref);
+                const int row = int(std::find(rows.begin(), rows.end(), t) - rows.begin());
+                if (row < int(rows.size()) && rows.size() > 1)
+                    items.push_back({ ICON_SORT_DOWN, "Move", pl.automix ? "Your order stays" : "", [this, row, ref = route.ref] {
+                                          closeSheet();
+                                          grab = Grab{ Grab::List, row, false, 1, ref };
+                                          ui.focus(uid("pl.r", row));
+                                          ui.setPadMode(true);
+                                          toast("Move it with the D-pad, then press A");
+                                      } });
+            }
+            if (pl.automix) {   // an Automix playlist: this track first (pinned), or Gatefold's choice again
+                const bool pinned = pl.pin == tr.path;
+                items.push_back({ ICON_LINK, pinned ? "Let Gatefold choose the first track" : "Play this first", "", [this, ref = route.ref, pinned, path = tr.path] {
+                                      store.playlists[ref].pin = pinned ? "" : path;
+                                      orderAutomixList(ref, false);
+                                      toast(pinned ? "Gatefold chooses the first track again" : "Plays first; the rest ordered after it");
+                                      closeSheet();
+                                  } });
+            }
             if (std::find(pl.tracks.begin(), pl.tracks.end(), tr.path) != pl.tracks.end())
                 items.push_back({ ICON_X, "Remove from “" + pl.name + "”", "", [this, ref = route.ref, path = tr.path] {
                                       auto& tl = store.playlists[ref].tracks;
@@ -461,6 +483,16 @@ void App::drawSheet() {
             info("Loudness", v);
         } else {
             info("Loudness", lv ? "Could not be measured" : "Not measured yet");
+        }
+        // Automix's analysis (mixan.hpp), made with the loudness
+        if (const Level* lv = levels.find(tr.path); lv && lv->mix.seconds != 0) {
+            char b[64];
+            if (lv->mix.bpm > 0 && lv->mix.confidence >= 0.5f) snprintf(b, sizeof b, "%.0f", double(lv->mix.bpm));
+            else if (lv->mix.bpm > 0) snprintf(b, sizeof b, "About %.0f (no steady beat for Automix)", double(lv->mix.bpm));
+            else snprintf(b, sizeof b, "No steady beat");
+            info("BPM", b);
+            if (lv->mix.key >= 0)   // the key, and its place on the Camelot wheel (Automix v2)
+                info("Key", (lv->mix.keySure >= 0.5f ? "" : "Perhaps ") + mixan::keyName(lv->mix.key) + " (" + mixan::camelot(lv->mix.key) + ")");
         }
         // Play statistics (stats.hpp)
         auto when = [](int64_t t) {

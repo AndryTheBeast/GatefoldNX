@@ -1155,14 +1155,14 @@ const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
     static const std::vector<std::vector<const char*>> files = {
         { "bg-config.txt" },                                                          // settings: the background player's
         {},                                                                           // the music folder (settings.txt)
-        { "playlists.txt", "lists.txt", "playlist-icons.tsv", "bg-playlists.txt" },   // playlists
+        { "playlists.txt", "lists.txt", "playlist-icons.tsv", "bg-playlists.txt", "mixes.tsv", "automix-lists.tsv" },   // playlists
         { "liked.txt" },                                                              // Liked
         { "edits.tsv", "covers.tsv", "covers" },                                      // tag edits and chosen covers
         { "lyric-offsets.tsv" },                                                      // lyric timings
         { "eq-presets.txt" },                                                         // saved equalizer presets
         { "stats.tsv", "bg-plays.txt" },                                              // play counts and statistics
         { "session.txt", "bg-session.txt", "bg-places.txt", "overlay-playlist.txt" }, // the queue
-        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "gains.bin", "updates" },   // caches
+        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "gains.bin", "updates" },   // caches
     };
     return files;
 }

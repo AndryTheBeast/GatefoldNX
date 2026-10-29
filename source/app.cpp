@@ -213,6 +213,7 @@ void App::rescan(const std::vector<std::string>* given) {
 }
 
 void App::shutdown() {
+    closeJoinEditor();   // its worker ends first
     updater.stop();   // a download stops; the files are only swapped when it finished
     setDimmed(false);
     persistNow();
@@ -237,7 +238,7 @@ void App::shutdown() {
     thumbs.stop();
     bg.disconnect();   // the background player carries on by itself
     Store::stopWriter();   // the last thread of ours: none may outlive Gatefold (hbloader cannot unload it then)
-    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, svTex, hueTex, wheelTex }) if (t) SDL_DestroyTexture(t);
+    for (SDL_Texture* t : { now.cover, now.prevCover, now.blur, now.prevBlur, now.frost, now.prevFrost, svTex, hueTex, wheelTex }) if (t) SDL_DestroyTexture(t);
     g.shutdown();
     if (renderer_) SDL_DestroyRenderer(renderer_);
     if (window_) SDL_DestroyWindow(window_);
@@ -278,7 +279,10 @@ void App::persistSoon(float delay) {
 void App::saveStats() {
     statsSavedAt = time;
     if (stats.loaded() && stats.dirty()) store.writeFile("stats.tsv", stats.serialise());
-    if (levels.loaded() && levels.dirty()) store.writeFile("loudness.tsv", levels.serialise());
+    if (levels.loaded() && levels.dirty()) {
+        store.writeFile("loudness.tsv", levels.serialise());
+        store.writeFile("mix.tsv", levels.serialiseMix());
+    }
 }
 
 /** Writes the settings and the session (sessionOnly: just the session, the 20 s save while playing). The files are written on a thread. */
@@ -347,6 +351,7 @@ void App::run() {
         time += dt;
 
         profAt_ = nowTicks;
+        std::fill(std::begin(profFrame_), std::end(profFrame_), 0.0);
         ui.beginFrame(dt);
         input();
         update();
@@ -363,6 +368,9 @@ void App::run() {
 #endif
         frameMs_[frameAt_] = float(interval * 1000);
         workMs_[frameAt_] = float(double(SDL_GetPerformanceCounter() - nowTicks) / freq * 1000);
+#ifdef GF_DEV
+        traceJoinFrame(frameMs_[frameAt_], workMs_[frameAt_]);
+#endif
         frameAt_ = (frameAt_ + 1) % 120;
         profAt_ = SDL_GetPerformanceCounter();
         SDL_RenderPresent(renderer_);
@@ -426,7 +434,7 @@ void App::input() {
     // while they are drawn, and the frame after that publishes it (the …Shown values), so it opens two frames on.
     if (ui.touchHeld()) plusAfterHold = 2;
     else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice) plusMenu(true);
-    const bool modal = sheet.page != Sheet::Closed || notice;
+    const bool modal = sheet.page != Sheet::Closed || notice || je.open || ap.open;
     if (!modal && (down & HidNpadButton_Minus)) openCanvas(!canvas);
     // Left stick: a pointer for what the D-pad reaches badly (the player bar's right end, small
     // buttons). Slow near the centre, fast at the edge; A taps and drags under it like a finger.
@@ -464,8 +472,9 @@ void App::input() {
     // finger, the pointer or leaving the page put it down too.
     if (grab.pos >= 0) {
         const View gv = grab.kind == Grab::Playlists ? View::Playlists : grab.kind == Grab::Tabs ? View::Settings
-                      : grab.upNext ? View::Now : View::Queue;
-        if ((down & (HidNpadButton_A | HidNpadButton_B)) || touched || pointerMoved || modal || canvas || route.view != gv) {
+                      : grab.kind == Grab::List ? View::List : grab.upNext ? View::Now : View::Queue;
+        if ((down & (HidNpadButton_A | HidNpadButton_B)) || touched || pointerMoved || modal || canvas || route.view != gv ||
+            (grab.kind == Grab::List && route.ref != grab.ref)) {
             grabDrop();
             down &= ~u64(HidNpadButton_A | HidNpadButton_B);
         }
@@ -483,7 +492,7 @@ void App::input() {
     ui.padHeld(held & HidNpadButton_A);   // a Hold item (the equalizer buttons) acts when A is let go, or on a long press
     // B puts a picked-up slider down before it goes back.
     if (down & HidNpadButton_B)
-        ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : tourStep >= 0 ? tourBack() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
+        ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : tourStep >= 0 ? tourBack() : je.open ? closeJoinEditor() : ap.open ? closeAutomixPicker() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
     if (down & HidNpadButton_X) togglePlay();
     if (!modal && (down & HidNpadButton_Y)) openSearch();
     if (down & HidNpadButton_L) prev();
@@ -534,16 +543,47 @@ void App::input() {
 
 // ============================================================ update
 
+// The dev build's join trace: update's slowest step this frame (updMark)
+#ifdef GF_DEV
+#define UPD_MARK(step) updMark(step)
+#else
+#define UPD_MARK(step)
+#endif
+
 void App::update() {
-    if (coverWaiting_) { coverWaiting_ = false; applyCover(coverWait_); coverWait_ = TrackLoader::Result{}; }
-    else if (TrackLoader::Result r; loader.take(r)) applyLoaded(r);
+#ifdef GF_DEV
+    updAt_ = SDL_GetPerformanceCounter();
+    updSlowMs_ = 0;
+    updSlow_ = "";
+#endif
+    if (coverWaiting_) { coverWaiting_ = false; applyCover(coverWait_); coverWait_ = TrackLoader::Result{}; UPD_MARK("applyCover"); }
+    else if (TrackLoader::Result r; loader.take(r)) { applyLoaded(r); UPD_MARK("applyLoaded"); }
     bgUpdate();
     updateTick();   // Settings → Updates: what the updater's worker finished
+    UPD_MARK("bg+updates");
     player.update();
+    UPD_MARK("player");
+#ifdef GF_DEV
+    if (time - traceAt >= 5 && !player.remote()) {   // stutters with Automix (the user, 2026-10-28): what the audio thread saw
+        traceAt = time;
+        const Player::Trace t = player.takeTrace();
+        const unsigned st = t.starved - traceStarved;
+        traceStarved = t.starved;
+        if (t.late || t.lockMiss || st || t.worstMs > 30) {
+            char line[512];
+            snprintf(line, sizeof line, "%.0f s\tworst %.1f ms\tlate %u\tlock %u\tdry %u\t%s\t%s\n", time, double(t.worstMs), t.late, t.lockMiss, st,
+                     time < mixUntil ? "join" : "-", now.track >= 0 ? lib.tracks[now.track].path.c_str() : "");
+            audioTrace += line;
+            if (audioTrace.size() > 64 * 1024) audioTrace.erase(0, audioTrace.find('\n', audioTrace.size() - 48 * 1024) + 1);
+            store.writeFile("audio-trace.txt", audioTrace);
+        }
+    }
+#endif
     if (player.takeFinished()) next(true);
+    UPD_MARK("next");
     if (player.remote() && time - bgListsAt > 5) { bgListsAt = time; writeBgPlaylists(); }
     // Crossfade, in Gatefold's own player: over the last seconds of the track, into the next one.
-    if (!player.remote() && store.crossfade > 0 && !xfadeChecked && isPlaying() && now.track >= 0) {
+    if (!player.remote() && store.crossfade > 0 && !automixQueue() && !xfadeChecked && isPlaying() && now.track >= 0) {
         const double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
         const double left = dur - player.position();
         if (dur > 0 && left <= store.crossfade && left > 0.25) {
@@ -553,6 +593,11 @@ void App::update() {
             if (p >= 0) playAt(p, left);
         }
     }
+    UPD_MARK("crossfade");
+    updateAutomix();
+    UPD_MARK("updateAutomix");
+    automixListsTick();
+    UPD_MARK("automixLists");
 
     // Play statistics. Gatefold counts what it plays itself; while the background player plays, it
     // counts (bg-plays.txt) and Gatefold only takes its counts in.
@@ -573,15 +618,33 @@ void App::update() {
             stats.countPlay(lib.tracks[now.track].path, int64_t(std::time(nullptr)));
         }
     }
+    UPD_MARK("stats");
     if (stats.dirty() && time - statsSavedAt > 15) saveStats();
+    UPD_MARK("saveStats");
     updateSleep();
     sampleBattery();
     updateLevels();
     updateFileWork();
+    UPD_MARK("sleep+levels+files");
 
     // Gatefold crossfades the palette over --tx (1.1 s) with an ease-out curve.
-    pal = store.colourTransition < 0.05f ? target : paletteMix(pal, target, 1 - std::exp(-dt / (store.colourTransition / 3.6f)));
-    now.fade = std::min(1.f, now.fade + dt / 0.5f);
+    // During an Automix join, towards the incoming track's palette from wherever it is, arriving as the join ends (the user,
+    // 2026-10-28: "the UI background colour should change gradually too"); from where it is, so a cover (and its palette)
+    // that arrives a moment late never makes it jump (a blend from the outgoing palette did: "sometimes not gradual")
+    if (time >= mixShownAt && time < mixUntil && mixUntil > mixFrom && !player.remote() && store.colourTransition >= 0.05f) {
+        pal = paletteMix(pal, target, float(std::clamp(dt / std::max(double(dt), mixUntil - time), 0.0, 1.0)));
+    } else {
+        pal = store.colourTransition < 0.05f ? target : paletteMix(pal, target, 1 - std::exp(-dt / (store.colourTransition / 3.6f)));
+    }
+    // the covers crossfade over 0.5 s; during an Automix join, over the join itself, eased at both ends (the user, 2026-10-28:
+    // "from one to another smoothly with the automix timing"), so a long blend changes the cover slowly and a cut at once
+    // (from the moment the join is decided: the next track, and its cover, load 0.6 s before it begins)
+    if (time >= mixShownAt && time < mixUntil && mixUntil > mixFrom && !player.remote()) {
+        const float u = float(std::clamp((time - mixFrom) / (mixUntil - mixFrom), 0.0, 1.0));
+        now.fade = std::max(now.fade, u * u * (3 - 2 * u));
+    } else {
+        now.fade = std::min(1.f, now.fade + dt / 0.5f);
+    }
     sideW += ((store.sidebarCollapsed ? css::SideWCollapsed : css::SideW) - sideW) * (1 - std::exp(-dt / 0.06f));
     toastT = std::max(0.f, toastT - dt);
 
@@ -590,7 +653,8 @@ void App::update() {
     if (isPlaying() && player.latestPcm(pcm_.data(), Spectrum::N)) spec.feed(pcm_.data(), player.sampleRate());
     spec.step(dt, isPlaying());
     // The cover's bass pulse (Now playing, and the Canvas when asked for), eased so a kick swells rather than pops.
-    const float wantBeat = store.coverPulse > 0 ? std::min(0.03f, spec.beat * 0.07f) * store.coverPulse : 0;
+    // (still while Automix joins: the user, 2026-10-28)
+    const float wantBeat = store.coverPulse > 0 ? std::min(0.03f, spec.beat * 0.07f) * store.coverPulse * (1 - automixFocus().quiet) : 0;
     coverBeat += (wantBeat - coverBeat) * (1 - std::exp(-dt / (wantBeat > coverBeat ? 0.05f : 0.14f)));
 
     // Saved as things change rather than on exit, which the HOME menu can skip: the volume once the
@@ -601,8 +665,10 @@ void App::update() {
         savedPlaying = isPlaying();
         persistSoon(0.5f);
     }
+    UPD_MARK("palette+spectrum");
     if (isPlaying() && time - sessionAt > 20) persistNow(true);
     if (persistAt > 0 && time >= persistAt) persistNow();
+    UPD_MARK("persist");
 
     // The overlay's covers: when many are missing, say so once (drawCoverNotice). Looked at once the
     // library has settled a little after launch, and only with the background player connected.
@@ -666,8 +732,11 @@ void App::update() {
         libChecked_.clear();
     }
 
+    UPD_MARK("notices+jobs+libcheck");
     if (meta.pump(renderer_)) indexDirty = true;
+    UPD_MARK("meta.pump");
     if (indexDirty && time - indexAt > 1.5) rebuildIndex();
+    UPD_MARK("rebuildIndex");
 }
 
 void App::rebuildIndex() {
@@ -854,10 +923,10 @@ void App::playTracks(const std::vector<int>& tracks, int startPos, const std::st
     }
 }
 
-void App::playAt(int orderPos, double fade) {
+void App::playAt(int orderPos, double fade, const automix::Plan* mix) {
     if (q.order.empty()) return;
     q.pos = std::clamp(orderPos, 0, int(q.order.size()) - 1);
-    loadTrack(q.tracks[q.order[q.pos]], false, true, fade);
+    loadTrack(q.tracks[q.order[q.pos]], false, true, fade, mix);
     // The background player skips an unplayable file itself and says so (errorGen, bgUpdate); its polled
     // state is a frame old here, and on a fresh install it still said "no queue", which skipped every track.
     if (player.remote()) {
@@ -897,13 +966,103 @@ void App::next(bool natural) {
  * the list, a reshuffle at the end, a sleep timer ending first, and (by default) between consecutive tracks
  * of one album, which keep their gapless join.
  */
+#ifdef GF_DEV
+/** The dev build's join trace: each Automix join's frame times, a line in audio-trace.txt when it ends. */
+void App::traceJoinFrame(float frameMs, float workMs) {
+    const bool joining = !player.remote() && now.track >= 0 && mixUntil > mixShownAt && time >= mixShownAt && time < mixUntil;
+    if (joining) {
+        joinFrames_++;
+        joinSum_ += frameMs;
+        joinWorst_ = std::max(joinWorst_, double(frameMs));
+        joinWorkSum_ += workMs;
+        joinWorkWorst_ = std::max(joinWorkWorst_, double(workMs));
+        if (frameMs > 17.5f) joinLate_++;
+        if (frameMs >= 25) joinDrops_++;
+        if (workMs >= joinWorkWorst_) {   // what the worst frame did: when, its sections, update's slowest step
+            char why[256];
+            snprintf(why, sizeof why, "at %.1f s: upd %.1f (%s %.1f) bg %.1f view %.1f side %.1f bar %.1f rest %.1f warm %.1f", time - mixShownAt,
+                     profFrame_[0], updSlow_, updSlowMs_, profFrame_[1], profFrame_[2], profFrame_[3], profFrame_[4], profFrame_[5], profFrame_[6]);
+            joinWhy_ = why;
+        }
+        return;
+    }
+    if (joinFrames_ == 0) return;
+    char line[512];
+    snprintf(line, sizeof line, "%.0f s\tjoin %.1f s\t%d frames\tframe avg %.1f worst %.1f ms\twork avg %.1f worst %.1f ms\tover 17 ms: %d\tdropped (25 ms+): %d\tworst work %s\t%s\n", time,
+             mixUntil - mixShownAt, joinFrames_, joinSum_ / joinFrames_, joinWorst_, joinWorkSum_ / joinFrames_, joinWorkWorst_, joinLate_,
+             joinDrops_, joinWhy_.c_str(), now.track >= 0 ? lib.tracks[now.track].path.c_str() : "");
+    audioTrace += line;
+    store.writeFile("audio-trace.txt", audioTrace);
+    joinFrames_ = joinLate_ = joinDrops_ = 0;
+    joinSum_ = joinWorst_ = joinWorkSum_ = joinWorkWorst_ = 0;
+}
+#endif
+
+/**
+ * Automix (Gatefold's own player): from ten seconds into a track, each frame, the join to the next one is
+ * planned from both analyses (automix.hpp; the rules of crossfadeNext still decide whether there is one),
+ * and started 0.6 s before its moment: the file is opened while this one plays, and the player starts it on
+ * its exact sample. A track not analysed yet gets a plain fade.
+ */
+void App::updateAutomix() {
+    if (player.remote() || !automixQueue() || xfadeChecked || !isPlaying() || now.track < 0) return;
+    const Level* la = levels.find(lib.tracks[now.track].path);
+    double dur = now.info.duration > 0 ? now.info.duration : lib.tracks[now.track].duration;
+    if (dur <= 0 && la && la->mix.seconds > 0) dur = la->mix.seconds;   // no length in its tags: the analysis measured it
+    const double pos = player.position(), left = dur - pos;
+    if (dur <= 0 || pos < 10 || left <= 0.25) return;
+    const int p = crossfadeNext(left);
+    if (p < 0) return;   // looked at again next frame: the queue, the order or Stop after may change
+    const Level* lb = levels.find(lib.tracks[q.tracks[q.order[p]]].path);
+    // Auto, always (the user, 2026-10-29: "all in on Auto" for 2.0; the join editor is out of reach). Joins edited before
+    // stay in mixes.tsv, unused, for a later version that edits them again
+    const bool edited = false;
+    const automix::Plan pl = automix::plan(la ? &la->mix : nullptr, dur, lb ? &lb->mix : nullptr, store.crossfade, nullptr, mixModel());
+    if (pl.off || dur <= pl.length * 2) { xfadeChecked = true; return; }   // Off, or a track shorter than two fades: it plays whole
+    if (pl.speed != 1 && !stretchBegun && pos >= pl.stretchFrom) {   // towards the next track's tempo, a few beats before
+        stretchBegun = true;
+        player.beginStretch(pl);
+    }
+    if (!mixPrepared && pos >= pl.startOut - 4) {   // opened and moved to its offset on a worker, ahead of the join
+        mixPrepared = true;
+        player.prepare(lib.tracks[q.tracks[q.order[p]]].path, pl.offset);
+    }
+    // Shown 0.4 s before the next track is loaded (the stage's fade-out: automixFocus): this track's title and lyrics leave
+    // before the next one's take their place (they changed as they began to fade: the user, 2026-10-29, the Canvas)
+    if (pos < pl.startOut - 1.0) {
+        if (mixAnnounced) { mixAnnounced = false; mixUntil = 0; }   // sought back: not yet
+        return;
+    }
+    if (!mixAnnounced || time >= mixUntil) {   // (again after a long pause in between: it had run out)
+        mixAnnounced = true;
+        mixLabel = "Automix";
+        if (edited && pl.join.preset != automix::Preset::Auto) mixLabel += std::string(" · ") + automix::name(pl.join.preset);
+        if (pl.beatmatched) mixLabel += " · " + std::to_string(int(std::lround(pl.bpm))) + " BPM";
+        mixUntil = time + std::max(0.0, pl.startOut - pos) + pl.length;
+        mixShownAt = time;
+        mixFrom = time + std::max(0.0, pl.startOut - pos);
+    }
+    if (pos < pl.startOut - 0.6) return;
+    xfadeChecked = true;
+    mixAnnounced = false;   // (loadTrack: a load other than this join's ends the stage)
+#ifndef __SWITCH__
+    SDL_Log("automix: at %.2f s, next from %.2f s, %.2f s%s, %s: %s, %s, %s, %s, loop %d", pl.startOut, pl.offset, pl.length,
+            pl.beatmatched ? " on the beat" : "", automix::name(pl.join.preset), automix::name(pl.join.volume), automix::name(pl.join.eq),
+            automix::name(pl.join.filter), automix::name(pl.join.effect), pl.join.loopBars);   // the PC preview checks it with this
+    if (pl.speed != 1) SDL_Log("automix: this track at %+.2f %% from %.1f s, to its end", (pl.speed - 1) * 100, pl.stretchFrom);
+#endif
+    playAt(p, pl.length, &pl);
+}
+
 int App::crossfadeNext(double left) const {
     if (q.order.empty() || store.order == Order::RepeatOne || stopAfterCurrent) return -1;
     const double sl = sleepLeft();
     if (sl > 0 && sl <= left + store.crossfade) return -1;
     const int p = q.pos + 1;
     if (p >= int(q.order.size())) return -1;   // the end, or a new round (and a reshuffle): as before
-    if (store.xfadeNotInAlbum) {
+    // an album's own joins kept; not in an Automix playlist, made to be mixed (the user, 2026-10-28: one album's songs in one
+    // were never joined)
+    if (store.xfadeNotInAlbum && !automixQueue()) {
         const int a = lib.tracks[now.track].albumIdx, b = lib.tracks[q.tracks[q.order[p]]].albumIdx;
         if (a >= 0 && a == b) return -1;
     }
@@ -1055,7 +1214,8 @@ void App::writeGains() {
 /** Every frame: what to measure next, the gains file, and the gain here. */
 void App::updateLevels() {
     const bool changed = levels.poll();
-    if (store.levelMode == 0) {
+    const std::vector<std::string> amWaiting = automixWaitingTracks(32);   // an Automix playlist's tracks not analysed yet
+    if (store.levelMode == 0 && !automixQueue() && amWaiting.empty()) {   // the worker measures for levelling and analyses Automix playlists
         if (!levelFirst.empty() || !levelAll.empty()) {
             levelFirst.clear();
             levelAll.clear();
@@ -1067,6 +1227,7 @@ void App::updateLevels() {
         std::vector<std::string> first;
         if (now.track >= 0) first.push_back(lib.tracks[now.track].path);
         for (int t : upNext(3)) first.push_back(lib.tracks[t].path);
+        first.insert(first.end(), amWaiting.begin(), amWaiting.end());
         const bool libChanged = levelEpoch != libEpoch && !lib.tracks.empty();
         if (libChanged) {
             levelEpoch = libEpoch;
@@ -1074,9 +1235,13 @@ void App::updateLevels() {
             levelAll.reserve(lib.tracks.size());
             for (const Track& t : lib.tracks) levelAll.push_back(t.path);
         }
-        if (libChanged || first != levelFirst) {
+        // levelling off: only what Automix needs (the queue's next tracks, Automix playlists' tracks), not the whole library
+        // (it was decoded track after track while an Automix playlist played: the SD card and core 1 busy under the audio)
+        const bool library = store.levelMode != 0;
+        if (libChanged || first != levelFirst || library != levelAllSent) {
             levelFirst = first;
-            levels.want(first, levelAll);
+            levelAllSent = library;
+            levels.want(first, library ? levelAll : std::vector<std::string>{});
         }
     }
     // The gains: new measurements or a new target. Soon when a track asked for first has its value now
@@ -1091,6 +1256,7 @@ void App::updateLevels() {
     if (levels.dirty() && time - levelsSavedAt > 30) {
         levelsSavedAt = time;
         store.writeFile("loudness.tsv", levels.serialise());
+        store.writeFile("mix.tsv", levels.serialiseMix());
     }
     if (player.remote()) {
         if (store.levelMode != levelModeSent) { bg.setLevelMode(store.levelMode); levelModeSent = store.levelMode; }
@@ -1372,6 +1538,22 @@ void App::queueClear() {
 }
 
 void App::grabStep(int d) {
+    if (grab.kind == Grab::List) {   // a track of one of your own playlists: it swaps places with its neighbour
+        if (grab.ref < 0 || grab.ref >= int(store.playlists.size()) || !store.playlists[size_t(grab.ref)].own()) { grabDrop(); return; }
+        FolderPlaylist& p = store.playlists[size_t(grab.ref)];
+        const std::vector<int> rows = playlistTracks(grab.ref);
+        const int to = std::clamp(grab.pos + d, 0, int(rows.size()) - 1);
+        if (to == grab.pos || grab.pos >= int(rows.size())) return;
+        auto at = [&](int row) { return std::find(p.tracks.begin(), p.tracks.end(), lib.tracks[size_t(rows[size_t(row)])].path); };
+        const auto a = at(grab.pos), b = at(to);
+        if (a != p.tracks.end() && b != p.tracks.end()) std::iter_swap(a, b);
+        if (p.automix) p.manual = true;   // moved by hand: it keeps this order until Order again
+        store.save();
+        grab.pos = to;
+        ui.focus(uid("pl.r", to));
+        ui.setPadMode(true);
+        return;
+    }
     if (grab.kind == Grab::Playlists) {   // the Playlists page: the playlist itself moves (its rows keep their ids)
         const int to = std::clamp(grab.pos + d, 0, int(store.playlists.size()) - 1);
         if (to != grab.pos) { movePlaylist(grab.pos, to); grab.pos = to; }
@@ -1408,11 +1590,14 @@ void App::grabDrop() { grab = Grab{}; }
  * lyrics stay as they were (frozen where they were), and then everything changes at once: showing the
  * library's tags first made the lyrics read "No lyrics" and the Canvas text jump for a frame or two.
  */
-void App::loadTrack(int trackIdx, bool paused, bool start, double fade) {
+void App::loadTrack(int trackIdx, bool paused, bool start, double fade, const automix::Plan* mix) {
     const Track& t = lib.tracks[trackIdx];
     // A crossfade is set: a track changed by hand fades quickly instead of cutting (Player: only while one plays).
-    if (fade <= 0 && start && !paused && store.crossfade > 0 && !player.remote() && isPlaying()) fade = 0.3;
+    if (fade <= 0 && start && !paused && (store.crossfade > 0 || automixQueue()) && !player.remote() && isPlaying()) fade = 0.3;
     xfadeChecked = false;
+    stretchBegun = false;
+    mixPrepared = false;
+    if (mixAnnounced) { mixAnnounced = false; mixUntil = 0; }   // a skip in the 0.4 s before a join: no join, no stage
     lyricsHold = player.loaded() ? player.position() : 0;
     const bool shown = now.track >= 0 && !now.info.title.empty();
     now.track = trackIdx;
@@ -1432,7 +1617,7 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade) {
     now.loading = true;
     statHeard = 0;   // a new play of it, also when Repeat track plays it again
     statCounted = false;
-    player.setLevel(float(std::pow(10, levelDb(trackIdx) / 20)), true);   // from its first sample (levelling)
+    const float gain = float(std::pow(10, levelDb(trackIdx) / 20));
     TrackLoader::Request r;
     r.gen = ++loadGen;
     r.path = t.path;
@@ -1443,13 +1628,16 @@ void App::loadTrack(int trackIdx, bool paused, bool start, double fade) {
 
     wave.request(t.path);
     meta.wantTags(trackIdx);
-    if (!start) return;
+    // levelling from its first sample; set after load(), which keeps the outgoing track's gain for its fade
+    if (!start) { player.setLevel(gain, true); return; }
     if (player.remote() && bgSyncQueue(false)) {
+        player.setLevel(gain, true);
         bg.playAt(q.pos, paused, 0);
         bgs.awaitUntil = time + 1.5;
         return;
     }
-    player.load(t.path, paused, fade);
+    player.load(t.path, paused, fade, mix);
+    player.setLevel(gain, true);
 }
 
 // ============================================================ the background player
@@ -1642,6 +1830,11 @@ void App::addToPlaylist(int playlist, int track) {
     if (std::find(p.tracks.begin(), p.tracks.end(), path) != p.tracks.end()) { toast("Already in “" + p.name + "”"); return; }
     p.tracks.push_back(path);
     store.save();
+    if (p.automix && !p.manual) {   // an Automix playlist: ordered again with it
+        orderAutomixList(playlist, false);
+        toast("Added to “" + p.name + "”, ordered for Automix");
+        return;
+    }
     toast("Added to “" + p.name + "”");
 }
 
@@ -1878,9 +2071,11 @@ void App::forgetNowPlaying() {
     // The cover fades out, as it fades between tracks
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
+    if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
-    now.cover = now.blur = nullptr;
+    now.prevFrost = now.frost;
+    now.cover = now.blur = now.frost = nullptr;
     now.fade = 0;
     savedTrack = -1;
 }
@@ -1891,9 +2086,11 @@ void App::applyCover(TrackLoader::Result& r) {
     // Keep the outgoing cover for the 500 ms crossfade.
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
     if (now.prevBlur) SDL_DestroyTexture(now.prevBlur);
+    if (now.prevFrost) SDL_DestroyTexture(now.prevFrost);
     now.prevCover = now.cover;
     now.prevBlur = now.blur;
-    now.cover = now.blur = nullptr;
+    now.prevFrost = now.frost;
+    now.cover = now.blur = now.frost = nullptr;
     now.fade = 0;
     coverPx.clear();
     coverPal = store.brightness ? paletteFixed(FixedTheme::Light) : paletteDefault();
@@ -1907,6 +2104,10 @@ void App::applyCover(TrackLoader::Result& r) {
     if (r.blur) {
         now.blur = SDL_CreateTextureFromSurface(renderer_, r.blur);
         if (now.blur) SDL_SetTextureScaleMode(now.blur, SDL_ScaleModeLinear);
+    }
+    if (r.frost) {
+        now.frost = SDL_CreateTextureFromSurface(renderer_, r.frost);
+        if (now.frost) SDL_SetTextureScaleMode(now.frost, SDL_ScaleModeLinear);
     }
     if (!r.px.empty()) {
         coverPal = r.pal;
@@ -2176,8 +2377,10 @@ std::vector<int> App::listTracks(View v, int ref, const std::string&) const {
         } else if (ref < int(store.playlists.size())) {
             const FolderPlaylist& p = store.playlists[ref];
             if (p.own()) {
+                // an Automix playlist being analysed: only its songs analysed so far, in their order (the rest join it one by one)
+                const bool hide = p.automix && p.waiting && !p.manual;
                 for (const auto& path : p.tracks)
-                    if (auto it = pathIndex.find(path); it != pathIndex.end()) out.push_back(it->second);
+                    if (auto it = pathIndex.find(path); it != pathIndex.end() && (!hide || automixReady(path))) out.push_back(it->second);
             } else if (p.smart()) {
                 out = smartTracks(p.path);
             } else {

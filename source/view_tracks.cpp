@@ -35,7 +35,7 @@ Tiles tilesFor(float w) {
 
 // ============================================================ layout
 
-std::vector<App::ListEntry> App::listLayout(const std::vector<int>& tracks, float w, ListMode mode) const {
+std::vector<App::ListEntry> App::listLayout(const std::vector<int>& tracks, float w, ListMode mode, float joinGap) const {
     std::vector<ListEntry> out;
     float y = 0;
     if (mode == ListMode::Grid) {
@@ -56,6 +56,7 @@ std::vector<App::ListEntry> App::listLayout(const std::vector<int>& tracks, floa
         const float h = mode == ListMode::Covers ? CovRowH : RowH;
         out.push_back({ ListEntry::Row, i, y, h });
         y += h;
+        if (i + 1 < int(tracks.size())) y += joinGap;
     }
     return out;
 }
@@ -259,8 +260,8 @@ void App::groupHead(const char* key, int index, int track, float x, float y, flo
  * only what lies in [clipY, clipY + clipH). play(i) runs when row i is chosen. Returns the height.
  */
 float App::drawTrackBody(const char* key, const std::vector<int>& tracks, float x, float top, float w, float clipY, float clipH, ListMode mode,
-                         bool extended, const std::function<void(int)>& play) {
-    const std::vector<ListEntry> layout = listLayout(tracks, w, mode);
+                         bool extended, const std::function<void(int)>& play, float joinGap) {
+    const std::vector<ListEntry> layout = listLayout(tracks, w, mode, joinGap);
     const Tiles tl = tilesFor(w);
     bodyFocus = -1;
     bodyCols = mode == ListMode::Grid ? tl.cols : 1;

@@ -5,8 +5,11 @@
 
 #include <SDL2/SDL_image.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "cores.hpp"
 #include "gfx.hpp"
@@ -15,8 +18,47 @@
 void TrackLoader::Result::release() {
     if (cover) SDL_FreeSurface(cover);
     if (blur) SDL_FreeSurface(blur);
-    cover = blur = nullptr;
+    if (frost) SDL_FreeSurface(frost);
+    cover = blur = frost = nullptr;
 }
+
+namespace {
+/**
+ * The cover frosted (Automix's join, Now playing): the 64×64 sample blurred by three passes of a box blur 9 texels wide each
+ * way (close to a Gaussian of σ ≈ 4.5 texels), edges held. Stretched over the cover with linear filtering it is smooth;
+ * the backdrop's 12×12 showed its grid there (the user, 2026-10-28: "frosted should be more like blur").
+ */
+SDL_Surface* frostOf(const SDL_Surface* thumb) {
+    constexpr int N = 64, R = 4;
+    SDL_Surface* out = SDL_CreateRGBSurfaceWithFormat(0, N, N, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!out) return nullptr;
+    std::vector<float> a(N * N * 3), b(N * N * 3);
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++)
+            for (int c = 0; c < 3; c++) a[(y * N + x) * 3 + c] = static_cast<const uint8_t*>(thumb->pixels)[y * thumb->pitch + x * 4 + c];
+    for (int pass = 0; pass < 3; pass++)
+        for (int dir = 0; dir < 2; dir++) {   // across, then down
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                    for (int c = 0; c < 3; c++) {
+                        float s = 0;
+                        for (int k = -R; k <= R; k++) {
+                            const int xx = std::clamp(dir ? x : x + k, 0, N - 1), yy = std::clamp(dir ? y + k : y, 0, N - 1);
+                            s += a[(yy * N + xx) * 3 + c];
+                        }
+                        b[(y * N + x) * 3 + c] = s / (2 * R + 1);
+                    }
+            a.swap(b);
+        }
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++) {
+            uint8_t* p = static_cast<uint8_t*>(out->pixels) + y * out->pitch + x * 4;
+            for (int c = 0; c < 3; c++) p[c] = uint8_t(std::clamp(int(std::lround(a[(y * N + x) * 3 + c])), 0, 255));
+            p[3] = 255;
+        }
+    return out;
+}
+}  // namespace
 
 void TrackLoader::start() {
     if (thread_.joinable()) return;
@@ -117,6 +159,7 @@ void TrackLoader::work(const Request& r, Result& out) {
         for (int y = 0; y < 64; y++) memcpy(&out.px[y * 256], static_cast<uint8_t*>(thumb->pixels) + y * thumb->pitch, 256);
         out.pal = paletteFromPixels(out.px.data(), 64, 64, r.opts);
         if (SDL_SoftStretchLinear(thumb, nullptr, tiny, nullptr) == 0) { out.blur = tiny; tiny = nullptr; }
+        out.frost = frostOf(thumb);
     }
     if (thumb) SDL_FreeSurface(thumb);
     if (tiny) SDL_FreeSurface(tiny);

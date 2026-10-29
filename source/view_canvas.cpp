@@ -28,16 +28,26 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
     sa.view = { x, y, w, h };
     if (!now.synced) {
         // .ln.plain: UI font, regular weight; scrolls by touch and the right stick
+        // Faded at the bottom as the synced lines are (their mask, below), with room below the last line so every line can
+        // be read clear of it; faded at the top too once scrolled, by as much as it is (at the top, the first line sits
+        // right under the title as before): cut off at the box, they ran under the progress line and half a line showed at
+        // each end (the user, 2026-10-29)
         const Font f{ int(clampf(1.25f * vw, 16, 22)) };
+        const float below = std::round(h * 0.28f);
         float total = 0;
         for (const auto& l : now.lyrics) total += 26 * g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3).size();
-        sa.content = total;
+        sa.content = total + below;
         if (!g.ghost()) ui.pushArea(&sa);   // a hidden layout's lyrics take no touch or stick
         g.clip(x - 10, y, w + 20, h);
         float ly = y - sa.y;
+        const float topK = clampf(sa.y / (h * 0.18f), 0, 1);
         for (const auto& l : now.lyrics)
             for (const auto& part : g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3)) {
-                if (ly + 26 > y && ly < y + h) g.text(part, f, x, ly, pal.text2, alpha);
+                if (ly + 26 > y && ly < y + h) {
+                    const float rel = (ly + 13 - y) / h;
+                    const float m = rel < 0.18f ? 1 - topK * (1 - clampf(rel / 0.18f, 0, 1)) : rel > 0.72f ? clampf((1 - rel) / 0.28f, 0, 1) : 1.f;
+                    if (m * alpha > 0.01f) g.text(part, f, x, ly, pal.text2, alpha * m);
+                }
                 ly += 26;
             }
         g.unclip();
@@ -113,10 +123,21 @@ void App::drawCanvas() {
     // The switch runs on the clock, not per frame, so a slow frame (a track loading) cannot make it jump:
     // the cover travels on an ease-in-out curve over 0.9 s; the old text fades out first, the new eases in once the cover has nearly arrived.
     const int layout = canvasLayoutShown();
+    // Automix joining (automixFocus, as on Now playing; the user, 2026-10-29): the cover glides from the layout to a stage in
+    // the middle and frosts over with the hint while the layout's text fades out; as the join ends it glides to the layout
+    // the incoming track needs (Minimal without lyrics). A layout change while the stage hides the layout (one track with
+    // lyrics, the other without) is taken at once: the return is a single move, never a switch in the middle of the join
+    const Focus fc = automixFocus();
+    const float m = fc.move;
+    const bool mixing = has && time < mixUntil && !player.remote();
     auto progress = [&] { return clampf(float(time - cvStart) / 0.9f, 0, 1); };
     auto inOut = [](float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; };
     auto weights = [&](float e, float* w) { for (int i = 0; i < 3; i++) w[i] = cvFrom[i] + ((i == cvTo ? 1.f : 0.f) - cvFrom[i]) * e; };
-    if (layout != cvTo) {
+    if (layout != cvTo && m > 0.99f) {
+        for (int i = 0; i < 3; i++) cvFrom[i] = i == layout ? 1.f : 0.f;
+        cvTo = layout;
+        cvStart = -10;
+    } else if (layout != cvTo) {
         float now3[3];
         weights(inOut(progress()), now3);   // start from wherever the cover is, even mid-way through another switch
         std::copy(now3, now3 + 3, cvFrom);
@@ -130,6 +151,7 @@ void App::drawCanvas() {
     for (int i = 0; i < 3; i++) {
         const float in = clampf((p - 0.6f) / 0.4f, 0, 1), out = clampf(p / 0.4f, 0, 1);
         textA[i] = i == cvTo ? std::max(cvFrom[i], 1 - (1 - in) * (1 - in) * (1 - in)) : cvFrom[i] * (1 - out) * (1 - out);
+        textA[i] *= fc.ui;   // and out while the stage is up (Automix)
     }
     const bool lyricsOn = store.canvasLyrics && !now.lyrics.empty();
 
@@ -143,8 +165,10 @@ void App::drawCanvas() {
         SDL_SetTextureAlphaMod(tex, Uint8(clampf(a, 0, 1) * 255));
         SDL_RenderCopyF(renderer_, tex, nullptr, &r);
     };
-    blur(now.prevBlur, 0.62f * (1 - now.fade));
-    blur(now.blur, 0.62f * now.fade);
+    // the new over the old, as the share of each a crossfade gives: both at half thinned the blur mid-way (as Now playing's frost)
+    const float bk = now.fade, bn = now.blur ? 0.62f * (now.prevBlur ? bk : 1.f) : 0.f;
+    if (bk < 1) blur(now.prevBlur, 0.62f * (1 - bk) / std::max(1e-3f, 1 - bn));
+    blur(now.blur, bn);
     const float g1 = alternate(t, 60), g3 = alternate(t, 76);
     g.glow(-20 * vmax + 35 * vmax + 14 * vmax * g1, -24 * vmax + 35 * vmax + 10 * vmax * g1, 35 * vmax * (1 + 0.15f * g1), pal.blobs[0], 0.5f);
     g.glow(css::W + 22 * vmax - 35 * vmax + 16 * vmax * g3, css::H + 30 * vmax - 35 * vmax - 12 * vmax * g3, 35 * vmax * (1 + 0.1f * g3),
@@ -183,9 +207,17 @@ void App::drawCanvas() {
     const Stage st[3] = { stage(0), stage(1), stage(2) };
     float art = 0, ax = 0, ay = 0;
     for (int i = 0; i < 3; i++) { art += st[i].art * wts[i]; ax += st[i].ax * wts[i]; ay += st[i].ay * wts[i]; }
+    if (m > 0) {   // the stage: the Cover layout's cover (the largest), centred, at its height (clear of the controls)
+        const float sa = st[0].art;
+        art += (sa - art) * m;
+        ax += ((css::W - sa) / 2 - ax) * m;
+        ay += (st[0].ay - ay) * m;
+    }
+    const float restArt = art, restX = ax, restY = ay;   // the hint holds still while the cover pulses
 
     // .cv-art: a slow float, the cover with a Ken Burns zoom, a deep shadow. Both motions can be turned off in Settings → Canvas.
-    const float floatY = store.motion && store.canvasFloat ? -5 + 11 * alternate(t, 14) : 0;
+    // (it rests through an Automix join, easing out with the glide and back in after it, as the pulse does: the user, 2026-10-29)
+    const float floatY = store.motion && store.canvasFloat ? (-5 + 11 * alternate(t, 14)) * (1 - std::max(m, fc.quiet)) : 0;
     const float rad = clampf(1.2f * vw, 10, 18);
     // Optional bass pulse (Settings → Visualizer), scaled from 50% 60% like the Now playing cover
     if (store.canvasPulse && coverBeat > 0) {
@@ -195,13 +227,16 @@ void App::drawCanvas() {
         art = grown;
     }
     const float fy = ay + floatY;
-    // 0 50px 120px -30px rgb(0 0 0 / .65), scaled with the cover so the small one in the lyrics layout is not drowned
-    g.glow(ax + art / 2, fy + art / 2 + art * 0.11f, art * 0.66f, { 0, 0, 0 }, 0.65f * std::min(1.f, art / 300));
+    // (Gatefold's drop shadow, 0 50px 120px -30px, is left out as on Now playing: on the console's dark backgrounds it read
+    // as a dark aura under the cover, the user said, 2026-10-29)
     g.roundRect(ax, fy, art, art, rad, pal.surface2);
     const float ken = store.motion && store.canvasZoom ? alternate(t, 42) : 0;
-    if (now.prevCover && now.fade < 1) g.image(now.prevCover, ax, fy, art, art, rad, 1 - now.fade, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
+    // the new over the old, drawn whole (as Now playing's): a frost over them never thins mid-way
+    if (now.prevCover && now.fade < 1) g.image(now.prevCover, ax, fy, art, art, rad, 1, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
     if (now.cover) g.image(now.cover, ax, fy, art, art, rad, now.fade, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
     else g.icon(ICON_MUSIC, ax + art / 2, fy + art / 2, std::min(72.f, art * 0.4f), pal.text3);
+    // Automix: the frost, the hint and the lap round the cover, as on Now playing (the small chip beside PLAYING is gone)
+    if (mixing) drawAutomixCover(ax, fy, art, restX + restArt / 2, restY + floatY + restArt / 2, restArt, rad);
     g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
 
     // ---- .cv-meta (+ lyrics): each layout's own, faded by its weight and drifting in by a few pixels
@@ -210,8 +245,10 @@ void App::drawCanvas() {
     if (has && now.info.date.size() >= 4) album += (album.empty() ? "" : " · ") + now.info.date.substr(0, 4);
     const std::string title = has ? now.info.title : "Gatefold";
     const Font kf{ int(clampf(0.85f * vw, 11, 14)), Weight::Bold };
-
     for (int l = 0; l < 3; l++) {
+        // the stage hiding them all: only the layout it returns to, as a ghost (its text ready); hidden interface drawn at
+        // nothing cost Now playing frames on the console
+        if (fc.ui <= 0.001f && l != cvTo) continue;
         float A = textA[l];
         // A hidden layout is drawn as a ghost (Gfx::setGhost): its text is ready for when it shows.
         const bool ghost = A < 0.01f, wasGhost = g.ghost();
@@ -243,7 +280,9 @@ void App::drawCanvas() {
             g.text(title, tf, mx, my - 3, pal.text, A, Align::Left, int(mw));
             my += tf.size * 1.1f + 4;
             g.text(now.info.artist, arf, mx, my, pal.text, A, Align::Left, int(mw));
-            const float ly = s.ay + s.art + 3 * vh + dy, lh = css::H - 20 * vh - ly;
+            // ending where the Cover layout's lyrics end (its side column's foot), for consistency (the user, 2026-10-29; it
+            // ran to 80 % of the screen, past the progress line)
+            const float ly = s.ay + s.art + 3 * vh + dy, lh = st[0].sy + st[0].sh + dy - ly;
             if (lyricsOn) drawCanvasLyrics(8 * vw, ly, css::W - 16 * vw, lh, int(clampf(3.3f * vw, 28, 66)), 1, A);
         } else {
             // cover: meta at the top of the side column, lyrics fill the rest; without lyrics the meta is centred

@@ -33,8 +33,9 @@ void App::draw() {
     hoverUpNextShown = hoverUpNext;
     hoverUpNext = false;
     plHoverShown = route.view == View::Playlists ? plHover : -2;
-    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0);
+    ui.setModal(sheet.page != Sheet::Closed || ((coverNotice == 1 || appCoverNotice == 1) && !canvas) || sleepPromptAt > 0 || tourStep >= 0 || je.open || ap.open);
     if (canvas) {
+        g.holdCache(automixFocus().ui < 1);   // its text stays cached while an Automix join hides it (as Now playing's)
         drawCanvas();
         profMark(2);
         drawSheet();
@@ -50,6 +51,12 @@ void App::draw() {
     }
     drawBackground();
     profMark(1);
+    // Automix joining on Now playing (automixFocus): how much of the interface shows. Fully faded, it is not drawn at all:
+    // drawn at nothing it cost a whole frame's layout on the console, and the join's animation dropped frames (the user's
+    // video, 2026-10-28: the light held for two or three frames, then jumped). Focus stays where it was meanwhile
+    const float shown = route.view == View::Now ? automixFocus().ui : 1.f;
+    const bool hidden = shown <= 0.001f;
+    g.holdCache(shown < 1);   // what it shows stays cached meanwhile, so its return is not a stutter
 
     const float mx = std::round(sideW), my = css::TbH, mw = css::W - mx, mh = css::H - css::TbH - css::BarH;
     ui.region(Region::Main);
@@ -77,21 +84,39 @@ void App::draw() {
     g.unclip();
     profMark(2);
 
-    ui.region(Region::Side);
-    drawSidebar();
-    ui.region(Region::Title);
-    drawTitlebar();
+    // ... the sidebar and the bars fade with the page's info, the cover glides over them all (drawNow's glideCover_; outside
+    // the page's clip)
+    if (shown < 1) g.setFade(shown);
+    if (!hidden) {
+        ui.region(Region::Side);
+        drawSidebar();
+        ui.region(Region::Title);
+        drawTitlebar();
+    }
     profMark(3);
-    ui.region(Region::Bar);
-    drawPlayerbar();
+    if (!hidden) {
+        ui.region(Region::Bar);
+        drawPlayerbar();
+    }
+    g.setFade(1);
+    if (glideOn_) {
+        drawNowCover(glideCover_.x, glideCover_.y, glideCover_.w);
+        glideOn_ = false;
+    }
     profMark(4);
     drawCoverNotice();
+    drawJoinEditor();   // a playlist's join (view_join.cpp)
+    drawAutomixPicker();   // a new Automix playlist's songs (view_automix.cpp)
     drawSheet();
     drawTour();   // over every page it shows (tour.cpp)
     drawSleepPrompt();
     drawToast();
     if (veilA > 0.005f) g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, veilA);   // Dim the screen, docked
-    drawFocusRing();
+    if (!hidden) {   // with the interface (the user: "if something is selected, it remains selected" while it faded)
+        if (shown < 1) g.setFade(shown);
+        drawFocusRing();
+        g.setFade(1);
+    }
     drawPointer();
     drawFrameTimes();
     profMark(5);
@@ -628,6 +653,11 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
     if (store.levelMode && !store.stopLevels && levels.busy()) {   // short: the count shares the line
         jobs[2] = { "Levelling", std::min(int(levels.count()), n), n, SetPlayback, Stoppable::Levels, "Measured" };
         busy[2] = true;
+    } else if (!store.levelMode) {   // levelling off: only Automix playlists' tracks are analysed, first in the worker's queue
+        // (shown while any is waiting: the worker counted itself busy for the library only, so the card never came)
+        int done = 0, total = 0;
+        automixProgress(done, total);
+        if (done < total) { jobs[2] = { "Automix", done, total, SetPlayback, Stoppable::Levels, "Analysed" }; busy[2] = true; }
     }
     // Files: copying, or deleting a folder (settingsCat −1: the card opens Files where it ends)
     if (fileWork.thread.joinable() && !fileWork.done) {

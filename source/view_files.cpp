@@ -294,6 +294,7 @@ void App::remapPaths(const std::string& from, const std::string& to) {
     for (auto& pl : store.playlists) {
         if (pl.folder()) fix(pl.path);
         for (auto& t : pl.tracks) fix(t);
+        fix(pl.pin);   // an Automix playlist's first track
     }
     auto rekey = [&](auto& map) {
         std::vector<std::string> keys;
@@ -308,6 +309,18 @@ void App::remapPaths(const std::string& from, const std::string& to) {
         return !keys.empty();
     };
     const bool e = rekey(store.edits), c = rekey(store.covers), n = rekey(store.lyricNudge);
+    // Automix's joins: both paths of each key ("playlist<TAB>A<TAB>B")
+    bool jn = false;
+    for (auto it = store.joins.begin(); it != store.joins.end();) {
+        const size_t t1 = it->first.find('\t'), t2 = it->first.find('\t', t1 + 1);
+        std::string a = it->first.substr(t1 + 1, t2 - t1 - 1), b = it->first.substr(t2 + 1);
+        const bool fa = fix(a), fb = fix(b);
+        if (!fa && !fb) { ++it; continue; }
+        const std::string nk = Store::joinKey(it->first.substr(0, t1), a, b), v = it->second;
+        it = store.joins.erase(it);
+        store.joins[nk] = v;
+        jn = true;
+    }
     fix(store.musicRoot);
     for (std::string* d : { &store.filesDir, &store.importDir, &store.exportDir, &store.coverDir, &store.backupDir }) fix(*d);
     // The library's paths too: the rescan that follows keeps the play queue by path, and dropped what was renamed
@@ -315,6 +328,7 @@ void App::remapPaths(const std::string& from, const std::string& to) {
     store.save();
     if (e || c) store.saveEdits();
     if (n) store.saveLyricNudges();
+    if (jn) store.saveJoins();
 }
 
 void App::reloadNowTrack() {

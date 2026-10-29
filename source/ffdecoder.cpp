@@ -12,11 +12,39 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <thread>
 
+#include "cores.hpp"
 #include "metadata.hpp"
 
 namespace {
+
+// the feeder: one thread for every decoder reading ahead (prefetch)
+std::mutex regMx;   // the list, and held while one of its decoders is filled: closing waits for that chunk
+std::condition_variable regCv;
+std::vector<FfDecoder*> reg;
+std::thread feeder;
+bool feeding = false;
+std::atomic<unsigned> starved{ 0 };
+
+void feed() {
+    cores::moveHere(cores::Feed);
+    std::unique_lock<std::mutex> l(regMx);
+    while (feeding) {
+        bool more = false;
+        for (FfDecoder* d : reg) more |= d->fillAhead(4096);
+        if (!more) regCv.wait_for(l, std::chrono::milliseconds(15));
+        else {   // let a decoder that closes, or a new one, in between chunks
+            l.unlock();
+            std::this_thread::yield();
+            l.lock();
+        }
+    }
+}
 
 std::string ext(const std::string& path) {
     const size_t dot = path.find_last_of('.');
@@ -34,6 +62,25 @@ std::string tag(AVDictionary* d, const char* key) {
 std::string fileUrl(const std::string& path) { return "file:" + path; }
 
 }  // namespace
+
+void ffFeederStart() {
+    std::lock_guard<std::mutex> g(regMx);
+    if (feeding) return;
+    feeding = true;
+    feeder = std::thread(feed);
+}
+
+void ffFeederStop() {
+    {
+        std::lock_guard<std::mutex> g(regMx);
+        if (!feeding) return;
+        feeding = false;
+    }
+    regCv.notify_all();
+    if (feeder.joinable()) feeder.join();
+}
+
+unsigned ffStarved() { return starved.load(); }
 
 bool ffHandles(const std::string& path) {
     const std::string e = ext(path);
@@ -117,6 +164,17 @@ bool FfDecoder::open(const std::string& path, int outRate, int outChannels) {
 }
 
 void FfDecoder::close() {
+    if (pf_) {   // off the feeder's list first (waiting for a chunk it may be decoding)
+        std::lock_guard<std::mutex> g(regMx);
+        const auto it = std::find(reg.begin(), reg.end(), this);
+        if (it != reg.end()) reg.erase(it);
+        pf_ = false;
+    }
+    std::lock_guard<std::mutex> g(dm_);
+    ring_.clear();
+    ringFrames_ = 0;
+    rw_ = rr_ = 0;
+    rEof_ = false;
     if (swr_) swr_free(&swr_);
     if (dec_) avcodec_free_context(&dec_);
     if (fmt_) avformat_close_input(&fmt_);
@@ -159,7 +217,94 @@ bool FfDecoder::decodeMore() {
     return fifo_.size() > before;
 }
 
+bool FfDecoder::skip(double seconds) {
+    if (!fmt_ || seconds <= 0) return fmt_ != nullptr;
+    if (seconds > 30) return seek(seconds);
+    long long left = (long long)std::llround(seconds * outRate_);
+    while (left > 0) {
+        if (pos_ >= fifo_.size() && !decodeMore()) return false;
+        const long long avail = (long long)((fifo_.size() - pos_) / size_t(outCh_));
+        const long long n = std::min(avail, left);
+        pos_ += size_t(n) * size_t(outCh_);
+        left -= n;
+    }
+    return true;
+}
+
+void FfDecoder::prefetch(int frames, int first) {
+    if (!fmt_ || pf_) return;
+    size_t n = 4096;
+    while (n < size_t(frames)) n <<= 1;
+    ringFrames_ = n;
+    ring_.assign(n * size_t(outCh_), 0);
+    rw_ = rr_ = 0;
+    rEof_ = false;
+    {
+        std::lock_guard<std::mutex> g(dm_);
+        fillLocked(first);
+    }
+    std::lock_guard<std::mutex> g(regMx);
+    pf_ = true;
+    reg.push_back(this);
+    regCv.notify_all();
+}
+
+/** Decodes into the ring's free space, up to `frames` frames (dm_ held). */
+void FfDecoder::fillLocked(int frames) {
+    if (!fmt_ || rEof_ || !ringFrames_) return;
+    size_t w = rw_.load(std::memory_order_relaxed);
+    const size_t space = ringFrames_ - (w - rr_.load(std::memory_order_acquire));
+    if (space < 1024) return;   // nearly full: in larger pieces, later
+    size_t want = std::min(space, size_t(std::max(0, frames)));
+    while (want > 0) {
+        const size_t at = w & (ringFrames_ - 1), n = std::min(want, ringFrames_ - at);
+        const int got = readDirect(ring_.data() + at * size_t(outCh_), int(n));
+        w += size_t(std::max(0, got));
+        rw_.store(w, std::memory_order_release);
+        want -= size_t(std::max(0, got));
+        if (size_t(std::max(0, got)) < n) { rEof_ = true; break; }
+    }
+}
+
+bool FfDecoder::fillAhead(int frames) {
+    std::lock_guard<std::mutex> g(dm_);
+    const size_t before = rw_.load();
+    fillLocked(frames);
+    return rw_.load() != before;
+}
+
+int FfDecoder::takeRing(int16_t* out, int frames) {
+    size_t r = rr_.load(std::memory_order_relaxed);
+    const size_t n = std::min(size_t(std::max(0, frames)), rw_.load(std::memory_order_acquire) - r);
+    for (size_t done = 0; done < n;) {
+        const size_t at = r & (ringFrames_ - 1), k = std::min(n - done, ringFrames_ - at);
+        memcpy(out + done * size_t(outCh_), ring_.data() + at * size_t(outCh_), k * size_t(outCh_) * sizeof(int16_t));
+        done += k;
+        r += k;
+    }
+    rr_.store(r, std::memory_order_release);
+    return int(n);
+}
+
 int FfDecoder::read(int16_t* out, int frames) {
+    if (!fmt_) return 0;
+    if (!pf_) return readDirect(out, frames);
+    int done = takeRing(out, frames);
+    if (done < frames && !(rEof_.load() && rw_.load() == rr_.load())) {
+        // the ring ran dry (the card was slow, or the track just started): decode here, after what the feeder has added
+        starved++;
+        std::lock_guard<std::mutex> g(dm_);
+        done += takeRing(out + size_t(done) * size_t(outCh_), frames - done);
+        if (done < frames && !rEof_) {
+            const int want = frames - done, got = readDirect(out + size_t(done) * size_t(outCh_), want);
+            done += std::max(0, got);
+            if (got < want) rEof_ = true;
+        }
+    }
+    return done;
+}
+
+int FfDecoder::readDirect(int16_t* out, int frames) {
     if (!fmt_) return 0;
     int done = 0;
     while (done < frames) {
@@ -175,6 +320,7 @@ int FfDecoder::read(int16_t* out, int frames) {
 
 bool FfDecoder::seek(double seconds) {
     if (!fmt_) return false;
+    std::lock_guard<std::mutex> g(dm_);
     const AVStream* st = fmt_->streams[stream_];
     const int64_t ts = av_rescale_q(int64_t(seconds * AV_TIME_BASE), AVRational{ 1, AV_TIME_BASE }, st->time_base);
     if (av_seek_frame(fmt_, stream_, ts, AVSEEK_FLAG_BACKWARD) < 0) return false;
@@ -183,5 +329,8 @@ bool FfDecoder::seek(double seconds) {
     fifo_.clear();
     pos_ = 0;
     eof_ = false;
+    rr_.store(rw_.load());   // what was read ahead is from before the jump (the player holds its lock: no read meanwhile)
+    rEof_ = false;
+    if (pf_) fillLocked(outRate_ / 4);
     return true;
 }

@@ -8,7 +8,7 @@
  *   GF_SCRIPT  lines of "<frame> <action> [args]":
  *                press A|B|X|Y|L|R|ZL|ZR|UP|DOWN|LEFT|RIGHT|PLUS|MINUS
  *                hold <button> <frames>   tap <x> <y>   shot <file.bmp>   quit
- *                touch <x> <y> … release <x> <y>   (a finger held down: a long touch)
+ *                touch <x> <y> … release <x> <y>   (a finger held down: a long touch); move <x> <y> drags it
  *                audit <label>   (the D-pad audit of that frame, appended to dpad-audit.txt: App, Ui::audit)
  *                stick <x> <y> <frames>   (the left stick, −1..1, y up)
  *   GF_JOBS    show the three background jobs (app covers, overlay covers, levelling) as running (shell.cpp)
@@ -177,6 +177,8 @@ void padUpdate(PadState* p) {
             _putenv(("GF_AUDIT=" + label).c_str());
         } else if (s.action == "touch" && s.args.size() >= 2) {   // a finger down that stays (release x y lifts it)
             pushFinger(SDL_FINGERDOWN, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
+        } else if (s.action == "move" && s.args.size() >= 2) {   // the finger held down moves there (a drag)
+            pushFinger(SDL_FINGERMOTION, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "release" && s.args.size() >= 2) {
             pushFinger(SDL_FINGERUP, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "stick" && s.args.size() >= 3) {

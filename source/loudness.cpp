@@ -2,6 +2,7 @@
  * Gatefold NX · loudness.cpp
  */
 #include "loudness.hpp"
+#include "mixan.hpp"
 
 #if defined(__SWITCH__) || defined(GF_FFMPEG)
 extern "C" {
@@ -267,7 +268,7 @@ Meter::Result Meter::result() const {
 
 // ---------------------------------------------------------------- a whole file
 
-bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<bool>* cancel) {
+bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<bool>* cancel, mixan::Analyzer* mix) {
 #ifdef GF_LOUDNESS_DECODE
     AVFormatContext* fmt = nullptr;
     const std::string url = "file:" + path;   // FFmpeg reads "sdmc:/…" as a URL otherwise
@@ -290,6 +291,7 @@ bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<
         if (swr_alloc_set_opts2(&swr, &outLayout, AV_SAMPLE_FMT_FLT, dec->sample_rate, &dec->ch_layout, dec->sample_fmt, dec->sample_rate, 0, nullptr) >= 0 &&
             swr_init(swr) >= 0) {
             Meter m(dec->sample_rate, ch);
+            if (mix) mix->begin(dec->sample_rate, ch);
             std::vector<float> buf;
             bool eof = false, cancelled = false;
             while (!eof) {
@@ -300,7 +302,10 @@ bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<
                     buf.resize(size_t(cap) * ch);
                     uint8_t* outp = reinterpret_cast<uint8_t*>(buf.data());
                     const int got = swr_convert(swr, &outp, cap, const_cast<const uint8_t**>(frame->extended_data), frame->nb_samples);
-                    if (got > 0) m.push(buf.data(), got);
+                    if (got > 0) {
+                        m.push(buf.data(), got);
+                        if (mix) mix->push(buf.data(), got);
+                    }
                     av_frame_unref(frame);
                     continue;
                 }
@@ -323,7 +328,7 @@ bool measureFile(const std::string& path, Meter::Result& out, const std::atomic<
     avformat_close_input(&fmt);
     return ok;
 #else
-    (void)path; (void)out; (void)cancel;
+    (void)path; (void)out; (void)cancel; (void)mix;
     return false;
 #endif
 }

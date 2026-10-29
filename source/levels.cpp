@@ -77,6 +77,10 @@ bool Levels::poll() {
         loaded_ = true;
     }
     for (auto& [p, l] : got) map_[p] = l;
+    if (read || !got.empty()) {
+        done_ = 0;
+        for (const auto& [p, l] : map_) if (l.mix.seconds != 0) done_++;
+    }
     if (!got.empty()) dirty_ = true;
     gen_++;
     return true;
@@ -90,6 +94,7 @@ void Levels::forget() {
         allAt_ = 0;
     }
     map_.clear();
+    done_ = 0;
     dirty_ = true;
     gen_++;
     wake_.notify_all();
@@ -109,7 +114,24 @@ std::string Levels::serialise() {
     return out;
 }
 
-/** loudness.tsv: path, LUFS (x: could not be measured), true peak, blocks. The first worker, before it measures. */
+std::string Levels::serialiseMix() const {
+    std::string out;
+    out.reserve(map_.size() * 140);
+    for (const auto& [p, l] : map_) {
+        if (l.mix.seconds == 0) continue;   // from before Automix: analysed when decoded again (-1: tried, unreadable)
+        out += p;
+        out += '\t';
+        out += l.mix.pack();
+        out += '\n';
+    }
+    return out;
+}
+
+/**
+ * loudness.tsv: path, LUFS (x: could not be measured), true peak, blocks; mix.tsv: path, Automix's analysis
+ * (mixan::Info::pack). The first worker, before it measures. A track counts as done only with both (and the
+ * analysis of this version): one measured before Automix is decoded once more.
+ */
 void Levels::loadFile() {
     {
         std::unordered_map<std::string, Level> file;
@@ -131,8 +153,22 @@ void Levels::loadFile() {
             if (*e == '\t') l.blocks = strtof(e + 1, &e);
             file[line.substr(0, t1)] = l;
         }
+        std::unordered_set<std::string> mixed;
+        const std::string mix = readFile(dir_ + "/mix.tsv");
+        at = 0;
+        while (at < mix.size()) {
+            size_t eol = mix.find('\n', at);
+            if (eol == std::string::npos) eol = mix.size();
+            const std::string line = mix.substr(at, eol - at);
+            at = eol + 1;
+            const size_t t1 = line.find('\t');
+            if (t1 == std::string::npos || t1 == 0) continue;
+            const auto it = file.find(line.substr(0, t1));
+            if (it != file.end() && mixan::Info::unpack(line.substr(t1 + 1), it->second.mix)) mixed.insert(it->first);
+        }
         std::lock_guard<std::mutex> g(m_);
-        for (const auto& [p, l] : file) known_.insert(p);
+        for (const auto& [p, l] : file)
+            if (mixed.count(p)) known_.insert(p);
         fromFile_ = std::move(file);
         fileRead_ = true;
     }
@@ -168,11 +204,20 @@ void Levels::run(int) {
         if (background) busy_++;
         g.unlock();
         loud::Meter::Result r;
-        const bool ok = loud::measureFile(path, r, &quit_);
+        mixan::Analyzer an;
+        const bool ok = loud::measureFile(path, r, &quit_, &an);
         g.lock();
         if (background) busy_--;
         if (quit_) break;
         Level l;
+        if (ok) {
+            g.unlock();   // the analysis's last steps take a moment: not under the lock
+            l.mix = an.finish();
+            g.lock();
+            if (quit_) break;
+        } else {
+            l.mix.seconds = -1;   // tried: not decoded again at every launch
+        }
         if (ok && !std::isnan(r.lufs)) {
             l.lufs = float(r.lufs);
             l.peak = float(r.truePeak);

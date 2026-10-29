@@ -187,7 +187,7 @@ const char* App::playlistIcon(int ref) const {
     if (ref < 0 || ref >= int(store.playlists.size())) return ICON_HEART;   // Liked
     const FolderPlaylist& p = store.playlists[size_t(ref)];
     if (const char* chosen = p.icon.empty() ? nullptr : playlistIconSvg(p.icon)) return chosen;
-    return p.smart() ? smartIcon(p.path) : p.folder() ? ICON_FOLDER : ICON_LIST;
+    return p.smart() ? smartIcon(p.path) : p.folder() ? ICON_FOLDER : p.automix ? ICON_LINK : ICON_LIST;   // an Automix playlist: the link
 }
 
 void App::renamePlaylist(int ref) {
@@ -202,6 +202,7 @@ void App::renamePlaylist(int ref) {
     for (int i = 0; i < int(store.playlists.size()); i++)
         if (i != ref && store.playlists[size_t(i)].name == name) { toast("There is already a playlist called “" + name + "”"); return; }
     if (name == "Liked") { toast("“Liked” is the name of your liked tracks"); return; }
+    renameJoins(store.playlists[size_t(ref)].name, name);
     store.playlists[size_t(ref)].name = name;
     store.save();
 }
@@ -623,6 +624,8 @@ void App::drawSmartSheet() {
                              closeSheet();
                              newPlaylist(-1);
                          } });
+        rows.push_back({ Row::Action, ICON_LINK, "Automix playlist…", "Pick songs; Gatefold orders them for the best joins", "",
+                         [this] { openAutomixPicker(); } });
         rows.push_back({ Row::Action, ICON_SPARKLE, "Smart playlist…", "Fills itself from your library and keeps up to date", "", [this] {
                              sheet.page = Sheet::Smart;
                              ui.focusDefault();

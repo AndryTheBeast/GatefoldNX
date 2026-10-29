@@ -256,6 +256,7 @@ const Ui::Item* Ui::pick(const std::vector<Item>& items, const std::vector<Link>
         }
         if (dx && (barRow(f->region) || barRow(c.region)) && c.region != f->region) continue;
         if (dx && (c.flags & NoSideEntry)) continue;
+        if (!dx && (c.flags & NoUpDownEntry)) continue;
         const SDL_FRect cr = sameArea ? c.r : part(c);
         const float ccx = cr.x + cr.w / 2, ccy = cr.y + cr.h / 2;
         float primary, ortho, overlap;

@@ -18,6 +18,7 @@ std::vector<int> App::playlistTracks(int ref) const { return listTracks(View::Li
  *  index), the ones after it move up one; its page, if shown, goes back. */
 void App::erasePlaylist(int ref) {
     if (ref < 0 || ref >= int(store.playlists.size())) return;
+    renameJoins(store.playlists[size_t(ref)].name, "");
     store.playlists.erase(store.playlists.begin() + ref);
     store.save();
     auto gone = [&](const Route& r) { return r.view == View::List && r.ref == ref; };
@@ -25,6 +26,18 @@ void App::erasePlaylist(int ref) {
     for (Route& r : history) if (r.view == View::List && r.ref > ref) r.ref--;
     if (gone(route)) back();
     else if (route.view == View::List && route.ref > ref) route.ref--;
+}
+
+/** Automix's joins edited on a playlist: they follow its new name (to), or go with it (to empty). */
+void App::renameJoins(const std::string& from, const std::string& to) {
+    const std::string prefix = from + '\t';
+    bool changed = false;
+    for (auto it = store.joins.lower_bound(prefix); it != store.joins.end() && it->first.compare(0, prefix.size(), prefix) == 0;) {
+        if (!to.empty()) store.joins[to + it->first.substr(from.size())] = it->second;
+        it = store.joins.erase(it);
+        changed = true;
+    }
+    if (changed) store.saveJoins();
 }
 
 void App::movePlaylist(int from, int to) {

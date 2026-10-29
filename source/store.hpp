@@ -17,6 +17,11 @@ struct FolderPlaylist {
                                        // "smart:<recipe>:<setting>" for a smart one (view_smart.cpp)
     std::vector<std::string> tracks;   // your own: track paths, in your order
     std::string icon;                  // its icon's key (plicons.inc), empty for its kind's own (playlist-icons.tsv)
+    // An Automix playlist (one of your own; automix-lists.tsv): Gatefold orders it for the best joins (automix::order),
+    // again whenever tracks are added, until it is moved by hand (manual) and "Order again" is pressed; pin: the track
+    // that stays first (its path; empty: Gatefold chooses); waiting: ordered before all of it was analysed
+    bool automix = false, manual = false, waiting = false;
+    std::string pin;
     bool own() const { return path.empty(); }
     bool smart() const { return path.rfind("smart:", 0) == 0; }
     bool folder() const { return !own() && !smart(); }
@@ -80,6 +85,7 @@ struct Store {
     float pointerSpeed = 0.2f;   // Settings shows it doubled: 40%
     bool pointerAccel = true;
     bool frameTimes = false;        // Settings → About: the frame-time graph
+    std::string automixModel;       // Settings › Debug (dev builds): the Automix model by its name ("Automix V1.0.0"); empty: the newest
     bool keepAwake = true;          // while Gatefold is open: no dimming and no auto-sleep (until a sleep timer ends)
     int dimAfter = 0;               // … but dim the screen after this many minutes without input; 0 off
     bool batteryPercent = true;     // the title bar: the battery's percentage
@@ -100,6 +106,9 @@ struct Store {
     std::unordered_map<std::string, std::map<std::string, std::string>> edits;   // track path → tag field → value
     std::unordered_map<std::string, std::string> covers;                         // track path → image in Dir/covers
     std::unordered_map<std::string, float> lyricNudge;                           // track path → seconds its synced lyrics move (+ later)
+    // Automix's joins edited on a playlist page: "playlist<TAB>path A<TAB>path B" → automix::Join::pack() (mixes.tsv)
+    std::map<std::string, std::string> joins;
+    static std::string joinKey(const std::string& playlist, const std::string& a, const std::string& b) { return playlist + '\t' + a + '\t' + b; }
     // Sidebar tabs hidden in Settings → Appearance: bit 0 Playlist, 1 Artists, 2 Genres, 3 Library, 4 Folders, 5 Albums, 6 Files
     // (Files is hidden until shown: a settings.txt from before it existed gets bit 6 too, Store::load)
     unsigned hiddenTabs = 64;
@@ -137,6 +146,7 @@ struct Store {
     void writeFile(const char* file, std::string data) const;
     void saveEdits() const;
     void saveLyricNudges() const;
+    void saveJoins() const;
     void saveEqPresets() const;
     bool loadSession(Session& s) const;
     void saveSession(const Session& s) const;

@@ -33,6 +33,7 @@ enum ItemFlags : uint8_t {
     Slider2D = 4,      // with Slider: ↑/↓ change it too (a colour square), and a drag reports y as well
     Hold = 8,          // a short press (A or a tap) activates it on release; held for half a second it is a long press (longPressed)
     NoSideEntry = 16,  // the D-pad's Left/Right never land on it, only Up/Down (the player bar's seek bar, under the controls)
+    NoUpDownEntry = 32,   // … Up/Down never land on it, only Left/Right (a playlist's join buttons, between its rows)
 };
 
 struct ScrollArea {

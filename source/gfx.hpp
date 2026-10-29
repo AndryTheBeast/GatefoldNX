@@ -31,6 +31,9 @@ public:
     SDL_Renderer* renderer() const { return r_; }
 
     // ---- shapes (all antialiased) ----
+    /** Every alpha drawn is multiplied by f (0..1) until set back to 1: a whole block faded at once (Now playing's info while
+     *  Automix glides the cover over it). */
+    void setFade(float f);
     void fill(const Rgb& c, float alpha = 1);
     void rect(float x, float y, float w, float h, const Rgb& c, float alpha = 1);
     void rectV(float x, float y, float w, float h, const Rgb& top, float aTop, const Rgb& bottom, float aBottom);
@@ -39,6 +42,8 @@ public:
     void roundRectV(float x, float y, float w, float h, float rad, const Rgb& top, const Rgb& bottom, float alpha = 1);
     void roundStroke(float x, float y, float w, float h, float rad, float thick, const Rgb& c, float alpha = 1);
     void circle(float cx, float cy, float rad, const Rgb& c, float alpha = 1);
+    /** An antialiased line through the points, `thick` wide (its edges feathered by a pixel): curves, as the join editor's. */
+    void polyline(const std::vector<SDL_FPoint>& pts, float thick, const Rgb& c, float alpha = 1);
     /** Image in a rounded box, cropped to fill it (CSS object-fit: cover); zoom > 1 crops further (Ken Burns). */
     /** image() and roundRect() with a radius per corner (top-right, bottom-right, bottom-left, top-left): mosaics. */
     void imageCorners(SDL_Texture* t, float x, float y, float w, float h, const float* rads, float alpha = 1);
@@ -100,7 +105,21 @@ public:
     std::vector<std::string> wrap(const std::string& s, Font f, int maxW, int maxLines);
 
     // ---- icons (Gatefold's 24×24 SVG symbols, see icons.inc) ----
-    void icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha = 1);
+    /** An SVG icon `size` px, centred; `scale` draws that one texture larger or smaller, smoothly (a twinkle: each size
+     *  was an icon of its own, so it grew in whole-pixel steps) */
+    void icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha = 1, float scale = 1);
+    /** A soft band of light w wide (white in its middle, nothing at its sides), at fractional positions: it slides
+     *  smoothly (Automix's sweep; strips a pixel wide moved in whole pixels). */
+    void band(float x, float y, float w, float h, const Rgb& c, float alpha);
+    /** The same band (bx, bw wide) inside a pill (x, y, w, h: round ends of h/2), shaped to it, its round ends included
+     *  (Automix's sweep goes end to end: clipped to the straight middle, it began late and stopped early). */
+    void bandInPill(float x, float y, float w, float h, float bx, float bw, const Rgb& c, float alpha);
+    /** A soft glow round a rounded box: `alpha` at its edge, nothing `spread` beyond it (`spreadX` at its sides), in one
+     *  piece (Automix's halo: ten faint layers had only a few levels of alpha each, and breathed in steps). */
+    void glowAround(float x, float y, float w, float h, float rad, float spread, float spreadX, const Rgb& c, float alpha);
+    /** While set, unused text and icons stay cached (Automix hides the interface for longer than the 10 s they would last:
+     *  on its return they were all made again, and the frames stuttered). */
+    void holdCache(bool hold) { holdCache_ = hold; }
 
     // ---- misc ----
     void clip(float x, float y, float w, float h);
@@ -142,6 +161,8 @@ private:
     std::vector<std::string> stale_[2];   // text and icon keys found unused, destroyed a few a frame
     std::unordered_map<std::string, Cached> iconCache_;
     SDL_Texture* glowTex_ = nullptr;
+    SDL_Texture* bandTex_ = nullptr;
+    bool holdCache_ = false;
     SDL_Texture* veilTex_ = nullptr;
     SDL_Texture* vignetteTex_ = nullptr;
     void edgeBands(const SDL_FRect& dst, SDL_Color c);
