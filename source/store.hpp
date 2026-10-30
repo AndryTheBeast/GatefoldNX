@@ -3,6 +3,7 @@
  * Everything that survives a restart, as small text files in sdmc:/config/gatefold-nx/.
  */
 #pragma once
+#include "subsonic.hpp"
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -41,6 +42,7 @@ struct Session {
 struct Store {
     static constexpr const char* Dir = "sdmc:/config/gatefold-nx";
 
+    SubsonicConfig subsonic;
     std::string musicRoot;   // the folder the library is read from; empty until chosen or found
     std::vector<FolderPlaylist> playlists;
     std::vector<std::string> liked;   // track paths

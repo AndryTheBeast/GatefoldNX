@@ -126,6 +126,8 @@ void MetaCache::start(Library* lib, const std::string& cacheFile) {
     done_.assign(paths_.size(), 0);
     coverFile_.assign(paths_.size(), std::string());
     load();
+    for (int i = 0; i < int(lib->tracks.size()); ++i)
+        if (!lib->tracks[i].subsonicId.empty()) { done_[i] = 1; tagged_++; }
     artDir_ = cacheFile_.substr(0, cacheFile_.find_last_of('/')) + "/art";
     mkdir(artDir_.c_str(), 0777);
     loadArtMap();
@@ -548,6 +550,7 @@ void MetaCache::load() {
         auto it = byPath.find(cols[0]);
         if (it == byPath.end()) continue;
         Track& t = lib_->tracks[it->second];
+        if (!t.subsonicId.empty()) continue;
         if (!cols[1].empty()) t.title = cols[1];
         if (!cols[2].empty()) t.artist = cols[2];
         if (!cols[3].empty()) t.album = cols[3];

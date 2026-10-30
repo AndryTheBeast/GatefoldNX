@@ -648,6 +648,19 @@ private:
     void rebuildIndex();
     /** Reads the music folder again; files: a walk already made (the launch check's), else it walks now. */
     void rescan(const std::vector<std::string>* files = nullptr);
+    void useSubsonic(bool enabled);
+    void cancelSubsonic();
+    void updateSubsonic();
+    bool subNetwork_ = false, subScanning_ = false, subLibraryReady_ = false, subPaused_ = false;
+    bool subRestore_ = false;
+    double subSeek_ = 0;
+    int subTrack_ = -1;
+    std::thread subThread_;
+    std::atomic<bool> subCancel_{ false }, subDone_{ false };
+    std::vector<Track> subTracks_;
+    std::string subError_;
+    bool subOk_ = false;
+    std::string subBuffer_;
     // The music folder's file list, remembered (library.tsv): launch builds from it instead of walking the
     // card, then a walk on another core checks it, and a rescan follows only when something changed.
     std::vector<std::string> libFiles_;    // the list the library was built from, sorted
@@ -1160,7 +1173,7 @@ private:
     void setTrackCover(const std::string& image);
     void deleteTrack(int track);
     void listCoverDir(const std::string& dir);
-    bool keyboard(const char* header, const std::string& initial, std::string& out);
+    bool keyboard(const char* header, const std::string& initial, std::string& out, bool secret = false);
     void loadTrackCoverAgain();
     void openFindSetting();
     float segmented(Id id, float rx, float cy, const std::vector<std::string>& opts, int cur, int* picked, unsigned disabled = 0);
@@ -1168,6 +1181,6 @@ private:
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)
     /** Settings' categories that other pages open by number (the progress cards, the equalizer button). */
-    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10, SetSupport = 11 };   // (Reset above Updates: the user, 2026-10-30)
+    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10, SetSupport = 11, SetSubsonic = 12 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

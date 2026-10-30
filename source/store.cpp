@@ -249,6 +249,10 @@ void Store::load() {
         else if (k == "updateToasted") updateToasted = v;
         else if (k == "betas") betas = v == "1";
         else if (k == "reports") reports = v == "1";
+        else if (k == "subsonicEnabled") subsonic.enabled = v == "1";
+        else if (k == "subsonicUrl") subsonic.url = v;
+        else if (k == "subsonicUser") subsonic.user = v;
+        else if (k == "subsonicPassword") subsonic.password = v;
     }
     if (!filesTabKnown) hiddenTabs |= 64u;   // Files stays hidden until Settings → Appearance shows it
     if (!linesKnown && std::none_of(tabOrder.begin(), tabOrder.end(), isLine)) {   // the line Files had, now one of yours
@@ -423,6 +427,8 @@ void Store::save() const {
         for (int b = 0; b < GFEQ_BANDS; b++) appendf(f, b ? " %.1f" : "%.1f", double(eq.custom[b]));
         appendf(f, "\n");
     }
+    appendf(f, "subsonicEnabled=%d\nsubsonicUrl=%s\nsubsonicUser=%s\nsubsonicPassword=%s\n",
+            subsonic.enabled, subsonic.url.c_str(), subsonic.user.c_str(), subsonic.password.c_str());
     if (!musicRoot.empty()) appendf(f, "musicRoot=%s\n", musicRoot.c_str());
     appendf(f, "tabOrder=");
     for (size_t i = 0; i < tabOrder.size(); i++) appendf(f, i ? ",%d" : "%d", tabOrder[i]);

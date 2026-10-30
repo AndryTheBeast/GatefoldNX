@@ -43,6 +43,14 @@ Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefo
 - 📁 **Your music, however it is organised.** One flat folder of 3,000 files, Artist/Album folders, or folders used as playlists: albums, artists and genres come from the tags, never from the layout.
 - ⚡ **Fast on the console.** Launches in about a second with a 3,000-track library. Covers and the file list are cached, and background work runs on the console's spare cores.
 
+## Remote Subsonic library
+
+In **Settings → Subsonic**, enter the server base URL (for example `https://music.example.com`, including any base path but without `/rest`), username and password, then choose **Connect**. Songate reads the server's albums and songs into its existing library views. Search, queues, Liked and your own playlists work with the remote tracks. **Library → Rescan** refreshes the server library; **Use SD card** returns to your remembered music folder.
+
+Playback fetches only the selected song through the [Subsonic API](https://www.subsonic.org/pages/api.jsp). One complete song is buffered on the SD card before playback, using the server's MP3 stream at up to 192 kbps; enable MP3 transcoding on the server if needed. Now-playing cover art is fetched with the song. The buffer is replaced for the next song and removed on normal exit (at most 128 MiB of audio and 8 MiB of cover art). Network work runs on a worker thread. Remote libraries are limited to 100,000 songs.
+
+Remote music plays while Songate is open. Automix, loudness/mood analysis, background playback, remote folder browsing, library cover thumbnails, server playlist synchronisation and server tag edits are not implemented. The server must support token authentication and the album APIs (Subsonic API 1.16.1 or compatible). Credentials are saved as plain text in `sdmc:/config/gatefold-nx/settings.txt`; requests use salted authentication tokens. Use HTTPS: certificate verification stays enabled, and HTTP traffic is unencrypted. Redirects are rejected; enter the server's final URL.
+
 ## 📸 Screenshots
 
 | Now playing · synced lyrics | Canvas |
@@ -268,7 +276,7 @@ The app and the overlay work without the background player. Without it, or with 
 Requires [devkitPro](https://devkitpro.org/wiki/Getting_Started) with Switch support:
 
 ```bash
-dkp-pacman -S switch-dev switch-sdl2 switch-sdl2_mixer switch-sdl2_ttf switch-sdl2_image switch-ffmpeg switch-libjpeg-turbo
+dkp-pacman -S switch-dev switch-sdl2 switch-sdl2_mixer switch-sdl2_ttf switch-sdl2_image switch-ffmpeg switch-libjpeg-turbo switch-curl switch-libxml2
 ```
 
 ```bash
@@ -278,7 +286,10 @@ make -C sysmodule        # the background player: gatefold-bg.nsp
 make -C overlay          # the overlay: Songate.ovl
 ```
 
+GitHub Actions also builds the release NRO on pushes and pull requests. Open **Actions → Build NRO**, select a successful run, and download **Songate-nro** from its artifacts. The workflow can also be started manually from the Actions tab once it is on the default branch.
+
 `tools/bgtest/` runs the background player's decoders on a PC, to compare them with FFmpeg.
+Run `bash tools/tests/subsonic.sh` for the local mock-server checks (Python 3, curl, libxml2 and FFmpeg development libraries, available through `pkg-config`). The Windows preview keeps Subsonic disabled.
 
 ### 🖥️ PC preview
 

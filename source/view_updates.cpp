@@ -422,6 +422,7 @@ void App::defaultSettings() {
     Store fresh;
     // Yours, not settings: kept
     fresh.musicRoot = store.musicRoot;
+    fresh.subsonic = store.subsonic;
     fresh.playlists = store.playlists;
     fresh.liked = store.liked;
     fresh.edits = store.edits;

@@ -87,13 +87,18 @@ void App::applyEdits(Track& t) {
     }
 }
 
-bool App::keyboard(const char* header, const std::string& initial, std::string& out) {
+bool App::keyboard(const char* header, const std::string& initial, std::string& out, bool secret) {
     SwkbdConfig kbd;
     if (R_FAILED(swkbdCreate(&kbd, 0))) {
         toast("The keyboard is not available in applet mode");
         return false;
     }
     swkbdConfigMakePresetDefault(&kbd);
+#ifdef __SWITCH__
+    if (secret) swkbdConfigSetPasswordFlag(&kbd, 1);
+#else
+    (void)secret;
+#endif
     swkbdConfigSetHeaderText(&kbd, header);
     swkbdConfigSetGuideText(&kbd, header);
     swkbdConfigSetInitialText(&kbd, initial.c_str());
@@ -358,36 +363,38 @@ void App::drawSheet() {
                               store.save();
                               toast(liked ? "Removed from Liked" : "Added to Liked");
                           } });
-        items.push_back({ ICON_TAG, "Edit tags…", store.edits.count(tr.path) ? "Edited" : "", [this, t] {
-                              sheet.draft.clear();
-                              for (const auto& [k, l] : kFields) sheet.draft[k] = fieldOf(lib.tracks[t], k);
-                              sheet.page = Sheet::Tags;
-                              ui.focusDefault();
-                          } });
-        items.push_back({ ICON_IMAGE, "Change the cover…", store.covers.count(tr.path) ? "Yours" : "", [this, t] {
-                              sheet.page = Sheet::Cover;
-                              sheet.wholeAlbum = lib.tracks[t].albumIdx >= 0;
-                              // Settings → Storage and reset may name a folder of covers; else the track's own
-                              struct stat st;
-                              const bool own = !store.coverDir.empty() && stat(store.coverDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-                              listCoverDir(own ? store.coverDir : lib.tracks[t].folder);
-                          } });
-        if (store.covers.count(tr.path))
-            items.push_back({ ICON_REFRESH, "Use the original cover", "", [this, t] {
-                                  // for every track of the album that shares this cover
-                                  const std::string mine = store.covers[lib.tracks[t].path];
-                                  std::vector<int> group{ t };
-                                  if (lib.tracks[t].albumIdx >= 0) group = lib.albums[lib.tracks[t].albumIdx].tracks;
-                                  for (int i : group)
-                                      if (auto it = store.covers.find(lib.tracks[i].path); it != store.covers.end() && it->second == mine) {
-                                          store.covers.erase(it);
-                                          meta.setCoverFile(i, "");
-                                      }
-                                  store.saveEdits();
-                                  if (now.track >= 0 && std::find(group.begin(), group.end(), now.track) != group.end()) loadTrackCoverAgain();
-                                  toast("Original cover back");
+        if (tr.subsonicId.empty()) {
+            items.push_back({ ICON_TAG, "Edit tags…", store.edits.count(tr.path) ? "Edited" : "", [this, t] {
+                                  sheet.draft.clear();
+                                  for (const auto& [k, l] : kFields) sheet.draft[k] = fieldOf(lib.tracks[t], k);
+                                  sheet.page = Sheet::Tags;
+                                  ui.focusDefault();
                               } });
-        if (store.edits.count(tr.path)) items.push_back({ ICON_REFRESH, "Undo my tag edits", "", [this, t] { undoTagEdits(t); } });
+            items.push_back({ ICON_IMAGE, "Change the cover…", store.covers.count(tr.path) ? "Yours" : "", [this, t] {
+                                  sheet.page = Sheet::Cover;
+                                  sheet.wholeAlbum = lib.tracks[t].albumIdx >= 0;
+                                  // Settings → Storage and reset may name a folder of covers; else the track's own
+                                  struct stat st;
+                                  const bool own = !store.coverDir.empty() && stat(store.coverDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+                                  listCoverDir(own ? store.coverDir : lib.tracks[t].folder);
+                              } });
+            if (store.covers.count(tr.path))
+                items.push_back({ ICON_REFRESH, "Use the original cover", "", [this, t] {
+                                      // for every track of the album that shares this cover
+                                      const std::string mine = store.covers[lib.tracks[t].path];
+                                      std::vector<int> group{ t };
+                                      if (lib.tracks[t].albumIdx >= 0) group = lib.albums[lib.tracks[t].albumIdx].tracks;
+                                      for (int i : group)
+                                          if (auto it = store.covers.find(lib.tracks[i].path); it != store.covers.end() && it->second == mine) {
+                                              store.covers.erase(it);
+                                              meta.setCoverFile(i, "");
+                                          }
+                                      store.saveEdits();
+                                      if (now.track >= 0 && std::find(group.begin(), group.end(), now.track) != group.end()) loadTrackCoverAgain();
+                                      toast("Original cover back");
+                                  } });
+            if (store.edits.count(tr.path)) items.push_back({ ICON_REFRESH, "Undo my tag edits", "", [this, t] { undoTagEdits(t); } });
+        }
         if (tr.albumIdx >= 0)
             items.push_back({ ICON_GRID, "Go to the album", lib.albums[tr.albumIdx].title, [this, a = tr.albumIdx] { closeSheet(); goToAlbum(a); } });
         items.push_back({ ICON_MIC, "Go to the artist", tr.artist, [this, a = tr.artist] { closeSheet(); openArtist(a); } });
@@ -395,14 +402,20 @@ void App::drawSheet() {
             const std::string g1 = tr.genre.substr(0, tr.genre.find(';'));
             items.push_back({ ICON_TAG, "Go to the genre", g1, [this, g1] { closeSheet(); openGenre(g1); } });
         }
-        items.push_back({ ICON_FOLDER, "Show in Folders", "", [this, f = tr.folder] { closeSheet(); if (tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(f)); } });
+        if (tr.subsonicId.empty()) items.push_back({ ICON_FOLDER, "Show in Folders", "", [this, f = tr.folder] { closeSheet(); if (tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(f)); } });
         items.push_back({ ICON_INFO, "Details", "", [this, t] {
                               sheet.info = TrackInfo{};
-                              readTrackInfo(lib.tracks[t].path, sheet.info, true, true);
+                              const Track& track = lib.tracks[t];
+                              if (track.subsonicId.empty()) readTrackInfo(track.path, sheet.info, true, true);
+                              else {
+                                  sheet.info.title = track.title; sheet.info.artist = track.artist; sheet.info.album = track.album;
+                                  sheet.info.duration = track.duration; sheet.info.genre = track.genre; sheet.info.date = track.date;
+                                  sheet.info.albumArtist = track.albumArtist; sheet.info.trackNo = track.trackNo;
+                              }
                               sheet.page = Sheet::Info;
                               ui.focusDefault();
                           } });
-        items.push_back({ ICON_X, "Delete from the SD card…", "", [this] { sheet.page = Sheet::Delete; ui.focusDefault(); }, true });
+        if (tr.subsonicId.empty()) items.push_back({ ICON_X, "Delete from the SD card…", "", [this] { sheet.page = Sheet::Delete; ui.focusDefault(); }, true });
     } else if (page == Sheet::Lists) {
         // Your own playlists (folder playlists follow their folder, so tracks cannot be added to them).
         items.push_back({ ICON_PLUS, "New playlist…", "", [this, t] { closeSheet(); newPlaylist(t); } });

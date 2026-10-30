@@ -164,8 +164,10 @@ void App::drawNow(float x, float y, float w, float h) {
         }
         bx += button(uid("np.artist"), ICON_MIC, "Artist", bx, cy, false, &clicked) + 8;
         if (clicked) openArtist(t.artist);
-        bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
-        if (clicked && tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(t.folder));
+        if (t.subsonicId.empty()) {
+            bx += button(uid("np.folder"), ICON_FOLDER, "Folder", bx, cy, false, &clicked) + 8;
+            if (clicked && tabFor(Store::TabFolders, "folder")) navigate(View::Folders, lib.folderByPath(t.folder));
+        }
         {
             // .np-actions .more: the track menu (also + on the controller)
             const Id mid = uid("np.more");

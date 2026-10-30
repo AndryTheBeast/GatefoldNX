@@ -171,6 +171,9 @@ void decodeWav(const std::string& path, Sink& s) {
 void Waveform::cancel() {
     gen_++;
     if (thread_.joinable()) thread_.join();
+    ready_ = false;
+    path_.clear();
+    peaks_.clear();
 }
 
 void Waveform::request(const std::string& path) {

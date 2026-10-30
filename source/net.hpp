@@ -1,6 +1,6 @@
 /*
  * Gatefold NX · net.hpp
- * The updater's only way online: HTTPS GETs to GitHub, never at launch unless Settings → Updates allows it; and Settings ›
+ * Shared sockets/curl lifetime, also used by Subsonic. This transport serves HTTPS GETs to GitHub for updates; and Settings ›
  * Support's report, one POST when you send it.
  * On the console it is libcurl over the Switch's own ssl service (its certificates, peers verified); in the PC
  * preview a stand-in serves a local folder (GF_NET=<folder>: releases.json and <tag>/<asset>), so the whole

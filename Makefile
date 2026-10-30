@@ -55,7 +55,7 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
-CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION='"$(APP_VERSION)"'
+CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/libxml2 -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION='"$(APP_VERSION)"'
 
 # Dev builds (the default) keep what is only for testing: the sleep timer's 1-minute choice and
 # Settings → About → Frame times. A release is `make clean && make DEV=0` (make does not notice a changed flag).
@@ -69,7 +69,7 @@ CXXFLAGS	:= $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= $(shell $(PORTLIBS)/bin/aarch64-none-elf-pkg-config --libs SDL2_mixer SDL2_ttf SDL2_image flac libmpg123 opusfile vorbisidec libavformat libavcodec libswresample libavutil) -lturbojpeg -lcurl -lz -lnx
+LIBS	:= $(shell $(PORTLIBS)/bin/aarch64-none-elf-pkg-config --libs SDL2_mixer SDL2_ttf SDL2_image flac libmpg123 opusfile vorbisidec libavformat libavcodec libswresample libavutil libxml-2.0) -lturbojpeg -lcurl -lz -lnx
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

@@ -508,7 +508,8 @@ void App::drawSeek(float x, float y, float w, float h, Id id) {
         }
     }
     const float cy = y + h / 2;
-    const bool waveNow = wave.ready() && wave.path() == (now.track >= 0 ? lib.tracks[now.track].path : std::string());
+    const std::string wavePath = now.track < 0 ? std::string() : lib.tracks[now.track].subsonicId.empty() ? lib.tracks[now.track].path : subBuffer_;
+    const bool waveNow = wave.ready() && wave.path() == wavePath;
     // an Automix join, Immersive or Simple: the outgoing song's waveform becomes the next one's, each bar on its way from the
     // one height to the other, timed to the join (the old one alone until the next one's is measured)
     const bool morph = store.mixAnimNow != 0 && mixOld.on && !mixOld.wave.empty();
@@ -745,6 +746,10 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
         jobs[0] = { "Preparing covers", std::min(cached, n), n, SetLibrary, Stoppable::Covers, "Covers ready" };
         busy[0] = true;
     }
+    if (subThread_.joinable()) {
+        jobs[0] = { subScanning_ ? "Reading Subsonic library" : "Buffering Subsonic song", 0, 0, SetSubsonic, Stoppable::None, nullptr };
+        busy[0] = true;
+    }
     if (thumbs.running() && !store.stopThumbs) {
         int made = 0, left = 0;
         thumbs.progress(made, left);
@@ -839,7 +844,7 @@ void App::showSetting(const Job& j) {
 }
 
 void App::applyJobStops() {
-    meta.pauseCovers(store.stopCovers || coversHeld);
+    meta.pauseCovers(store.subsonic.enabled || store.stopCovers || coversHeld);
     thumbs.pause(store.stopThumbs);
     levels.pause(store.stopLevels);
 }

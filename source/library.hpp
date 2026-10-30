@@ -15,6 +15,8 @@
 
 struct Track {
     std::string path;
+    std::string subsonicCoverId;
+    std::string subsonicId;   // empty for SD-card tracks
     std::string folder;
     std::string title, artist, album, date;   // from the file name until tags arrive
     std::string albumArtist, genre;   // genre: one or more, "; "-separated

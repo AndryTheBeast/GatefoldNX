@@ -60,6 +60,7 @@ automix::Plan App::planJoin(const mixan::Info* a, double dur, const mixan::Info*
 }
 
 void App::orderAutomixList(int ref, bool announce) {
+    if (store.subsonic.enabled) { if (announce) toast("Automix needs music on the SD card"); return; }
     if (ref < 0 || ref >= int(store.playlists.size())) return;
     FolderPlaylist& p = store.playlists[size_t(ref)];
     if (!p.own() || !p.automix) return;
@@ -111,6 +112,7 @@ bool App::automixReady(const std::string& path) const {
  * ordered once more. An insertion is a row of scores, cheap on the console; ordering again each time would not be.
  */
 void App::automixListsTick() {
+    if (store.subsonic.enabled) return;
     if (time - automixTickAt < 1) return;
     automixTickAt = time;
     for (int i = 0; i < int(store.playlists.size()); i++) {
@@ -154,6 +156,7 @@ void App::automixListsTick() {
 /** The tracks of Automix playlists not analysed yet (up to `max`): the levelling worker takes them first. */
 std::vector<std::string> App::automixWaitingTracks(size_t max) const {
     std::vector<std::string> out;
+    if (store.subsonic.enabled) return out;
     for (const auto& p : store.playlists) {
         if (!p.own() || !p.automix) continue;
         for (const auto& path : p.tracks) {
@@ -167,7 +170,7 @@ std::vector<std::string> App::automixWaitingTracks(size_t max) const {
 
 /** The queue came from an Automix playlist (q.name is the playlist's): only then does Automix join its tracks. */
 bool App::automixQueue() const {
-    if (q.name.empty()) return false;
+    if (store.subsonic.enabled || q.name.empty()) return false;
     for (const auto& p : store.playlists)
         if (p.own() && p.automix && p.name == q.name) return true;
     return false;
@@ -189,6 +192,7 @@ int App::queuePlaylist() const {
 
 void App::automixProgress(int& done, int& total) const {
     done = total = 0;
+    if (store.subsonic.enabled) return;
     for (const auto& p : store.playlists) {
         if (!p.own() || !p.automix) continue;
         for (const auto& path : p.tracks) {
@@ -201,6 +205,7 @@ void App::automixProgress(int& done, int& total) const {
 }
 
 void App::openAutomixPicker() {
+    if (store.subsonic.enabled) { toast("Automix needs music on the SD card"); return; }
     closeSheet();
     ap = AutomixPick{};
     ap.open = true;

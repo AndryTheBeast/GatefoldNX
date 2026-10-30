@@ -21,7 +21,7 @@ done
 # __PRFCHWINTRIN_H: skip SDL_endian.h's _m_prefetch, which newer clang already provides
 FLAGS=(-std=c++20 -O2 -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -D__PRFCHWINTRIN_H -Wno-deprecated-declarations
        -I"$OUT/include" -I"$HERE/include" -I"$SRC" -I"$HERE/../../sysmodule/include")
-APP=(app tour stats levels loudness mixan mood automix m3u shell view_smart widgets view_now view_canvas view_lists view_grid view_settings view_sheet view_tracks view_library view_files view_playlists view_join view_automix view_updates view_storage view_support net updater report gfx ui palette library metacache player spectrum store bgclient thumbs loader coverio)
+APP=(app tour stats levels loudness mixan mood automix m3u shell view_smart widgets view_now view_canvas view_lists view_grid view_settings view_sheet view_tracks view_library view_files view_playlists view_join view_automix view_updates view_storage view_support net updater report gfx ui palette library subsonic metacache player spectrum store bgclient thumbs loader coverio)
 
 # A dev build unless DEV=0 (the Makefile's switch): DEV=0 for README screenshots, as a release looks.
 [ "${DEV:-1}" != "0" ] && FLAGS+=(-DGF_DEV)
