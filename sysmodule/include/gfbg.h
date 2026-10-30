@@ -143,7 +143,9 @@ typedef enum { GfbgListStart_Continue = 0, GfbgListStart_Shuffle = 1 } GfbgListS
  * for each one a line "#<name>" then its tracks' paths, one a line, in its order. The player reads only
  * the one an event asks for, the overlay only the names.
  * Protocol 6: a first line "!kinds <letters>", before every "#" line (where readers before it skip it), one letter
- * per playlist in the file's order (GFBG_KIND_*): L Liked, N your own, F a folder's, S smart, M mood, A Automix.
+ * per playlist in the file's order (GFBG_KIND_*): L Liked, N your own, F a folder's, S smart, M mood, A Automix; then a
+ * line per playlist "!list <kind><TAB><icon key><TAB><tracks><TAB><name>" (the overlay's Playlists pages); and after the
+ * last playlist a lone "#" and "!t <path><TAB><title><TAB><artist>" lines for the tracks listed.
  */
 #define GFBG_KIND_LIKED   'L'
 #define GFBG_KIND_OWN     'N'

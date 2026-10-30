@@ -2,6 +2,7 @@
  * Gatefold NX · gfx.cpp
  */
 #include "gfx.hpp"
+#include "coverio.hpp"
 #include "wordmark.inc"
 
 #include <SDL2/SDL_image.h>
@@ -1143,7 +1144,7 @@ SDL_Surface* Gfx::shrink(SDL_Surface* src, int maxSide) {
 }
 
 SDL_Texture* Gfx::loadTexture(const void* data, size_t size, SDL_Surface** keepSurface) {
-    SDL_Surface* s = IMG_Load_RW(SDL_RWFromConstMem(data, int(size)), 1);
+    SDL_Surface* s = loadImage(data, size);
     if (!s) return nullptr;
     SDL_Texture* t = SDL_CreateTextureFromSurface(r_, s);
     if (t) SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);

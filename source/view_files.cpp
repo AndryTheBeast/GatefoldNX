@@ -22,6 +22,7 @@
 #include <SDL2/SDL_image.h>
 
 #include "app.hpp"
+#include "coverio.hpp"
 #include "cores.hpp"
 #include "icons.inc"
 #include "plicons.inc"
@@ -759,7 +760,7 @@ void App::openFileMenu(const std::string& path) {
                         bytes.resize(fread(bytes.data(), 1, bytes.size(), fp));
                         fclose(fp);
                     }
-                    return bytes.empty() ? nullptr : IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1);
+                    return loadImage(bytes);
                 }()) {
                 if (SDL_Surface* small = Gfx::shrink(s, 128)) {
                     sheet.preview = SDL_CreateTextureFromSurface(renderer_, small);

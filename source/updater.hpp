@@ -1,6 +1,6 @@
 /*
  * Gatefold NX · updater.hpp
- * Settings → Updates: Gatefold's GitHub releases (AndryTheBeast/GatefoldNX), their changelogs, and installing any
+ * Settings → Updates: Songate's GitHub releases (AndryTheBeast/Songate, GatefoldNX until 2026-10-30), their changelogs, and installing any
  * of them, newer or older. Nothing goes online until Settings allows it (store.updates), and then only when asked
  * (or at launch, if "Check when Gatefold starts" is on).
  *
@@ -34,8 +34,8 @@ struct UpdItem { std::string icon, text; };                                    /
 struct UpdLog { std::string icon, title; std::vector<UpdItem> items; };       // a changelog section
 struct UpdFile { std::string path; int64_t size = 0; std::string sha256; };     // path from the SD card's root
 
-// Where bugs are reported (Settings › Updates: the betas' warning). The repository's name until its rename to Songate
-#define ISSUES_URL "github.com/AndryTheBeast/GatefoldNX/issues"
+// Where bugs are reported (Settings › Updates: the betas' warning); the repository was GatefoldNX until 2026-10-30
+#define ISSUES_URL "github.com/AndryTheBeast/Songate/issues"
 
 struct UpdRelease {
     std::string tag, version, name, date, body;   // date: "2026-10-27"; body: the GitHub notes (Markdown)

@@ -7,6 +7,8 @@
 #include "symbol.hpp"
 #include "tune.h"
 #include "get_funcs.hpp"    // ult::isDirectory, ult::DirCloser
+#include "pl_symbols.hpp"   // Songate's playlist icons
+#include "tune_gfbg.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -276,10 +278,10 @@ namespace {
 // ---------------------------------------------------------------------------
 
 BrowserGui::BrowserGui(std::string path, std::string focus_name, std::string root,
-                       std::function<void(u32)> on_count_changed)
+                       std::function<void(u32)> on_count_changed, int depth)
     : m_frame(nullptr), m_list(nullptr),
       m_cwd(std::move(path)), m_root(std::move(root)), m_focus_name(std::move(focus_name)),
-      m_on_count_changed(std::move(on_count_changed)) {
+      m_on_count_changed(std::move(on_count_changed)), m_depth(depth) {
 
     if (m_cwd.empty()) {
         // Gatefold's music folder (settings.txt musicRoot), so Browse starts where the library is.
@@ -336,14 +338,13 @@ bool BrowserGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &to
                              HidAnalogStickState joyStickPosLeft,
                              HidAnalogStickState joyStickPosRight) {
     /* Left footer tap OR KEY_LEFT — store where we are, mark dest as Browse,
-       then swap [SettingsGui, BrowserGui] with a fresh MainGui.
-       Stack is always exactly depth 2, so SwapDepth{2} is always correct. */
+       then swap [SettingsGui, BrowseGui, BrowserGui] with a fresh MainGui (m_depth: the pages above Settings). */
     const bool goLeft = ult::simulatedNextPage.exchange(false, std::memory_order_acq_rel)
                      || ((keysDown & KEY_LEFT) && !(keysHeld & ~KEY_LEFT & ~KEY_R & ALL_KEYS_MASK));
     if (goLeft) {
         setBrowserReturnPath(m_cwd, m_root);
         setPlayerRightDest(PlayerRightDest::Browse);
-        tsl::swapTo<MainGui>(SwapDepth{2});
+        tsl::swapTo<MainGui>(SwapDepth{u32(m_depth + 1)});
         triggerNavigationFeedback();
         return true;
     }
@@ -352,13 +353,13 @@ bool BrowserGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &to
 
     if (keysDown & HidNpadButton_B) {
         /* At root: return false so the base class calls goBack(), popping
-           BrowserGui and returning to SettingsGui. */
+           BrowserGui and returning to Browse. */
         if (m_cwd == m_root)
             return false;
         /* Inside a subdir: swap this BrowserGui with one at the parent directory.
            focus_name = current dir name so the cursor lands on the right item.
            Stack stays constant: [SettingsGui, BrowserGui]. */
-        tsl::swapTo<BrowserGui>(parentPath(), currentDirName(), m_root, m_on_count_changed);
+        tsl::swapTo<BrowserGui>(parentPath(), currentDirName(), m_root, m_on_count_changed, m_depth);
         triggerExitFeedback();
         return true;
     }
@@ -405,7 +406,7 @@ void BrowserGui::buildList() {
                     //tsl::shiftItemFocus(item);
                     // swapTo keeps the stack at constant depth [SettingsGui, BrowserGui].
                     // focus_name="" — we're entering, not returning, so no item to focus.
-                    tsl::swapTo<BrowserGui>(sub_path, "", root_copy, m_on_count_changed);
+                    tsl::swapTo<BrowserGui>(sub_path, "", root_copy, m_on_count_changed, m_depth);
                     return true;
                 }
                 if (down & HidNpadButton_Y) {
@@ -765,4 +766,377 @@ void BrowserGui::addAllToPlaylist(const std::string &path) {
     if (tsl::notification) tsl::notification->showNow(msg);
     if (songs_added > 0)
         notifyCountChanged();
+}
+
+// =============================================================================
+// Browse › Folders / Playlists (Songate, 2026-10-30)
+// =============================================================================
+
+namespace {
+
+    /* A list item with one of Songate's icons before its text (pl_symbols.hpp: the app's own, rasterised): the item is
+       drawn 30 px to the right, the icon in the room it leaves; its value stays at the right edge. */
+    class IconListItem final : public tsl::elm::ListItem {
+        const AlphaSymbol *m_icon;
+      public:
+        IconListItem(const std::string &text, const std::string &value, const AlphaSymbol &icon)
+            : ListItem(text, value), m_icon(&icon) {}
+
+        void draw(tsl::gfx::Renderer *renderer) override {
+            const s32 x = getX(), y = getY(), w = s32(getWidth()), h = s32(getHeight());
+            setBoundaries(x + 30, y, w - 30, h);
+            ListItem::draw(renderer);
+            setBoundaries(x, y, w, h);
+            const tsl::Color c = (m_focused && ult::useSelectionText) ? tsl::selectedTextColor : tsl::defaultTextColor;
+            m_icon->draw(x + 31, y + h / 2, renderer, c);
+        }
+
+        bool onTouch(tsl::elm::TouchEvent event, s32 currX, s32 currY, s32 prevX, s32 prevY, s32 initialX, s32 initialY) override {
+            if (event == tsl::elm::TouchEvent::Touch) this->m_touched = this->inBounds(currX, currY);
+            if (event == tsl::elm::TouchEvent::Release && this->m_touched) {
+                this->m_touched = false;
+                if (Element::getInputMode() == tsl::InputMode::Touch) {
+                    m_clickAnimationProgress = 0;
+                    return onClick(HidNpadButton_A);
+                }
+            }
+            return false;
+        }
+    };
+
+    /* Left (the D-pad or the footer's tap): back to the player, which comes back to this page. depth: the pages above
+       Settings, this one included. */
+    bool leftToPlayer(u64 keysDown, u64 keysHeld, const std::string &target, const std::string &root, int depth) {
+        const bool goLeft = ult::simulatedNextPage.exchange(false, std::memory_order_acq_rel)
+                         || ((keysDown & KEY_LEFT) && !(keysHeld & ~KEY_LEFT & ~KEY_R & ALL_KEYS_MASK));
+        if (!goLeft) return false;
+        setBrowserReturnPath(target, root);
+        setPlayerRightDest(PlayerRightDest::Browse);
+        tsl::swapTo<MainGui>(SwapDepth{u32(depth + 1)});
+        triggerNavigationFeedback();
+        return true;
+    }
+
+    /* The playing source's own page: a playlist plays as the folder "#<its name>". */
+    bool playingPlaylist() {
+        return play_ctx::source() == play_ctx::Source::Folder && !play_ctx::folderPath().empty() && play_ctx::folderPath()[0] == '#' &&
+               play_ctx::currentPath()[0] != '\0';
+    }
+    bool playingFolder() {
+        return play_ctx::source() == play_ctx::Source::Folder && !playingPlaylist() && play_ctx::currentPath()[0] != '\0';
+    }
+
+    /* The four kinds of Browse › Playlists, as Songate's playlists are: Normal (Liked, yours, a folder's), Smart, Mood,
+       Automix; the icon of each kind as the app's "New playlist" shows it. */
+    char groupOf(char kind) {
+        switch (kind) {
+            case GFBG_KIND_SMART:   return 'S';
+            case GFBG_KIND_MOOD:    return 'M';
+            case GFBG_KIND_AUTOMIX: return 'A';
+            default:                return 'N';
+        }
+    }
+    const char *groupName(char g) { return g == 'S' ? "Smart" : g == 'M' ? "Mood" : g == 'A' ? "Automix" : "Normal"; }
+    const AlphaSymbol &groupIcon(char g) {
+        return g == 'S' ? plsym::smart : g == 'M' ? plsym::mood : g == 'A' ? plsym::sparkle : plsym::list;
+    }
+    /* The kicker Songate gives a playlist (App::playlistKind). */
+    const char *kindLabel(char kind) {
+        switch (kind) {
+            case GFBG_KIND_AUTOMIX: return "Automix Playlist";
+            case GFBG_KIND_MOOD:    return "Mood Playlist";
+            case GFBG_KIND_SMART:   return "Smart Playlist";
+            case GFBG_KIND_FOLDER:  return "Folder Playlist";
+            default:                return "Playlist";
+        }
+    }
+    std::string tracksText(u32 n) { return n == 1 ? "1 track" : std::to_string(n) + " tracks"; }
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Browse: Folders and Playlists
+
+BrowseGui::BrowseGui(std::function<void(u32)> on_count_changed) : m_on_count_changed(std::move(on_count_changed)) {}
+BrowseGui::~BrowseGui() { delete m_list; }
+
+tsl::elm::Element *BrowseGui::createUI() {
+    auto *frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
+    m_list = new tsl::elm::List();
+    m_list->addItem(new tsl::elm::CategoryHeader("Browse"));
+    auto *folders = new IconListItem("Folders", playingFolder() ? ult::INPROGRESS_SYMBOL : ult::DROPDOWN_SYMBOL, plsym::folder);
+    folders->setClickListener([this](u64 keys) -> bool {
+        if (!(keys & HidNpadButton_A)) return false;
+        tsl::changeTo<BrowserGui>("", "", "", m_on_count_changed, 2);
+        return true;
+    });
+    m_list->addItem(folders);
+    auto *lists = new IconListItem("Playlists", playingPlaylist() ? ult::INPROGRESS_SYMBOL : ult::DROPDOWN_SYMBOL, plsym::list);
+    lists->setClickListener([this](u64 keys) -> bool {
+        if (!(keys & HidNpadButton_A)) return false;
+        tsl::changeTo<PlaylistKindsGui>(m_on_count_changed);
+        return true;
+    });
+    m_list->addItem(lists);
+    if (playingPlaylist()) m_list->jumpToItem("Playlists");
+    frame->setContent(m_list);
+    return frame;
+}
+
+void BrowseGui::update() {
+    static u8 tick = 0;
+    if ((++tick % 15) == 0) play_ctx::poll();
+}
+
+bool BrowseGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &touchPos, HidAnalogStickState l, HidAnalogStickState r) {
+    if (leftToPlayer(keysDown, keysHeld, "@browse", "", 1)) return true;
+    return SysTuneGui::handleInput(keysDown, keysHeld, touchPos, l, r);
+}
+
+// ---------------------------------------------------------------------------
+// Playlists: Normal, Smart, Mood, Automix
+
+PlaylistKindsGui::PlaylistKindsGui(std::function<void(u32)> on_count_changed) : m_on_count_changed(std::move(on_count_changed)) {}
+PlaylistKindsGui::~PlaylistKindsGui() { delete m_list; }
+
+tsl::elm::Element *PlaylistKindsGui::createUI() {
+    auto *frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
+    m_list = new tsl::elm::List();
+    m_list->addItem(new tsl::elm::CategoryHeader("Playlists"));
+    const std::vector<GfPlaylist> all = gfPlaylists();
+    if (all.empty()) {
+        m_list->addItem(new tsl::elm::ListItem("Open Songate once to list its playlists"));
+        frame->setContent(m_list);
+        return frame;
+    }
+    // which kind plays now: the playlist the queue was made from
+    char playing = 0;
+    if (playingPlaylist())
+        for (const auto &pl : all)
+            if (play_ctx::folderPath().size() > 1 && play_ctx::folderPath().compare(1, std::string::npos, pl.name) == 0) playing = groupOf(pl.kind);
+    for (char g : { 'N', 'S', 'M', 'A' }) {
+        u32 n = 0;
+        for (const auto &pl : all) n += groupOf(pl.kind) == g;
+        const std::string value = playing == g ? ult::INPROGRESS_SYMBOL : n == 1 ? std::string("1 playlist") : std::to_string(n) + " playlists";
+        auto *item = new IconListItem(groupName(g), value, groupIcon(g));
+        item->setClickListener([this, g](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            tsl::changeTo<PlaylistListGui>(g, m_on_count_changed);
+            return true;
+        });
+        m_list->addItem(item);
+    }
+    if (playing) m_list->jumpToItem(groupName(playing));
+    frame->setContent(m_list);
+    return frame;
+}
+
+void PlaylistKindsGui::update() {
+    static u8 tick = 0;
+    if ((++tick % 15) == 0) play_ctx::poll();
+}
+
+bool PlaylistKindsGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &touchPos, HidAnalogStickState l, HidAnalogStickState r) {
+    if (leftToPlayer(keysDown, keysHeld, "@playlists", "", 2)) return true;
+    return SysTuneGui::handleInput(keysDown, keysHeld, touchPos, l, r);
+}
+
+// ---------------------------------------------------------------------------
+// One kind's playlists
+
+PlaylistListGui::PlaylistListGui(char group, std::function<void(u32)> on_count_changed)
+    : m_group(group), m_on_count_changed(std::move(on_count_changed)) {}
+PlaylistListGui::~PlaylistListGui() { delete m_list; }
+
+tsl::elm::Element *PlaylistListGui::createUI() {
+    auto *frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
+    m_list = new tsl::elm::List();
+    m_list->addItem(new tsl::elm::CategoryHeader(std::string(groupName(m_group)) + " Playlists"));
+    std::string focus;
+    u32 shown = 0;
+    for (const GfPlaylist &pl : gfPlaylists()) {
+        if (groupOf(pl.kind) != m_group) continue;
+        const bool now = playingPlaylist() && play_ctx::folderPath().size() > 1 && play_ctx::folderPath().compare(1, std::string::npos, pl.name) == 0;
+        if (now) focus = pl.name;
+        auto *item = new IconListItem(pl.name, now ? ult::INPROGRESS_SYMBOL : tracksText(pl.count), plsym::of(pl.icon.c_str()));
+        const char g = m_group, kind = pl.kind;
+        const std::string name = pl.name;
+        item->setClickListener([this, g, kind, name](u64 keys) -> bool {
+            if (!(keys & HidNpadButton_A)) return false;
+            tsl::changeTo<PlaylistTracksGui>(g, name, kind, m_on_count_changed);
+            return true;
+        });
+        m_list->addItem(item);
+        shown++;
+    }
+    if (!shown) m_list->addItem(new tsl::elm::ListItem(std::string("No ") + groupName(m_group) + " playlists yet"));
+    if (!focus.empty()) m_list->jumpToItem(focus);
+    frame->setContent(m_list);
+    return frame;
+}
+
+void PlaylistListGui::update() {
+    static u8 tick = 0;
+    if ((++tick % 15) == 0) play_ctx::poll();
+}
+
+bool PlaylistListGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &touchPos, HidAnalogStickState l, HidAnalogStickState r) {
+    if (leftToPlayer(keysDown, keysHeld, std::string("@kind:") + m_group, "", 3)) return true;
+    return SysTuneGui::handleInput(keysDown, keysHeld, touchPos, l, r);
+}
+
+// ---------------------------------------------------------------------------
+// A playlist's tracks: a folder's actions and words
+
+PlaylistTracksGui::PlaylistTracksGui(char group, std::string name, char kind, std::function<void(u32)> on_count_changed)
+    : m_group(group), m_kind(kind), m_name(std::move(name)), m_on_count_changed(std::move(on_count_changed)) {}
+PlaylistTracksGui::~PlaylistTracksGui() { delete m_list; }
+
+void PlaylistTracksGui::notifyCountChanged() const {
+    if (m_on_count_changed) m_on_count_changed(play_ctx::savedPlaylistSize());
+}
+
+tsl::elm::Element *PlaylistTracksGui::createUI() {
+    auto *frame = new SysTuneOverlayFrame(/*pageLeft=*/"Player", /*pageRight=*/"");
+    m_list = new tsl::elm::List();
+    const std::string folder = "#" + m_name;   // the playlist's "folder", as play_ctx knows it
+    const bool thisPlays = play_ctx::source() == play_ctx::Source::Folder && play_ctx::folderPath() == folder;
+    const char *cp = play_ctx::currentPath();
+    // the tracks, and the titles of a window of them (Gatefold's whole library can be a playlist: an item each would
+    // run the overlay's memory out, as the queue page's; Songate Shows Them All)
+    constexpr u32 kWindow = 200;
+    u32 from = 0;
+    std::vector<std::pair<std::string, std::string>> tags;
+    gfPlaylistTracks(m_name, thisPlays ? cp : nullptr, kWindow, m_songs, from, tags);
+    m_list->addItem(new tsl::elm::CategoryHeader(m_name + " " + ult::DIVIDER_SYMBOL + " " + kindLabel(m_kind)));
+    const u32 count = u32(m_songs.size());
+    if (!count) {
+        m_list->addItem(new tsl::elm::CategoryHeader("Empty..."));
+        frame->setContent(m_list);
+        return frame;
+    }
+    if (count > kWindow) {
+        const std::string note = "Tracks " + std::to_string(from + 1) + "-" + std::to_string(std::min(count, from + kWindow)) + " of " +
+                                 std::to_string(count) + " " + ult::DIVIDER_SYMBOL + " Songate Shows Them All";
+        m_list->addItem(new tsl::elm::CustomDrawer([note](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32 h) {
+            const auto tw = r->getTextDimensions(note, false, 15).first;
+            r->drawString(note, false, x + (w - s32(tw)) / 2, y + 20, 15, tsl::offTextColor);
+        }), 32);
+    }
+    m_list->addItem(new tsl::elm::CategoryHeader(
+        "Tracks " + ult::DIVIDER_SYMBOL + "  Add To Playlist " + ult::DIVIDER_SYMBOL + "  Add All " + ult::DIVIDER_SYMBOL +
+        "  Set As Startup"));
+    std::string focus;
+    const bool automix = m_kind == GFBG_KIND_AUTOMIX;
+    for (u32 k = 0; k < tags.size() && from + k < count; ++k) {
+        const u32 idx = from + k;
+        const std::string &full = m_songs[idx];
+        std::string title = tags[k].first, artist = tags[k].second;
+        if (title.empty()) {   // (not in Songate's library: its file name)
+            const size_t s = full.rfind('/'), d = full.rfind('.');
+            title = full.substr(s == std::string::npos ? 0 : s + 1, d != std::string::npos && d > s ? d - s - 1 : std::string::npos);
+        }
+        const std::string label = buildFileLabel(idx + 1, title, artist);
+        auto *item = new BrowserFileItem(label, full, folder);
+        item->setClickListener([this, item, idx, folder, automix](u64 down) -> bool {
+            const std::string &path = item->getFullPath();
+            // ---- A: play from here (the playlist as the queue, named after it; an Automix one in its order, joined)
+            if (down & HidNpadButton_A) {
+                if (play_ctx::source() == play_ctx::Source::Folder && play_ctx::folderPath() == folder &&
+                    play_ctx::currentPath()[0] != '\0' && strcasecmp(path.c_str(), play_ctx::currentPath()) == 0) {
+                    if (play_ctx::isPlaying()) tunePause();
+                    else                       tunePlay();
+                    play_ctx::poll();
+                    return true;
+                }
+                TuneShuffleMode shuffleMode = TuneShuffleMode_Off;
+                tuneGetShuffleMode(&shuffleMode);
+                const bool same = play_ctx::source() == play_ctx::Source::Folder && play_ctx::folderPath() == folder;
+                if (same && shuffleMode != TuneShuffleMode_Off && !automix) {
+                    play_ctx::startByPath(path);
+                } else if (!play_ctx::switchToFolder(folder, m_songs, idx, m_name, automix)) {
+                    if (tsl::notification) tsl::notification->showNow("Failed to switch to folder.");
+                }
+                play_ctx::poll();
+                notifyCountChanged();
+                return true;
+            }
+            // ---- Y: add to the Playlist (as a folder's track)
+            if (down & HidNpadButton_Y) {
+                if (play_ctx::source() == play_ctx::Source::Playlist) {
+                    if (R_SUCCEEDED(tuneEnqueue(path.c_str(), TuneEnqueueType_Back))) {
+                        play_ctx::savedAppend(path);
+                        if (tsl::notification) tsl::notification->showNow("Added 1 track to Playlist.");
+                        notifyCountChanged();
+                    } else if (tsl::notification) {
+                        tsl::notification->showNow("Failed to add track.");
+                    }
+                } else {
+                    play_ctx::savedAppend(path);
+                    if (tsl::notification) tsl::notification->showNow("Added 1 track to Playlist.");
+                    notifyCountChanged();
+                }
+                return true;
+            }
+            // ---- X: add all its tracks (as a folder's Add All: at most 300)
+            if (down & HidNpadButton_X) {
+                constexpr u32 kAddAllMax = 300;
+                const bool inPlaylist = play_ctx::source() == play_ctx::Source::Playlist;
+                long added = 0;
+                for (u32 i = 0; i < m_songs.size() && i < kAddAllMax; ++i) {
+                    if (inPlaylist && R_FAILED(tuneEnqueue(m_songs[i].c_str(), TuneEnqueueType_Back))) continue;
+                    play_ctx::savedAppend(m_songs[i]);
+                    added++;
+                }
+                char msg[64];
+                std::snprintf(msg, sizeof(msg), "Added %ld tracks to Playlist.", added);
+                if (tsl::notification) tsl::notification->showNow(msg);
+                if (added > 0) notifyCountChanged();
+                return true;
+            }
+            // ---- Minus: set as startup file
+            if (down & KEY_MINUS) {
+                config::set_load_path(path.c_str());
+                if (tsl::notification) tsl::notification->showNow(item->getText(), 26, "Startup File Set", 2500, false);
+                return true;
+            }
+            return false;
+        });
+        if (thisPlays && cp[0] != '\0' && strcasecmp(full.c_str(), cp) == 0) focus = label;
+        m_list->addItem(item);
+    }
+    if (!focus.empty()) m_list->jumpToItem(focus);
+    frame->setContent(m_list);
+    return frame;
+}
+
+void PlaylistTracksGui::update() {
+    static u8 tick = 0;
+    if ((++tick % 15) == 0) play_ctx::poll();
+}
+
+bool PlaylistTracksGui::handleInput(u64 keysDown, u64 keysHeld, const HidTouchState &touchPos, HidAnalogStickState l, HidAnalogStickState r) {
+    if (leftToPlayer(keysDown, keysHeld, std::string("#") + m_group + m_kind + m_name, "", 4)) return true;
+    return SysTuneGui::handleInput(keysDown, keysHeld, touchPos, l, r);
+}
+
+// ---------------------------------------------------------------------------
+
+void pushBrowseStack(const std::string &target, const std::string &root) {
+    tsl::changeTo<BrowseGui>(nullptr);
+    if (target == "@browse") return;
+    if (target.empty() || (target[0] != '@' && target[0] != '#')) {   // a folder of Folders (or none yet: the music folder)
+        tsl::changeTo<BrowserGui>(target, "", root, nullptr, 2);
+        return;
+    }
+    tsl::changeTo<PlaylistKindsGui>(nullptr);
+    if (target == "@playlists") return;
+    if (target.rfind("@kind:", 0) == 0 && target.size() > 6) {
+        tsl::changeTo<PlaylistListGui>(target[6], nullptr);
+        return;
+    }
+    if (target[0] == '#' && target.size() > 3) {
+        tsl::changeTo<PlaylistListGui>(target[1], nullptr);
+        tsl::changeTo<PlaylistTracksGui>(target[1], target.substr(3), target[2], nullptr);
+    }
 }

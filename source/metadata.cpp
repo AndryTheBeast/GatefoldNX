@@ -2,6 +2,7 @@
  * Gatefold NX · metadata.cpp
  */
 #include "metadata.hpp"
+#include "coverio.hpp"
 
 #include "ffdecoder.hpp"
 
@@ -76,7 +77,9 @@ void readFlac(const std::string& path, TrackInfo& out, bool wantCover, bool want
         FLAC__metadata_object_delete(tags);
     }
     if (!wantCover) return;
-    // Front cover first, then any picture.
+    // Front cover first, then any picture: our own reader (coverio.cpp; the user's FLACs showed no covers on the console,
+    // 2026-10-30), then libFLAC's
+    if (flacPicture(path, out.cover)) return;
     FLAC__StreamMetadata* pic = nullptr;
     const unsigned any = unsigned(-1);
     if (!FLAC__metadata_get_picture(path.c_str(), &pic, FLAC__STREAM_METADATA_PICTURE_TYPE_FRONT_COVER, nullptr, nullptr, any, any, any, any))
@@ -85,6 +88,9 @@ void readFlac(const std::string& path, TrackInfo& out, bool wantCover, bool want
         const auto& p = pic->data.picture;
         out.cover.assign(p.data, p.data + p.data_length);
         FLAC__metadata_object_delete(pic);
+        coverTrace("cover found by libFLAC only: " + path);
+    } else {
+        coverTrace("no picture in: " + path);
     }
 }
 

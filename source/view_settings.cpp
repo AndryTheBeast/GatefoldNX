@@ -1260,7 +1260,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         sections.push_back(
             { "About", ICON_INFO,
               { { "", { head } },
-                { "Tour", { buttonRow("Take the tour", "Every part of Songate on its own screens, with examples: about 30 short steps, in chapters",
+                { "Tour", { buttonRow("Take the tour", "Every part of Songate on its own screens, with examples: Basic, Advanced or Complete",
                                       "set.tour", ICON_SPARKLE, "Start", [this] { startTour(); }) } },
                 { "Credits",
                   // the project it began as (the user, 2026-10-29: mentioned only as that, respectfully and factually; the
@@ -1396,6 +1396,7 @@ void App::drawSettings(float x, float y, float w, float h) {
 
     // .st-group cards
     const float pad = 20, innerW = pw - pad * 2;
+    settingsRows.clear();
     for (const Card& c : cards) {
         struct Laid { const Row* r; std::vector<std::string> hint; float h, labelW; };
         std::vector<Laid> laid;
@@ -1440,6 +1441,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 if (lit > 0) g.roundRect(px + 8, ry + 4, pw - 16, l.h - 8, 12, pal.accent, 0.16f * lit);
                 else settingsJump.clear();
             }
+            settingsRows.push_back({ px + 8, ry + 4, pw - 16, l.h - 8 });   // as showSetting lights it
             {   // every row registers, even scrolled out of view: the D-pad scrolls by moving focus onto it
                 if (r.block) {
                     r.block(px + pad, ry + 8, innerW);

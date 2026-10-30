@@ -21,6 +21,7 @@
 #include <strings.h>
 
 #include "app.hpp"
+#include "coverio.hpp"
 #include "icons.inc"
 
 namespace {
@@ -600,7 +601,7 @@ void App::drawSheet() {
                 if (sheet.preview) SDL_DestroyTexture(sheet.preview);
                 sheet.preview = nullptr;
                 const std::vector<uint8_t> bytes = readAll(full);
-                if (SDL_Surface* s = bytes.empty() ? nullptr : IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1)) {
+                if (SDL_Surface* s = loadImage(bytes)) {
                     if (SDL_Surface* small = Gfx::shrink(s, 128)) {
                         sheet.preview = SDL_CreateTextureFromSurface(renderer_, small);
                         if (sheet.preview) SDL_SetTextureScaleMode(sheet.preview, SDL_ScaleModeLinear);

@@ -1,0 +1,24 @@
+3.00 press LEFT
+3.50 press DOWN
+4.00 press DOWN
+4.50 press DOWN
+5.00 press DOWN
+5.50 press DOWN
+6.10 press A
+7.30 press DOWN
+7.90 press A
+8.90 press B
+10.10 mark seek
+10.20 press ZR
+10.50 press ZR
+10.80 press ZR
+11.10 press ZR
+11.40 press ZR
+11.70 press ZR
+12.00 press ZR
+12.30 press ZR
+12.60 press ZR
+12.90 press ZR
+13.20 press ZR
+19.20 mark left
+81.20 end

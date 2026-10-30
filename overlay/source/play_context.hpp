@@ -57,9 +57,13 @@ namespace play_ctx {
     //   • If source was Playlist, snapshot IPC → saved[] first.
     //   • tuneClearQueue, tuneEnqueue songs[], tuneSelect(play_idx), tunePlay.
     //   Returns false on any IPC failure (state is NOT changed on failure).
+    //   A playlist of Songate's (Browse › Playlists) plays as a folder whose path is "#<its name>", the queue named after
+    //   it (queueName) and, for an Automix playlist, joined by Automix in its own order (automix).
     bool switchToFolder(const std::string& folder_path,
                         const std::vector<std::string>& songs,
-                        u32 play_idx);
+                        u32 play_idx,
+                        const std::string& queueName = "",
+                        bool automix = false);
 
     // Switch to Playlist context:
     //   • tuneClearQueue, tuneEnqueue saved[], tuneSelect(play_idx), tunePlay.

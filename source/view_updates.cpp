@@ -96,7 +96,7 @@ std::string App::updateStatus() const {
 
 /** Updates are off until allowed here: what going online means, said before anything does. */
 void App::allowUpdates() {
-    confirm(UPD_SHIELD, "Updates", "Connect to the internet?", "GitHub · AndryTheBeast/GatefoldNX", "Allow Songate to go online?",
+    confirm(UPD_SHIELD, "Updates", "Connect to the internet?", "GitHub · AndryTheBeast/Songate", "Allow Songate to go online?",
             "Songate connects to GitHub only when you check for updates or install one, and at launch if you turn that on. "
             "GitHub sees your console's IP address and Songate's version, nothing else. You can turn this off at any time.",
             "Allow", [this] {
@@ -232,7 +232,7 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
         text(ICON_BOLT, "A beta: it can be unstable and have bugs. Please report what you find: " ISSUES_URL, true);
     if (!r.manifest)
         text(ICON_INFO, r.version + " cannot update itself (it has no Updates page). To come back later, copy a newer release from "
-                            "github.com/AndryTheBeast/GatefoldNX/releases to the SD card by hand; your settings are backed up first.", true);
+                            "github.com/AndryTheBeast/Songate/releases to the SD card by hand; your settings are backed up first.", true);
     // ---- the changelog
     if (r.log.empty()) {
         rows.push_back({ Row::Group, nullptr, "What's new" });

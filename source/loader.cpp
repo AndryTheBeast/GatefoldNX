@@ -2,6 +2,7 @@
  * Gatefold NX · loader.cpp
  */
 #include "loader.hpp"
+#include "coverio.hpp"
 
 #include <SDL2/SDL_image.h>
 
@@ -144,7 +145,7 @@ void TrackLoader::work(const Request& r, Result& out) {
     if (bytes.empty()) return;
 
     SDL_Surface* rgba = nullptr;
-    if (SDL_Surface* src = IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1)) {
+    if (SDL_Surface* src = loadImage(bytes, r.path.c_str())) {
         rgba = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGBA32, 0);
         SDL_FreeSurface(src);
     }

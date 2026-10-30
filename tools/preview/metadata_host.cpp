@@ -3,11 +3,26 @@
 
 #include "../../source/ffdecoder.hpp"
 #include "../../source/metadata.hpp"
+#include "../../source/coverio.hpp"
+#include <strings.h>
 
 void metadataInit() {}
 
 bool readTrackInfo(const std::string& path, TrackInfo& out, bool wantCover, bool wantLyrics) {
-    if (ffHandles(path)) return ffReadInfo(path, out, wantCover, wantLyrics);
+    const size_t fdot = path.find_last_of('.');
+    const bool flac = fdot != std::string::npos && !strcasecmp(path.c_str() + fdot, ".flac");
+    if (ffHandles(path) || flac) {   // (a FLAC's tags through FFmpeg here; the console reads them with libFLAC)
+        const bool ok = ffReadInfo(path, out, wantCover, wantLyrics);
+        if (flac) out.codec = "FLAC";
+        // a FLAC's cover by the console's own reader (coverio.cpp), so the preview shows what the console reads
+        const size_t dot = fdot;
+        if (ok && wantCover && flac) {
+            std::vector<uint8_t> pic;
+            if (flacPicture(path, pic)) out.cover.swap(pic);
+            else out.cover.clear();
+        }
+        return ok;
+    }
     const size_t dot = path.find_last_of('.');
     std::string ext = dot == std::string::npos ? "" : path.substr(dot + 1);
     for (char& c : ext) c = char(toupper(c));

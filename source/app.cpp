@@ -1206,10 +1206,10 @@ std::string App::listName(uint64_t hash) const {
  * GFBG_PLAYLISTS: Liked, then every playlist in the sidebar (yours, folder ones, smart ones as they stand now) as
  * "#name" and its tracks' paths. The background player reads the one a game event asks for; the overlay the names.
  * Protocol 6, where the readers before it look past them: first "!kinds" and a letter per playlist (GFBG_KIND_*: Liked,
- * yours, a folder's, smart, mood, Automix), "!icons" and each one's icon key (plicons.inc's, as the sidebar shows it):
- * the overlay's Playlists pages sort and mark them by these, and the player plays an Automix one in its order, joined;
- * after the last playlist a lone "#" and a "!t path<TAB>title<TAB>artist" line per track listed, so the overlay names a
- * playlist's tracks as its folders' (title by artist) without opening a file.
+ * yours, a folder's, smart, mood, Automix: the player plays an Automix one in its order, joined), then a line per playlist
+ * "!list <kind letter><TAB><icon key><TAB><tracks><TAB><name>" (the overlay's Playlists pages read only these, never the
+ * rest); after the last playlist a lone "#" and a "!t path<TAB>title<TAB>artist" line per track listed, so the overlay
+ * names a playlist's tracks as its folders' (title by artist) without opening a file.
  */
 void App::writeBgPlaylists() {
     std::string out;
@@ -1217,15 +1217,30 @@ void App::writeBgPlaylists() {
     out += "!kinds L";
     for (const auto& pl : store.playlists)
         out += pl.own() ? (pl.automix ? 'A' : 'N') : pl.smart() ? (isMoodPlaylist(pl) ? 'M' : 'S') : 'F';
-    out += "\n!icons ";
+    out += '\n';
+    // each playlist's kind, icon (as the sidebar shows it), number of tracks and name, the tracks gathered first
+    std::vector<std::vector<int>> smartLists(store.playlists.size());
+    for (size_t i = 0; i < store.playlists.size(); i++) {
+        const FolderPlaylist& pl = store.playlists[i];
+        if (!pl.own()) smartLists[i] = pl.smart() ? smartTracks(pl.path) : lib.tracksUnder(lib.folderByPath(pl.path));
+    }
     for (int i = -1; i < int(store.playlists.size()); i++) {   // (-1: Liked)
         const char* svg = playlistIcon(i);
         const char* key = "list";
         for (const PlaylistIcon& k : kPlaylistIcons) if (k.svg == svg) { key = k.key; break; }
-        if (i >= 0) out += ',';
+        const FolderPlaylist* pl = i >= 0 ? &store.playlists[size_t(i)] : nullptr;
+        const char kind = !pl ? 'L' : pl->own() ? (pl->automix ? 'A' : 'N') : pl->smart() ? (isMoodPlaylist(*pl) ? 'M' : 'S') : 'F';
+        const size_t n = !pl ? store.liked.size() : pl->own() ? pl->tracks.size() : smartLists[size_t(i)].size();
+        out += "!list ";
+        out += kind;
+        out += '\t';
         out += key;
+        out += '\t';
+        out += std::to_string(n);
+        out += '\t';
+        out += pl ? pl->name : std::string("Liked");
+        out += '\n';
     }
-    out += '\n';
     std::vector<int> listed;   // the tracks named in the "!t" lines
     std::vector<char> seen(lib.tracks.size(), 0);
     auto add = [&](const std::string& path, int idx) {
@@ -1246,8 +1261,7 @@ void App::writeBgPlaylists() {
         if (pl.own()) {
             for (const auto& p : pl.tracks) add(p, -1);
         } else {
-            const std::vector<int> t = pl.smart() ? smartTracks(pl.path) : lib.tracksUnder(lib.folderByPath(pl.path));
-            for (int i : t) add(lib.tracks[size_t(i)].path, i);
+            for (int i : smartLists[size_t(&pl - store.playlists.data())]) add(lib.tracks[size_t(i)].path, i);
         }
     }
     out += "#\n";

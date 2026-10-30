@@ -4,6 +4,7 @@
  * cannot include.
  */
 #include "thumbs.hpp"
+#include "coverio.hpp"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -74,7 +75,7 @@ SDL_Surface* halve(SDL_Surface* src) {
 
 /** The centre square of the image, Art² RGB; false when it does not decode. */
 bool makeArt(const std::vector<uint8_t>& bytes, std::vector<uint8_t>& out) {
-    SDL_Surface* src = IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1);
+    SDL_Surface* src = loadImage(bytes);
     if (!src) return false;
     SDL_Surface* rgba = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGBA32, 0);
     SDL_FreeSurface(src);

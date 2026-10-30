@@ -26,6 +26,7 @@ struct TourTarget {
 };
 
 struct TourStep {
+    int level;   // the shortest tour it is in: 0 Basic, 1 Advanced, 2 Complete
     int chapter;
     const char* icon;
     const char* title;
@@ -46,10 +47,17 @@ const char kArrowRight[] = GF_ARROW("M9.33 5.5v13L17.33 12z");
 #undef GF_ARROW
 const char* const kChapters[] = { "Welcome", "Playing", "Library", "Playlists", "Files", "Sound", "Canvas", "Background player", "Settings" };
 constexpr int kChapterCount = int(std::size(kChapters));
+// The three tours the first card offers (the user, 2026-10-30)
+struct TourLevel { const char* icon; const char* name; const char* what; };
+const TourLevel kLevels[] = {
+    { ICON_PLAY, "Basic", "The essentials, in a few minutes" },
+    { ICON_GRID, "Advanced", "Every screen, and what its buttons do" },
+    { ICON_SPARKLE, "Complete", "Everything in depth: Automix, tags, looks and more" },
+};
 }  // namespace
 
-/** The steps, built here (an App member) so their pages can be opened with App's own calls. */
-const std::vector<TourStep>& App::tourSteps() {
+/** The steps, built here (an App member) so their pages can be opened with App's own calls; each tour's, in order. */
+const std::vector<TourStep>& App::tourStepsAt(int level) {
     auto page = [](View v, int ref = -1) -> std::function<void(App&)> {
         return [v, ref](App& a) { a.navigate(v, ref, {}, false); };
     };
@@ -61,144 +69,252 @@ const std::vector<TourStep>& App::tourSteps() {
             a.area("settings.pane").target = a.area("settings.pane").y = 0;
         };
     };
-    // Written for someone who has never seen Gatefold: what the part is, what it does, and one thing to try.
+    // Written for someone who has never seen Songate: what the part is, what it does, and one thing to try.
     // Buttons are key caps ({A} … drawTour). Kept to about six lines each, so the card stays beside what it shows.
-    static const std::vector<TourStep> s = {
-        // ---- Welcome
-        { 0, ICON_SPARKLE, "Welcome to the tour",
-          "This tour walks through Songate on its own screens, using your music. {A} or Next moves on, {B} or Back goes "
-          "back, Chapters jumps to a topic and × ends the tour. If Songate is still reading your music, lists fill in as "
-          "you go. You can take the tour again from Settings › About.",
+    // Each step's level (the user, 2026-10-30: "the app is quite complex: a basic, an advanced and a complete tour"):
+    // 0 in every tour, 1 Advanced and Complete, 2 Complete only.
+    static const std::vector<TourStep> all = {
+        // ---- Welcome (the first card asks which tour: drawTour)
+        { 0, 0, ICON_SPARKLE, "Welcome to the tour",
+          "Songate shows you around its own screens, using your music. {A} or Next moves on, {B} or Back goes back, "
+          "Chapters jumps to a topic and × ends the tour. Choose how deep to go:",
           page(View::Now), {} },
         // ---- Playing
-        { 1, ICON_DISC, "Now playing",
+        { 0, 1, ICON_DISC, "Now playing",
           "This is Now playing: the cover, the title, artist, album and year, and what kind of file it is. The genre is "
           "a link: tap it to see every track of that genre.",
           page(View::Now), { { "@main" } } },
-        { 1, ICON_HEART, "Track buttons",
+        { 1, 1, ICON_HEART, "Track buttons",
           "Add to Liked saves the track to your Liked list. Album, Artist and Folder take you to their pages. The last "
           "button opens the track menu, with everything else you can do to the track.",
           page(View::Now), { { "np.like" }, { "np.album" }, { "np.artist" }, { "np.folder" }, { "np.more" } } },
-        { 1, ICON_LIST, "Up next, Lyrics and Palette",
+        { 1, 1, ICON_LIST, "Up next, Lyrics and Palette",
           "Up next shows what plays after this track. Lyrics shows the words: synced lyrics follow the music, and tapping "
           "a line jumps to it. If they run early or late, Earlier and Later fix them for this track. Palette shows the "
           "colours taken from the cover.",
           page(View::Now), { { "np.tab" }, { "np.tab", 1 }, { "np.tab", 2 } } },
-        { 1, ICON_PLAY, "The player bar",
+        { 0, 1, ICON_PLAY, "The player bar",
           "The controls are always here. The first button sets the order: Default, Repeat list, Repeat track or Shuffle. "
           "The last one stops the music after this track. On the Joy-Cons, {X} plays and pauses, {L} and {R} skip, and "
           "{ZL} and {ZR} jump ten seconds.",
           nullptr, { { "pb.order" }, { "pb.prev" }, { "pb.play" }, { "pb.next" }, { "pb.sac" } } },
-        { 1, ICON_WAVE, "The seek bar",
+        { 1, 1, ICON_WAVE, "The seek bar",
           "The waveform of the track. Drag it to jump anywhere. With the buttons, move onto it with {DPAD}, press {A} "
           "to grab it, steer with left and right, then press {A} or {B} to let go.",
           nullptr, { { "pb.seek", 0, 0, 10 } } },
-        { 1, ICON_MOON, "More controls",
+        { 1, 1, ICON_MOON, "More controls",
           "The moon starts a sleep timer: the music fades out and pauses. The equalizer button switches it on and off; "
           "hold it to open the equalizer's settings. Then come the queue, the volume and the Canvas, which {-} opens "
           "too.",
           nullptr, { { "pb.sleep" }, { "pb.eq" }, { "pb.queue" }, { "pb.mute" }, { "pb.vol" }, { "pb.canvas" } } },
-        { 1, ICON_PLUS, "The track menu",
+        { 2, 1, ICON_MOON, "The sleep timer",
+          "15 to 90 minutes, or the end of the track. The music fades out over its last ten seconds and pauses where you "
+          "were; the background player keeps the time with Songate closed too. Then a card counts down and puts the "
+          "console to sleep, unless you stay awake.",
+          settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } } },
+        { 0, 1, ICON_PLUS, "The track menu",
           "Every track has a menu: press {+} on it, or hold your finger on it for a moment. For example, Play next slots "
           "it in right after the current track, and Add to a playlist… files it away.",
           page(View::Queue), { { "@main" } } },
+        { 2, 1, ICON_TAG, "Tags, covers and details",
+          "The track menu also edits its tags (title, artist, album, genre, year…) and changes its cover with any image on "
+          "the SD card, for one track or the whole album. Songate keeps your changes apart: your files are never "
+          "touched, and Undo puts them back. Details shows its plays and its loudness.",
+          page(View::Queue), { { "@main" } } },
         // ---- Library
-        { 2, ICON_GRID, "The sidebar",
+        { 0, 2, ICON_GRID, "The sidebar",
           "Songate sorts your music by its tags, never by how your folders are arranged. Albums, Artists, Genres, "
           "Folders and Library each show it a different way. Settings › Appearance › Sidebar can reorder these tabs, "
           "hide some, or add dividing lines.",
           nullptr, { { "nav.now" }, { "nav.queue" }, { "nav.albums" }, { "nav.artists" }, { "nav.genres" }, { "nav.folders" }, { "nav.library" } } },
-        { 2, ICON_V_GRID, "Albums",
+        { 1, 2, ICON_V_GRID, "Albums",
           "Every album, with its cover. The button at the top right sorts them by artist, title, year or folder. Press "
           "{A} on an album to open it: play it, shuffle it or add it to the queue.",
           page(View::Albums), { { "@main" } } },
-        { 2, ICON_MIC, "Artists and genres",
+        { 1, 2, ICON_MIC, "Artists and genres",
           "Every artist and every genre has a page of its own, with its albums and its tracks on separate tabs.",
           page(View::Artists), { { "@main" } } },
-        { 2, ICON_GRID, "Library",
+        { 1, 2, ICON_GRID, "Library",
           "Three tabs: Albums, Tracks and Folders. Tracks can be sorted by artist, title, album, year, genre or length, "
           "either way round. The filter narrows the list: sort by genre and type \"jazz\" to see only jazz. The letters "
           "on the right jump through it.",
           [](App& a) { a.store.libTab = 1; a.navigate(View::Library, -1, {}, false); },
           { { "lib.tab", 0, 3 }, { "trk.filter" }, { "trk.sort" }, { "trk.dir" } } },
-        { 2, ICON_FOLDER, "Folders",
+        { 2, 2, ICON_V_LIST, "Four ways to list",
+          "Every list of tracks can show them by album, with covers, as tiles, or as a plain list, and remembers which. "
+          "Try them on Liked or any playlist: the view you pick there stays with that page.",
+          page(View::List, -1), { { "pl.view", 0 }, { "pl.view", 1 }, { "pl.view", 2 }, { "pl.view", 3 } } },
+        { 1, 2, ICON_FOLDER, "Folders",
           "Your music folder exactly as it sits on the SD card. Add as playlist puts a folder in the sidebar; Add all "
           "as playlists does it for every folder inside it at once.",
           [](App& a) { a.navigate(View::Folders, a.lib.rootFolders.empty() ? -1 : a.lib.rootFolders[0], {}, false); },
           { { "fo.play" }, { "fo.shuffle" }, { "fo.addpl" }, { "fo.addall" } } },
-        { 2, ICON_SEARCH, "Search",
+        { 1, 2, ICON_SEARCH, "Search",
           "Press {Y} or tap here to search your artists, albums and tracks. For example, \"live\" finds every live "
           "recording.",
           nullptr, { { "tb.search" } } },
+        { 2, 2, ICON_HISTORY, "Play statistics",
+          "A track counts as played after a minute, or nearly all of a shorter one, in Songate and in the background "
+          "player. Plays, the last play and the date added show in Details, and smart playlists like Most played and "
+          "Forgotten favourites are built from them.",
+          page(View::Queue), { { "@main" } } },
         // ---- Playlists
-        { 3, ICON_LIST, "The queue",
+        { 1, 3, ICON_LIST, "The queue",
           "Playlist is everything lined up to play. Press {A} on a row to play it, or {+} for more: Play next, Remove, "
           "or Move, which lets you carry it with {DPAD} and drop it with {A}. Current track scrolls back to what's "
           "playing; Clear empties the list.",
           page(View::Queue), { { "@main" } } },
-        { 3, ICON_PLUS, "Your playlists",
+        { 0, 3, ICON_PLUS, "Your playlists",
           "The + next to PLAYLISTS creates a playlist: your own, a smart one that keeps itself up to date (most played, "
-          "recently added, one genre…), or one imported from an .m3u file. Tap the PLAYLISTS heading to see them all "
-          "and put them in order.",
+          "recently added, one genre…), an Automix or a Mood playlist, or one imported from an .m3u file. Tap the "
+          "PLAYLISTS heading to see them all and put them in order.",
           nullptr, { { "nav.playlists" }, { "nav.newpl" } } },
-        { 3, ICON_HEART, "Playlist pages",
+        { 2, 3, PLI_SMART, "Smart playlists",
+          "A smart playlist fills itself: Recently added, Most played, Recently played, Forgotten favourites, Never "
+          "played, one genre, one decade, or long tracks. Each has one setting, shows how many tracks match before you "
+          "create it, and stays up to date as you play.",
+          nullptr, { { "nav.newpl" } } },
+        { 0, 3, ICON_SPARKLE, "Automix playlists",
+          "An Automix playlist plays like a DJ set. Songate listens to each song once, puts them in the order where they "
+          "join best, and blends one into the next on the beat, on the drop, or through its fade. For example: + › "
+          "Automix playlist…, then tick a few albums.",
+          nullptr, { { "nav.newpl" } } },
+        { 2, 3, ICON_SPARKLE, "How Automix joins",
+          "A join plans itself from both songs' tempo, bars, key and bass: on the drop, a bridge between tempos, by the "
+          "songs' structure, or a smart crossfade. While it plays, the cover frosts over with Automix's hint. Settings › "
+          "Appearance › Automix chooses how a join shows, on Now playing and on the Canvas.",
+          settings(App::SetAppearance), { { "set.mixnow", 0, 3 }, { "set.mixcanvas", 0, 2 } } },
+        { 2, 3, ICON_SPARKLE, "Automix's order",
+          "An Automix playlist keeps the order it found, and orders itself again as songs are added. Move a song by hand "
+          "and your order stays until Order again; Play this first pins the opener. Automix playlists never shuffle: "
+          "their order is the point.",
+          page(View::Queue), { { "nav.playlists" } } },
+        { 1, 3, PLI_MOOD, "Mood playlists",
+          "A Mood playlist sorts your library by how it sounds: Happy, Party, Relaxed, Sad or Aggressive. Songate "
+          "measures each song on the console, so the list fills in as it goes. For example: + › Mood playlist…, then "
+          "Relaxed for a quiet evening.",
+          page(View::Queue), { { "nav.newpl" } } },
+        { 1, 3, ICON_HEART, "Playlist pages",
           "Liked and every playlist have a page like this. Play or shuffle it, export it as an .m3u8 file that other "
           "players can read, or use Games to have it start when a game opens. You can also give it an icon, rename it "
           "or delete it.",
           page(View::List, -1), { { "@main" } } },
+        { 2, 3, PLI_STAR, "Icons and order",
+          "Every playlist can wear one of 78 icons, shown in the sidebar even when it is folded. Tap the PLAYLISTS "
+          "heading for the Playlists page: Move puts them in your order, as in the queue.",
+          page(View::Playlists), { { "@main" } } },
+        { 2, 3, ICON_GAME, "A playlist for a game",
+          "Games on a playlist's page makes it start by itself when a game opens, on the HOME menu, back in the game or "
+          "when it closes: where it was left, or shuffled afresh. The background player plays it, with Songate closed.",
+          page(View::List, -1), { { "pl.games" } } },
         // ---- Files
-        { 4, PLI_SDCARD, "Files",
+        { 1, 4, PLI_SDCARD, "Files",
           "Files browses the whole SD card. It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
           "Press {+} on a file to use it: an image can become a cover, an .lrc file a track's lyrics, an .m3u8 a "
           "playlist. You can also rename, copy, move and delete, one file or several.",
           nullptr, { { "nav.files" } } },
         // ---- Sound
-        { 5, ICON_EQ, "Equalizer",
+        { 1, 5, ICON_EQ, "Equalizer",
           "Simple mode gives you a preset plus bass and treble; Advanced adds ten bands and a preamp. Save your own "
           "sound under a name. For example: choose Rock, add a little bass, then Save as a new preset.",
           settings(App::SetEqualizer), { { "set.eqon" }, { "set.eqmode", 0, 2 }, { "set.eqpreset" } } },
-        { 5, ICON_PLAY, "Playback",
+        { 1, 5, ICON_PLAY, "Playback",
           "Volume levelling makes every track about as loud as the next. Crossfade blends the end of one track into the "
           "start of the next, but not between tracks of one album, so live albums stay seamless.",
           settings(App::SetPlayback), { { "set.xfade", 0, 6 }, { "set.level", 0, 4 } } },
+        { 2, 5, ICON_WAVE, "Volume levelling",
+          "Each track's loudness is measured on the console, as broadcasters measure it, with its true peak. Track "
+          "levels every song alike; Album keeps an album's quiet and loud songs as they were; Auto does Album, but Track "
+          "while shuffling. Your files are never changed.",
+          settings(App::SetPlayback), { { "set.level", 0, 4 } } },
         // ---- Canvas
-        { 6, ICON_CANVAS, "The Canvas",
+        { 0, 6, ICON_CANVAS, "The Canvas",
           "The Canvas gives the whole screen to the music, in three layouts: Cover, Lyrics and Minimal. Leave it alone "
           "and the controls fade away while the progress line grows into a spectrum. {-} or × closes it.",
           [](App& a) { a.navigate(View::Now, -1, {}, false); a.openCanvas(true); },
           { { "cv.layout", 0 }, { "cv.layout", 1 }, { "cv.layout", 2 }, { "cv.mute" }, { "cv.vol" }, { "cv.sleep" }, { "cv.lyrics" }, { "cv.eq" }, { "cv.close" } },
           true },
+        { 2, 6, ICON_CANVAS, "The Canvas, your way",
+          "Settings › Canvas picks its layout, a slow float and zoom on the cover, how soon the controls fade, and the "
+          "spectrum. A track without lyrics switches to Minimal by itself and back with the next one that has some.",
+          settings(6), { { "set.cvlayout", 0, 3 }, { "set.cvfloat" }, { "set.cvzoom" }, { "set.cvidle" } } },
+        // ---- Looks (Complete)
+        { 2, 8, ICON_SUN, "Colours",
+          "From the cover takes the whole interface's colours from the album playing, on a dark or a light background. "
+          "Dark and Light are fixed; Custom is yours, with a colour picker. Saturation and the colour transition fine-tune "
+          "it.",
+          settings(App::SetAppearance), { { "set.theme", 0 }, { "set.theme", 1 }, { "set.theme", 3 }, { "set.theme", 4 } } },
+        { 2, 8, ICON_SIDEBAR, "The sidebar, your way",
+          "Fold the sidebar to icons, reorder its tabs, hide the ones you never use (Now playing stays), add dividing "
+          "lines, and show Files. Tap the button at the top left to fold it any time.",
+          settings(App::SetAppearance), { { "set.side" } } },
+        { 2, 8, ICON_SLIDERS, "The visualizer",
+          "The spectrum's sensitivity, smoothing, number of bars and peak caps, for Now playing and the Canvas apart, and "
+          "how much the cover pulses with the bass.",
+          settings(7), { { "set.vsens" }, { "set.vbands" }, { "set.vpeaks" } } },
+        { 2, 8, ICON_GAME, "Controls",
+          "{LS} moves a pointer: {A} taps and drags under it, with its speed and acceleration here. {RS} scrolls, and a "
+          "USB mouse works too, its wheel scrolling the list under it. Touch works everywhere.",
+          settings(8), { { "set.ptrspeed" }, { "set.ptraccel" } } },
         // ---- Background player and overlay
-        { 7, ICON_GAME, "The background player",
+        { 0, 7, ICON_GAME, "The background player",
           "The background player keeps the music going on the HOME menu, in games, and after Songate is closed. Game "
           "actions decide what it does when a game opens, when you go to HOME, when you return and when the game "
           "closes: nothing, play, resume, pause, or start one of your playlists.",
           settings(App::SetPlayback), { { "set.bg" } } },   // drawTour scrolls the page to it
-        { 7, ICON_GAME, "The overlay",
+        { 2, 7, ICON_GAME, "Fades and game volumes",
+          "Each game action fades the music in or out over the time you set. The game in front keeps its own music "
+          "volume, and every other game shares one, set from the overlay. Automix playlists join there as here.",
+          settings(App::SetPlayback), { { "set.bgfout" }, { "set.bgfin" } } },
+        { 0, 7, ICON_GAME, "The overlay",
           "While a game is running, open Ultrahand ({L} + {BTN-DOWN} + a click of the right stick {RS}, unless you changed it) and choose "
           "Songate. From there you control the music, the queue, game actions, the equalizer, the sleep timer and the "
           "volume without leaving the game.",
           nullptr, {} },
+        { 2, 7, ICON_FOLDER, "Browsing in the overlay",
+          "The overlay's Browse opens your folders, or your playlists by kind: Normal, Smart, Mood and Automix, each with "
+          "Songate's own icons. Play from any track, add one or all to the queue, all without leaving the game.",
+          nullptr, {} },
         // ---- Settings
-        { 8, ICON_GEAR, "Settings",
+        { 0, 8, ICON_GEAR, "Settings",
           "Every option lives here, grouped by category. Find a setting searches them by name: \"sleep\" finds the sleep "
           "timer, the console's sleep and the screen dimming.",
           settings(0), { { "@settingsCats" } } },
-        { 8, ICON_HISTORY, "Backups and resets",
+        { 2, 8, ICON_FOLDER, "Storage",
+          "Where each browser opens, where backups go, and what Songate keeps on the card (covers, measurements, "
+          "tags), each with its size and a Clear button.",
+          settings(App::SetStorage), { { "@main" } } },
+        { 1, 8, ICON_HISTORY, "Backups and resets",
           "Back up the settings now keeps a copy you can restore later, and Songate backs up by itself before every "
           "update. Reset settings puts every setting back as it came. Factory reset erases what you choose, or "
           "everything.",
           settings(App::SetReset), { { "set.backupnow" }, { "set.reset" }, { "set.factory" } } },
-        { 8, ICON_DOWNLOAD, "Updates",
+        { 1, 8, ICON_DOWNLOAD, "Updates",
           "Updates stays off until you turn it on. Then Songate can check GitHub for new versions, show what changed, "
-          "install one, or go back to an earlier one. With it off, Songate never goes online.",
+          "install one, or go back to an earlier one, and fetch new Automix models. With it off, Songate never goes "
+          "online.",
           settings(App::SetUpdates), { { "set.updon" } } },
-        { 8, ICON_SPARKLE, "You're all set",
+        { 2, 8, ICON_BOLT, "Betas and Automix models",
+          "Beta versions lets you try new features before they are released: they can have bugs, so please report what "
+          "you find. Automix models brings new ways of joining songs, downloaded and checked, and you can always go back "
+          "to the one Songate came with.",
+          settings(App::SetUpdates), { { "set.updbeta" }, { "set.model" } } },
+        { 1, 8, ICON_HELP, "Support",
+          "Found a bug, or have an idea? Support sends it straight to Songate's developer, with what helps to fix it: "
+          "your Songate and firmware versions and recent crash reports, never your file names. It stays off until you "
+          "turn it on.",
+          settings(App::SetSupport), { { "set.repon" } } },
+        { 0, 8, ICON_SPARKLE, "You're all set",
           "{DPAD} reaches everything, {B} goes back, and touch works everywhere. {LS} moves a pointer and {RS} "
           "scrolls. Enjoy your music. This tour is waiting in Settings › About whenever you want it.",
           nullptr, {} },
     };
-    return s;
+    static const std::vector<TourStep> levels[3] = {
+        [] { std::vector<TourStep> v; for (const auto& t : all) if (t.level <= 0) v.push_back(t); return v; }(),
+        [] { std::vector<TourStep> v; for (const auto& t : all) if (t.level <= 1) v.push_back(t); return v; }(),
+        all,
+    };
+    return levels[std::clamp(level, 0, 2)];
 }
 
 int App::tourCount() const { return int(tourSteps().size()); }
@@ -282,6 +398,16 @@ void App::drawTour() {
         t = { x1, y1, x2 - x1, y2 - y1 };
     };
     ScrollArea* scroll = nullptr;
+    // A setting is lit as its whole row, its name and words with its control (the user, 2026-10-30: "the user wants to see
+    // settings and toggles, not just toggles"): across Settings' cards, from the pane's left to its right
+    // (each row's own bounds as Settings drew it, the same as showSetting lights: every row alike, whatever its height)
+    auto widen = [&](const std::string& key, SDL_FRect r) {
+        if (route.view != View::Settings || key.rfind("set.", 0) != 0 || key == "set.cat" || r.w <= 0) return r;
+        const float cy = r.y + r.h / 2;
+        for (const SDL_FRect& row : settingsRows)
+            if (cy >= row.y && cy < row.y + row.h) return row;
+        return r;
+    };
     for (const TourTarget& tg : st.targets) {
         const std::string key = tg.key;
         if (key == "@main") add({ sideW, float(css::TbH), css::W - sideW, float(css::H - css::TbH - css::BarH) });
@@ -290,14 +416,14 @@ void App::drawTour() {
         } else if (tg.seg > 0) {
             for (int k = 0; k < tg.seg; k++) {
                 ScrollArea* a = nullptr;
-                add(ui.rectAny(uid(tg.key) + Golden * uint64_t(k + 1), &a));
+                add(widen(key, ui.rectAny(uid(tg.key) + Golden * uint64_t(k + 1), &a)));
                 if (a) scroll = a;
             }
         } else {
             ScrollArea* a = nullptr;
             SDL_FRect r = ui.rectAny(uid(tg.key, tg.i), &a);
             if (r.h > tg.insetY * 2) { r.y += tg.insetY; r.h -= tg.insetY * 2; }
-            add(r);
+            add(widen(key, r));
             if (a) scroll = a;
         }
     }
@@ -348,7 +474,8 @@ void App::drawTour() {
 
     // ---- the card
     const Font tf{ css::Lg, Weight::Bold }, bf{ css::Base };
-    const float w = 520, pad = 24, iw = w - pad * 2 - 52;
+    float w = 520, iw = w - 24 * 2 - 52;   // narrower beside a part too wide to have the card above or below it
+    const float pad = 24;
     // The text, with the Joy-Con's buttons as key caps in it (the user, 2026-10-28): {A} {B} {X} {Y} {L} {R} {ZL} {ZR}
     // {+} {-} {DPAD} ({DPAD-DOWN}: one button marked) {BTN-DOWN} (one direction button, as the Joy-Con's) {LS} {RS}, laid out word by word (Gfx::wrap knows nothing of them)
     struct Run { std::string text, cap; };   // one or the other
@@ -372,7 +499,8 @@ void App::drawTour() {
         return rs;
     };
     std::vector<std::vector<Run>> lines;
-    {
+    auto wrap = [&] {
+        lines.clear();
         const float spaceW = std::max(3.f, float(g.measure("a b", bf) - g.measure("ab", bf)));
         std::vector<Run> cur;
         float curW = 0;
@@ -390,7 +518,8 @@ void App::drawTour() {
             i = e + 1;
         }
         if (!cur.empty()) lines.push_back(cur);
-    }
+    };
+    wrap();
     auto drawCap = [&](const std::string& c, float cx0, float cyIn, float a) {
         const float cw = capW(c);
         const float cx = std::round(cx0 + cw / 2), cy = std::round(cyIn);   // whole pixels: the circle and its arrow share a centre
@@ -427,8 +556,14 @@ void App::drawTour() {
         g.textC(c, capF, cx0 + cw / 2, cy, pal.text, a, Align::Center);
     };
     constexpr float kChapRow = 44;   // a 34 px pill and 10 px clear between rows
-    const float bodyH = tourChapters ? kChapRow * ((kChapterCount + 1) / 2) - 10 : lines.size() * 22.f;
-    const float hWant = pad + 20 + 28 + 10 + bodyH + 18 + 34 + pad;
+    constexpr float kLevelRow = 58, kLevelGap = 8;   // the first card's tours
+    const bool choosing = tourStep == 0 && !tourChapters;   // the first card: which tour (its rows replace Next)
+    auto heightNow = [&] {
+        const float bodyH = tourChapters ? kChapRow * ((kChapterCount + 1) / 2) - 10
+                            : lines.size() * 22.f + (choosing ? 12 + 3 * kLevelRow + 2 * kLevelGap : 0);
+        return pad + 20 + 28 + 10 + bodyH + 18 + 34 + pad;
+    };
+    float hWant = heightNow();
     // Where it goes: beside the part (where the light is heading, not where it is now), never over it: below, above,
     // right, left; with nothing lit, the middle. Then it glides there, and grows or shrinks to its new text.
     float wx = (css::W - w) / 2, wy = (css::H - hWant) / 2;
@@ -438,6 +573,17 @@ void App::drawTour() {
         else if (above > 8) wy = above;
         else if (t.x + t.w + 18 + w < css::W - 8) { wx = t.x + t.w + 18; wy = std::clamp(t.y, 8.f, css::H - 8 - hWant); }
         else if (t.x - 18 - w > 8) { wx = t.x - 18 - w; wy = std::clamp(t.y, 8.f, css::H - 8 - hWant); }
+        else {   // no room for the whole card anywhere: a narrower one on the wider side (Settings' rows: over the categories)
+            const float left = t.x - 18 - 8, right = css::W - 8 - (t.x + t.w + 18);
+            if (std::max(left, right) >= 400) {
+                w = std::min(520.f, std::max(left, right));
+                iw = w - pad * 2 - 52;
+                wrap();
+                hWant = heightNow();
+                wx = left >= right ? t.x - 18 - w : t.x + t.w + 18;
+                wy = std::clamp(t.y + t.h / 2 - hWant / 2, 8.f, css::H - 8 - hWant);
+            }
+        }
         if (wy == below || wy == above) wx = std::clamp(t.x + t.w / 2 - w / 2, 8.f, css::W - 8 - w);
     }
     wx = std::clamp(wx, 8.f, css::W - 8 - w);   // never off the screen
@@ -446,6 +592,8 @@ void App::drawTour() {
     tourCard.x += (wx - tourCard.x) * k;
     tourCard.y += (wy - tourCard.y) * k;
     tourCard.h += (hWant - tourCard.h) * k;
+    tourCard.w += (w - tourCard.w) * k;
+    w = std::round(tourCard.w);
     const float x = std::round(tourCard.x), y = std::round(tourCard.y), h = std::round(tourCard.h);
     // the step's words fade in and rise a little (the buttons stay put)
     const float fade = std::clamp(float(time - tourAt) / 0.22f, 0.f, 1.f), ta = fade * fade * (3 - 2 * fade), rise = 6 * (1 - ta);
@@ -457,7 +605,8 @@ void App::drawTour() {
     const float tx = x + pad + 52;
     // kicker: the chapter and where in the tour
     char where[96];
-    snprintf(where, sizeof where, "%s · %d of %d", kChapters[st.chapter], tourStep + 1, int(S.size()));
+    if (tourStep == 0) snprintf(where, sizeof where, "%s · 3 tours", kChapters[st.chapter]);
+    else snprintf(where, sizeof where, "%s · %d of %d", kChapters[st.chapter], tourStep + 1, int(S.size()));
     kicker(tourChapters ? std::string("Chapters") : std::string(where), tx, y + pad + 6 + rise, Rgb{ pal.surface2.r + (pal.accentInk.r - pal.surface2.r) * ta, pal.surface2.g + (pal.accentInk.g - pal.surface2.g) * ta,
                   pal.surface2.b + (pal.accentInk.b - pal.surface2.b) * ta });
     g.text(tourChapters ? "Jump to a chapter" : st.title, tf, tx, y + pad + 16 + rise, pal.text, ta, Align::Left, int(iw));
@@ -486,6 +635,26 @@ void App::drawTour() {
             }
             ly += 22;
         }
+        if (choosing) {   // Basic, Advanced, Complete: each with its length; A on one starts it
+            ly += 12;
+            const float rx = x + pad, rw = w - pad * 2;
+            const Font nameF{ css::Base, Weight::SemiBold }, whatF{ css::Sm };
+            for (int i = 0; i < 3; i++) {
+                const Id id = uid("tour.level", i);
+                const float ry = ly + i * (kLevelRow + kLevelGap);
+                if (ui.item(id, { rx, ry, rw, kLevelRow }, 12, i == tourLevel ? DefaultFocus : 0)) { tourLevel = i; tourGo(1); return; }
+                const bool hot = ui.pressed(id) || ui.focused(id);
+                g.roundRect(rx, ry, rw, kLevelRow, 12, pal.text, (hot ? 0.09f : 0.04f) * ta);
+                g.roundRect(rx + 10, ry + 11, 36, 36, 10, pal.accent, 0.16f * ta);
+                g.icon(kLevels[i].icon, rx + 28, ry + 29, 18, pal.accentInk, ta);
+                char n[24];
+                snprintf(n, sizeof n, "%d steps", int(tourStepsAt(i).size()));
+                const float nw = float(g.measure(n, whatF));
+                g.text(kLevels[i].name, nameF, rx + 58, ry + 9, pal.text, ta);
+                g.text(kLevels[i].what, whatF, rx + 58, ry + 32, pal.text2, ta, Align::Left, int(rw - 58 - nw - 24));
+                g.text(n, whatF, rx + rw - 14 - nw, ry + 20, pal.accentInk, ta);
+            }
+        }
     }
     // footer: Chapters on the left; Back and Next (Finish at the end) on the right; × at the top
     const float by = y + h - pad - 34;
@@ -496,7 +665,7 @@ void App::drawTour() {
     const Font nf{ css::Sm, Weight::SemiBold };
     const float nw = g.measure(nextLabel, nf) + 32 + 24;
     const float nx = x + w - pad - nw;
-    if (!tourChapters) {
+    if (!tourChapters && !choosing) {
         // DefaultFocus too: a step that opens a page asks for the page's default focus a frame later, which took it off Next
         button(uid("tour.next"), last ? ICON_CHECK : ICON_CHEV, nextLabel, nx, by, true, &c, false, false, DefaultFocus);
         if (c) { last ? endTour() : tourGo(tourStep + 1); return; }
@@ -511,13 +680,13 @@ void App::drawTour() {
     if (tourFocus) {   // each step opens on Next (on the chapter list, the chapter shown)
         tourFocus = false;
         if (tourChapters) ui.focusDefault();
-        else ui.focus(uid("tour.next"));
+        else ui.focus(choosing ? uid("tour.level", tourLevel) : uid("tour.next"));
     }
 }
 
 /** A first launch whose folder was chosen in the picker (not on the welcome card): the tour, offered once. */
 void App::offerTour() {
-    confirm(ICON_SPARKLE, "Welcome to Songate", "A tour of Songate", "About 30 short steps, in chapters", "Take the tour?",
+    confirm(ICON_SPARKLE, "Welcome to Songate", "A tour of Songate", "Basic, Advanced or Complete: you choose", "Take the tour?",
             "Songate shows you around its own screens, with your music: playing, the library, playlists, files, sound, the "
             "Canvas, the background player and the overlay, and Settings. It starts once your music is read. It is also in "
             "Settings › About.",

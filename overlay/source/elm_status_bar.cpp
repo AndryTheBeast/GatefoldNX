@@ -6,6 +6,7 @@
 #include "stb_image.h"
 
 #include "elm_status_bar.hpp"
+#include "tune_gfbg.hpp"
 #include "symbol.hpp"
 #include "config/config.hpp"
 #include "play_context.hpp"
@@ -1454,6 +1455,11 @@ void StatusBar::CycleRepeat() {
 }
 
 void StatusBar::CycleShuffle() {
+    // An Automix playlist plays in its own order, joined by Automix: no Shuffle (Songate's own rule, and its words)
+    if (this->m_shuffle == TuneShuffleMode_Off && gfQueueAutomix()) {
+        if (tsl::notification) tsl::notification->showNow("An Automix playlist plays in its own order");
+        return;
+    }
     this->m_shuffle = static_cast<TuneShuffleMode>((this->m_shuffle + 1) % TuneShuffleMode_Count);
     config::set_shuffle(this->m_shuffle);
     tuneSetShuffleMode(this->m_shuffle);

@@ -142,15 +142,12 @@ static bool        s_settings_rebuild_pending = false;
 static std::string s_settings_rebuild_jump;
 
 // ---------------------------------------------------------------------------
-// Return to the exact browser directory the user was in.
-// The stack is always [SettingsGui, BrowserGui] — one changeTo is enough.
-// Pressing B inside BrowserGui swaps to the parent directory, so the full
-// tree is navigable without ever growing the stack beyond depth 2.
+// Return to the exact Browse page the user was on: a folder of Folders, the
+// Browse page, Playlists, a kind or a playlist (gui_browser.cpp).
+// The stack is [SettingsGui, BrowseGui, …]; B goes back one page at a time.
 // ---------------------------------------------------------------------------
 static void pushBrowserStack() {
-    tsl::changeTo<BrowserGui>(
-        g_browser_return_cwd, /*focus_name=*/"",
-        g_browser_return_root, /*on_count_changed=*/nullptr);
+    pushBrowseStack(g_browser_return_cwd, g_browser_return_root);
 }
 
 // =============================================================================
@@ -450,7 +447,7 @@ tsl::elm::Element* SettingsGui::createUI() {
     browser_button->setClickListener([this, browser_button](u64 keys) -> bool {
         if (keys & HidNpadButton_A) {
             //tsl::shiftItemFocus(browser_button);
-            tsl::changeTo<BrowserGui>("", "", "", [this](u32 count) {
+            tsl::changeTo<BrowseGui>([this](u32 count) {   // Folders, or Songate's playlists
                 refreshPlaylistCount(count);
             });
             return true;

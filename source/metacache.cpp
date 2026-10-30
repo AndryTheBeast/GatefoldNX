@@ -2,6 +2,7 @@
  * Gatefold NX · metacache.cpp
  */
 #include "metacache.hpp"
+#include "coverio.hpp"
 
 #include <SDL2/SDL_image.h>
 #ifdef __SWITCH__
@@ -342,7 +343,7 @@ void MetaCache::run() {
             bytes = findFolderCover(folders_[job.idx]);
         }
         if (!bytes.empty())
-            if (SDL_Surface* s = IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1)) {
+            if (SDL_Surface* s = loadImage(bytes, paths_[job.idx].c_str())) {
                 res.thumb = squareThumb(s, ThumbSize);
                 SDL_FreeSurface(s);
                 if (res.thumb) res.pal = paletteOf(res.thumb);
@@ -392,7 +393,7 @@ void MetaCache::cacheArtOnly(int idx, const std::string& mine) {
             known(file);
             return;
         }
-        if (SDL_Surface* s = IMG_Load_RW(SDL_RWFromConstMem(bytes.data(), int(bytes.size())), 1)) {
+        if (SDL_Surface* s = loadImage(bytes)) {
             res.thumb = squareThumb(s, ThumbSize);
             SDL_FreeSurface(s);
         }
@@ -416,7 +417,7 @@ bool MetaCache::cachedArt(int idx, const std::string& mine, ArtResult& res) {
         if (!folderDecoded_.insert(e.key).second) { res.shared = true; return true; }
     }
     const std::vector<uint8_t> jpg = readAll(artDir_ + "/" + e.file);
-    SDL_Surface* s = jpg.empty() ? nullptr : IMG_Load_RW(SDL_RWFromConstMem(jpg.data(), int(jpg.size())), 1);
+    SDL_Surface* s = loadImage(jpg);
     if (s) {
         res.thumb = squareThumb(s, ThumbSize);
         SDL_FreeSurface(s);
@@ -456,6 +457,14 @@ void MetaCache::storeArt(int idx, const std::vector<uint8_t>& source, const ArtR
     if (++artNew_ >= 20) saveArtMap();
 }
 
+/**
+ * The cover reader's version, the map's first line ("#covers <n>"): a track remembered without a cover ("-") by an older
+ * reader is tried again, its good covers kept. 2: FLAC pictures read by our own reader and images decoded by stb_image
+ * when SDL_image cannot (coverio.cpp; the user's FLACs had none on the console, 2026-10-30). Raise it when the reader
+ * finds covers it could not before. (Older Songates skip the line: it has no tab.)
+ */
+constexpr int kCoverReader = 2;
+
 void MetaCache::loadArtMap() {
     artMap_.clear();
     artByKey_.clear();
@@ -463,6 +472,14 @@ void MetaCache::loadArtMap() {
     std::vector<uint8_t> raw = readAll(artDir_ + "/map.tsv");   // in one go, split in place (see load)
     const char* p = reinterpret_cast<const char*>(raw.data());
     const char* const end = p + raw.size();
+    int reader = 1;   // (a map from before the line: the first reader)
+    if (raw.size() > 8 && !memcmp(p, "#covers ", 8)) {
+        reader = atoi(p + 8);
+        const char* eol = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
+        p = eol ? eol + 1 : end;
+    }
+    const bool retryMissing = reader < kCoverReader;
+    bool dropped = false;
     artMap_.reserve(paths_.size());
     while (p < end) {
         const char* eol = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
@@ -473,11 +490,13 @@ void MetaCache::loadArtMap() {
         if (b) {
             std::string file(a + 1, b), key(b + 1, lineEnd);
             if (file != "-") artByKey_[key] = file;
-            artMap_[strtoull(std::string(p, a).c_str(), nullptr, 16)] = { std::move(file), std::move(key) };
+            if (file == "-" && retryMissing) dropped = true;   // found nothing then: asked again by this reader
+            else artMap_[strtoull(std::string(p, a).c_str(), nullptr, 16)] = { std::move(file), std::move(key) };
         }
         p = eol + 1;
     }
     artCount_ = int(artMap_.size());
+    if (dropped || (retryMissing && !raw.empty())) saveArtMap();   // (with the new line: they are asked once)
 }
 
 void MetaCache::saveArtMap() {
@@ -485,6 +504,7 @@ void MetaCache::saveArtMap() {
     const std::string tmp = artDir_ + "/map.tmp", dst = artDir_ + "/map.tsv";
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
+    fprintf(f, "#covers %d\n", kCoverReader);
     for (const auto& [h, e] : artMap_) fprintf(f, "%s\t%s\t%s\n", hex16(h).c_str(), e.file.c_str(), e.key.c_str());
     const bool ok = !ferror(f);
     if (fclose(f) != 0 || !ok) { remove(tmp.c_str()); return; }   // a full SD card: the old map stays whole

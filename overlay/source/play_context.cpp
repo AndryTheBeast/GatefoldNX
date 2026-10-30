@@ -1,3 +1,4 @@
+#include "tune_gfbg.hpp"
 #include "play_context.hpp"
 
 #include "tune.h"
@@ -144,10 +145,11 @@ namespace {
     //
     // Callers must call setPending() BEFORE this function so that
     // currentPath() is already correct for any draw that fires between calls.
-    bool loadQueueAndPlay(const std::vector<std::string>& songs, u32 play_idx) {
+    bool loadQueueAndPlay(const std::vector<std::string>& songs, u32 play_idx, const std::string& name = "", bool automix = false) {
         tunePause();
         if (R_FAILED(tuneClearQueue()))
             return false;
+        if (!name.empty() || automix) gfQueueMeta(name, automix);   // a playlist of Songate's: its name, and Automix's rules
         for (const auto& s : songs)
             tuneEnqueue(s.c_str(), TuneEnqueueType_Back);
         if (!songs.empty()) {
@@ -198,7 +200,9 @@ void savedClear() {
 
 bool switchToFolder(const std::string& folder_path,
                     const std::vector<std::string>& songs,
-                    u32 play_idx) {
+                    u32 play_idx,
+                    const std::string& queueName,
+                    bool automix) {
     const u32 idx = songs.empty() ? 0u
                   : std::min(play_idx, static_cast<u32>(songs.size() - 1));
 
@@ -232,7 +236,7 @@ bool switchToFolder(const std::string& folder_path,
     if (g_source == Source::Playlist)
         snapshotIPC();
 
-    if (!loadQueueAndPlay(songs, idx))
+    if (!loadQueueAndPlay(songs, idx, queueName, automix))
         return false;
 
     g_source      = Source::Folder;

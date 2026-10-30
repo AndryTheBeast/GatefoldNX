@@ -639,6 +639,7 @@ private:
     Id noticeFocus_ = 0;   // where focus was before it, to go back to
     void closeCoverNotice();
     float textShift = 0;          // the Canvas's own moving offset, under any scroll (Gfx::setShift)
+    std::vector<SDL_FRect> settingsRows;   // each row of Settings' pane as last drawn (the tour lights whole rows)
     float settingsPaneX = 1e9f;   // where Settings' right pane begins: B there goes back to the categories
 
     // ================= app.cpp: lifecycle, input, playback
@@ -878,8 +879,10 @@ private:
     void endTour();       // back to the page it started on
     void drawTour();
     int tourCount() const;
-    static const std::vector<TourStep>& tourSteps();
+    const std::vector<TourStep>& tourSteps() const { return tourStepsAt(tourLevel); }   // the chosen tour's
+    static const std::vector<TourStep>& tourStepsAt(int level);   // 0 Basic, 1 Advanced, 2 Complete
     int tourStep = -1;                  // the step shown; −1: no tour
+    int tourLevel = 0;                  // the tour chosen on its first card
     bool tourChapters = false, tourFocus = false, tourLit = false;
     bool tourPending = false;           // the welcome card asked for it: it starts once the music is read and the covers asked
     bool tourAsk = false;               // a first launch that chose another folder: asked once the folder is in use
@@ -1165,6 +1168,6 @@ private:
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)
     /** Settings' categories that other pages open by number (the progress cards, the equalizer button). */
-    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10 };   // (Reset above Updates: the user, 2026-10-30)
+    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10, SetSupport = 11 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

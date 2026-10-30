@@ -31,7 +31,7 @@
 
 namespace {
 
-constexpr const char* kApi = "https://api.github.com/repos/AndryTheBeast/GatefoldNX/releases?per_page=30";
+constexpr const char* kApi = "https://api.github.com/repos/AndryTheBeast/Songate/releases?per_page=30";
 // Automix's models (the open-source model repository): its latest release's assets, by GitHub's own redirect (no API call)
 constexpr const char* kModels = "https://github.com/AndryTheBeast/songate-automix/releases/latest/download/";
 constexpr const char* kModelsManifest = "songate-automix-models.json";

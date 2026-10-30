@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <strings.h>
 #include <vector>
 
 #include "gfbg.h"
@@ -33,6 +34,7 @@ struct Queue {
     s32 pos = -1;
     u32 mode = GfbgMode_Default;
     std::string name;
+    bool automix = false;   // an Automix playlist (GfbgQueue_Automix): kept through the overlay's edits, never shuffled
     u32 gen = 0;
     bool valid = false;   // matches the player's queueGen
     bool dirty = false;   // changed here, not sent yet
@@ -77,6 +79,7 @@ void ensureQueue() {
     q.pos = h.pos;
     q.mode = h.mode;
     q.name.assign(h.name, boundedLen(h.name, sizeof h.name));
+    q.automix = (h.flags & GfbgQueue_Automix) != 0;
     q.gen = s.queueGen;
     q.valid = q.paths.size() == h.count;
 }
@@ -99,7 +102,7 @@ u64 rnd(u64 n) {
 void startFresh(s32 first) {
     if (!q.fresh) return;
     q.fresh = false;
-    if (first < 0 || q.order.size() < 2 || !shuffleOn(state().mode)) return;
+    if (first < 0 || q.order.size() < 2 || !shuffleOn(state().mode) || q.automix) return;
     const auto it = std::find(q.order.begin(), q.order.end(), first);
     if (it == q.order.end() || it == q.order.begin()) return;
     q.order.erase(it);
@@ -121,7 +124,7 @@ void flush() {
     h.count = u32(q.paths.size());
     h.pos = q.order.empty() ? -1 : std::clamp(q.pos, 0, s32(q.order.size()) - 1);
     h.mode = q.mode = state().mode;   // the player's own: ours may be from before a Shuffle switch
-    h.flags = GfbgQueue_KeepCurrent;
+    h.flags = GfbgQueue_KeepCurrent | (q.automix ? GfbgQueue_Automix : 0);
     h.pathBytes = u32(bytes);
     // A list built here (a folder from Browse) is named after its folder, as Gatefold names its lists.
     std::string name = q.name;
@@ -178,6 +181,108 @@ std::vector<std::string> gfPlaylistNames() {
     }
     fclose(f);
     return out;
+}
+
+bool gfQueueAutomix() {
+    ensureQueue();
+    return q.automix;
+}
+
+void gfQueueMeta(const std::string& name, bool automix) {
+    q.name = name;
+    q.automix = automix;
+    q.dirty = true;
+}
+
+namespace {
+
+/** One line of f however long (the "#" lines and "!t" lines can be long), without its line break; false at the end. */
+bool nextLine(FILE* f, std::string& out) {
+    out.clear();
+    char buf[512];
+    bool any = false;
+    while (fgets(buf, sizeof buf, f)) {
+        any = true;
+        out += buf;
+        if (!out.empty() && out.back() == '\n') break;
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return any;
+}
+
+}  // namespace
+
+std::vector<GfPlaylist> gfPlaylists() {
+    std::vector<GfPlaylist> out;
+    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    if (!f) return out;
+    std::string line;
+    while (nextLine(f, line)) {
+        if (line[0] == '#') break;   // the header is over: never the tracks
+        if (line.compare(0, 6, "!list ") != 0) continue;
+        GfPlaylist pl;
+        const size_t a = line.find('\t', 6), b = a == std::string::npos ? a : line.find('\t', a + 1),
+                     c = b == std::string::npos ? b : line.find('\t', b + 1);
+        if (c == std::string::npos) continue;
+        pl.kind = line[6];
+        pl.icon = line.substr(a + 1, b - a - 1);
+        pl.count = u32(strtoul(line.c_str() + b + 1, nullptr, 10));
+        pl.name = line.substr(c + 1);
+        out.push_back(std::move(pl));
+    }
+    fclose(f);
+    return out;
+}
+
+bool gfPlaylistTracks(const std::string& name, const char* current, u32 window, std::vector<std::string>& paths, u32& from,
+                      std::vector<std::pair<std::string, std::string>>& tags) {
+    paths.clear();
+    tags.clear();
+    from = 0;
+    FILE* f = fopen(GFBG_PLAYLISTS, "r");
+    if (!f) return false;
+    std::string line;
+    bool in = false, found = false, done = false;
+    std::vector<std::string> want;   // the window's paths, as the "!t" lines spell them (with "sdmc:")
+    while (nextLine(f, line)) {
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            if (in) {   // the playlist is over: its window, then only the titles are wanted
+                in = false;
+                done = true;
+                const u32 n = u32(paths.size());
+                if (current && current[0] && n > window)
+                    for (u32 i = 0; i < n; i++)
+                        if (!strcasecmp(paths[i].c_str(), current)) { from = i > window / 4 ? std::min(i - window / 4, n - window) : 0; break; }
+                for (u32 i = from; i < std::min(n, from + window); i++) want.push_back(mounted(paths[i].c_str()));
+                tags.assign(want.size(), {});
+            }
+            if (!done && line.compare(1, std::string::npos, name) == 0) in = found = true;
+            continue;
+        }
+        if (in && line[0] != '!') { paths.push_back(bare(line)); continue; }
+        if (done && line.compare(0, 3, "!t ") == 0) {
+            const size_t a = line.find('\t', 3);
+            if (a == std::string::npos) continue;
+            const std::string p = line.substr(3, a - 3);
+            for (size_t k = 0; k < want.size(); k++)
+                if (want[k] == p) {
+                    const size_t b = line.find('\t', a + 1);
+                    tags[k] = { line.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1),
+                                b == std::string::npos ? std::string() : line.substr(b + 1) };
+                    break;
+                }
+        }
+    }
+    fclose(f);
+    if (in) {   // (a file without the lone "#" after its last playlist: no titles)
+        const u32 n = u32(paths.size());
+        if (current && current[0] && n > window)
+            for (u32 i = 0; i < n; i++)
+                if (!strcasecmp(paths[i].c_str(), current)) { from = i > window / 4 ? std::min(i - window / 4, n - window) : 0; break; }
+        tags.assign(std::min<size_t>(window, n - from), {});
+    }
+    return found;
 }
 
 std::string gfPlaylistName(u64 hash) {
@@ -283,6 +388,8 @@ Result tuneGetShuffleMode(TuneShuffleMode* out) {
 
 Result tuneSetShuffleMode(TuneShuffleMode s) {
     flush();
+    ensureQueue();
+    if (s == TuneShuffleMode_On && q.automix) return MAKERESULT(Module_Libnx, LibnxError_NotFound);   // its own order
     const u32 cur = state().mode;
     if ((s == TuneShuffleMode_On) == shuffleOn(cur)) return 0;
     return gfbgSetMode(&srv, s == TuneShuffleMode_On ? GfbgMode_Shuffle : GfbgMode_RepeatAll);
@@ -320,6 +427,7 @@ Result tuneClearQueue() {
     q.order.clear();
     q.pos = -1;
     q.name.clear();
+    q.automix = false;
     q.dirty = true;
     q.fresh = true;
     q.sent = false;
@@ -365,7 +473,7 @@ Result tuneEnqueue(const char* path, TuneEnqueueType type) {
     // Front: right after the track playing now (Gatefold's "Play next"). With Shuffle on, a random place
     // (startFresh says why): anywhere while the queue is filled from empty, else among those still to come.
     if (type == TuneEnqueueType_Front && q.pos >= 0) q.order.insert(q.order.begin() + q.pos + 1, idx);
-    else if (shuffleOn(state().mode) && (q.fresh || q.pos >= 0)) {
+    else if (shuffleOn(state().mode) && !q.automix && (q.fresh || q.pos >= 0)) {
         const size_t lo = q.fresh ? 0 : std::min(q.order.size(), size_t(q.pos) + 1);
         q.order.insert(q.order.begin() + lo + size_t(rnd(q.order.size() - lo + 1)), idx);
     } else q.order.push_back(idx);
