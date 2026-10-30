@@ -7,7 +7,7 @@
 </p>
 <p align="center"><b>A native music player for the Nintendo Switch.</b><br>
 Your own music folder, synced lyrics, colours from every cover, DJ-style Automix, and music that keeps playing on the HOME menu and in games.<br>
-By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 BETA · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
+By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 BETA 1 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
 <!-- The tour video: on GitHub, replace the next line by dragging docs/tour.mp4 here (the inline player) -->

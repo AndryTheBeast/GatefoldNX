@@ -16,7 +16,7 @@
 #include "plicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "2.0.0 BETA"
+#define GF_VERSION "2.0.0 BETA 1"
 #endif
 
 namespace {
