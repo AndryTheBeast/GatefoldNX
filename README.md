@@ -103,7 +103,6 @@ An Automix playlist plays like a DJ set. Create one with + in the sidebar → **
 - 👂 **It listens first.** Each song is analysed once on the console: tempo, beats and bars, key, bass, drops, fades and levels.
 - 🔀 **It finds the order.** Songs are placed where they join best, and ordered again as you add more. Move one by hand and your order stays until **Order again**. **Play this first** pins the opener. Automix playlists never shuffle: their order is the point.
 - 🎛️ **It plans each join:** on the drop, a bridge between tempos, by the songs' structure, or a smart crossfade, with the bass changing hands so two basslines never fight.
-- ✏️ **The join editor.** The button between two rows opens both waveforms around the join, with what it does drawn over them. Listen to it, pick a preset (Auto, Fade, Rise, Blend, Echo, Cut) or change each choice, and Save keeps it for that playlist.
 - ✨ **A show for each join.** The cover frosts over with Automix's hint. Settings → Appearance → Automix chooses how it looks: Full, Immersive or Simple on Now playing, Full or Simple on the Canvas.
 - 🎧 **In the background too.** The background player plans and plays the same joins, in games and with Songate closed.
 - 📦 **Models.** Automix's decisions are a versioned model. V1.0.0 and V1.1.0 are built in, and Settings → Updates can bring new ones over the air, checked by size and checksum. You can always go back.
