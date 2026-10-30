@@ -30,6 +30,12 @@ struct BgState {
     float sleepLeft = 0;     // seconds until the sleep timer pauses the music, 0 off
     unsigned sleepGen = 0;   // bumps when it runs out
     unsigned eqGen = 0;      // bumps on every SetEq, whoever sent it (the overlay too)
+    // Automix's join in the player (protocol 6): joinGen bumps as each starts; joining 0 none, 1 the next one planned, 2 the
+    // two tracks playing together; joinAt where what is heard is in it (negative before it)
+    unsigned joinGen = 0;
+    int joining = 0;
+    float joinAt = 0, joinLength = 0, joinBpm = 0;
+    unsigned joinFlags = 0;   // 1 on the beat, 2 on the drop (GfbgJoin_*)
 };
 
 struct BgConfig {
@@ -49,6 +55,7 @@ struct BgQueue {
     std::vector<std::string> paths;
     std::vector<int> order;
     int pos = -1, mode = 0;
+    bool automix = false;   // an Automix playlist (GfbgQueue_Automix): joined by Automix in the player, never shuffled
 };
 
 class BgClient {
@@ -80,6 +87,8 @@ public:
     void setLevelMode(int mode);
     /** Crossfade for the player (GfbgConfig.crossfade, xfadeFlags): seconds, 0 off. */
     void setCrossfade(float seconds, bool notInAlbum);
+    /** Automix's model for the player's joins (GfbgConfig.automixModel: automix::Model; file: a downloaded model's, or ""). */
+    void setAutomixModel(int model, const std::string& file);
     bool eq(GfbgEq& out);
     void setEq(const GfbgEq& e);
     void setSleep(float seconds);

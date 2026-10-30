@@ -48,8 +48,8 @@ const char* name(Effect e);
  * The analysis (mixan, mix.tsv) is shared: a model that needs a new analysis raises mixan's Version, and the older
  * models then run on it too. A Plan carries the model that made it, for the mixing (Fader) to follow it later.
  */
-enum class Model : uint8_t { V1_0_0, Count };
-constexpr Model Latest = Model::V1_0_0;
+enum class Model : uint8_t { V1_0_0, V1_1_0, Count };   // V1.1.0: the first trained model (2026-10-29)
+constexpr Model Latest = Model::V1_1_0;
 const char* name(Model m);   // "Automix V1.0.0"
 bool modelFromName(const std::string& s, Model& out);
 
@@ -99,6 +99,18 @@ struct Plan {
     int keyDistance = -1;      // the two keys on the Camelot wheel (v2 step 5; -1: not both sure); 3 and more: they clash
     bool keyClash = false;     // … and the join was kept short, the incoming track muffled until the crossover
     Model model = Latest;      // the model that made it
+    // the curves' numbers (gainsAt): V1.0.0's by default; the tunable planner (planTuned) sets others
+    float inLevel = 0.9f;      // Volume::Drop: the incoming level until the bass cut
+    double lpFrom = 250;       // Filter::LowPassIn: where the incoming low-pass starts (Hz), opening to 20 kHz
+    float outPow = 2;          // Volume::Drop: the outgoing exit's shape (a power of the cosine)
+    double cutFade = 0.03;     // Volume::Cut: the cut's own crossfade (s)
+    // the gate (training, round 4: two Spotify mixes the user sent, 2026-10-29): one voice chopped on the beat (on the beat
+    // only); 0 none (V1.0.0), 1 the incoming one in stabs until the crossover, 2 the outgoing one a stab a bar, then high-passed out
+    int gate = 0;
+    // … its numbers (round 5: the user, "it could be higher in volume"): the stabs' least level, how much the outgoing voice
+    // dips under each stab (0: not at all), and a stab every how many beats (2: beats 1 and 3). The defaults are round 4's
+    float gateLevel = 0.85f, gateDuck = 0;
+    int gateEvery = 2;
 };
 
 /** a: this track (dur: its length as the player knows it); b: the next one; fallback: the plain fade's length; want: an edited join. */
@@ -111,6 +123,67 @@ Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallbac
  * quiet end into a quieter start. The order: a greedy path from every start (or from `first`), each improved by moving
  * one track at a time to where it joins best while that helps; the best found.
  */
+/**
+ * Training (the user, 2026-10-29: "the next Automix model will be a trained model"): V1.0.0's learnable numbers, and its
+ * plan reading them (PC tools only: tools/preview/mixtrain.cpp renders joins with other values for the user to rate). The
+ * defaults are V1.0.0's. A trained set is frozen as a model of its own; Gatefold never calls planTuned.
+ */
+struct Tune {
+    int dropBars = 16;         // on the drop: the next track's bars before its drop where both phrase grids are sure (8 else)
+    float bridgeFrac = 0.25f;  // … the bass-less bridge, as a share of them (at least the bars this track has no bass in)
+    int exitBars = 2;          // … the bars this track takes to leave after the drop
+    int tempoBridgeMax = 8;    // between tempos: the most bars of the next track's bass-less lead-in under this one
+    int tempoCutLead = -1;     // … this track's bass cut, bars before the change (-1: 2 for a lead-in of 4 bars and more, else 1)
+    double cutFade = 0.03;     // a cut on a phrase: its crossfade (s)
+    bool cutEcho = false;      // … with an echo of this track's last beat
+    double fadeScale = 1;      // a timed fade: its length, scaled
+    float inLevel = 0.9f;      // the incoming level until the bass cut (drop joins and bridges)
+    double lpFrom = 250;       // the incoming low-pass's start (Hz)
+    float outPow = 2;          // the outgoing exit's shape (12: a clean cut on the drop)
+    float bridgeOutPow = -1;   // … on a bridge between tempos (-1: outPow; round 2: 12 left a hole there)
+    bool noSkip = false;       // the change where this track starts to fade out (or at its end), not after its last bass phrase
+    bool noCut = false;        // no cut between tempos: the next kind of join instead
+    int gate = 0;              // the gate on joins on the beat (Plan::gate)
+    float gateLevel = 0.85f;   // … its numbers (Plan::gateLevel, gateDuck, gateEvery; round 5)
+    float gateDuck = 0;
+    int gateEvery = 2;
+    // on the beat (round 5: the weakest kind, "short, a smart crossfade"): with clashing keys, the most beats Auto chooses and
+    // the most bars each side of a join by structure; the least beats from which Auto blends (both up, a full EQ swap) rather
+    // than a smooth bass swap. The defaults are V1.0.0's and V1.1.0's
+    int clashBeats = 8;
+    int clashBars = 2;
+    int blendFrom = 16;
+    double beatMaxSec = 20;    // … and the longest a join on the beat may be (s)
+};
+Plan planTuned(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const Tune& t);
+
+/**
+ * A model as data (the user, 2026-10-30: "sometimes we need to update the model but have no new features"): its numbers in
+ * a file, planned by the planner of its format, so a new model can come over the air without a new Songate. Format 1 is the
+ * tunable planner as it stood when V1.2.0 was frozen from round 5 (automix.cpp `file1`, a copy: it never changes), with every
+ * Tune number and the kinds of join the gate plays on. A model that needs new logic (a new kind of join) needs a new format,
+ * and one that needs a new analysis a higher mixan Version: both come with an app update. The file is text, a "key value"
+ * line each ('#' starts a comment), its first line "songate-automix-model <format>":
+ *   name Automix V1.2.0 · app 2.0.0 (the lowest Songate that reads it) · mixan 4 (the analysis it was trained on) ·
+ *   order 1.0.0 (whose playlist order it uses) · gateOn drop,structure (or beat, or none) · then each Tune number by name.
+ */
+struct ModelFile {
+    static constexpr int Format = 1;   // the newest format this build plans
+    enum : unsigned { GateDrop = 1, GateStructure = 2, GateBeat = 4 };
+    int format = 0;
+    std::string name, app = "2.0.0-beta", order = "1.0.0";   // app: format 1 came with the betas (2.0.0 BETA)
+    int mixan = 0;
+    Tune tune;
+    unsigned gateOn = 0;   // the kinds of join on the beat the gate plays on (Tune::gate, gateLevel, gateDuck, gateEvery)
+    /** false (and why) when the text is not a model this build can plan: another format, a later analysis, an unknown key */
+    bool parse(const std::string& text, std::string* why = nullptr);
+    std::string text() const;
+};
+/** A join planned by a model file (format 1). */
+Plan plan(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const Join* want, const ModelFile& m);
+/** A built-in model as a model file (V1.1.0's numbers: the proof that a file plans as the built-in model does). */
+ModelFile builtinFile(Model m);
+
 double joinScore(const mixan::Info* a, const mixan::Info* b, Model m = Latest);
 std::vector<int> order(const std::vector<const mixan::Info*>& tracks, int first = -1, Model m = Latest);
 
@@ -258,7 +331,11 @@ void gainsAt(const Plan& p, double t, Gains& g);
  */
 class Fader {
 public:
-    void init(int rate);
+    /** echoSeconds: the delay line's longest delay (the background player starts with none: reserveEcho for a join that
+     *  echoes, its few MB being too few to keep 2 s of it) */
+    void init(int rate, double echoSeconds = 2);
+    bool reserveEcho(double seconds);   // the delay line made at least this long (false: no change)
+    void releaseEcho();                 // … and given back
     void begin(const Plan& p);   // at the start of each fade
     /** in: the incoming voice, mixed in place; out: the outgoing one. t: the fade's progress at the first frame, dt per frame. */
     void mix(float* in, const float* out, int frames, double t, double dt);

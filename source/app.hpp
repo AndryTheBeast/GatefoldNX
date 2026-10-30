@@ -20,6 +20,8 @@
 #include "bgclient.hpp"
 #include "gfx.hpp"
 #include "levels.hpp"
+#include "mood.hpp"
+#include "report.hpp"
 #include "library.hpp"
 #include "loader.hpp"
 #include "metacache.hpp"
@@ -69,6 +71,10 @@ struct SheetRow {
     std::function<void()> act;
     float h = 58;
     bool on = false;
+    // Setting: its own options (Support's form) instead of a smart recipe's: the labels, the one chosen, and what a pick does
+    std::vector<std::string> opts;
+    int cur = 0;
+    std::function<void(int)> pick;
 };
 
 /** The track menu (+ on a track): its page and what it is working on. */
@@ -78,7 +84,9 @@ struct Sheet {
                 PlMenu, PlIcon,     // PlMenu / PlIcon: a playlist page's ⋯ and its icons (recipe: the playlist, name: its name)
                 FileMenu, FileInfo, FileLink,     // Files: a file's menu, its details, the track an .lrc goes with (dir: the file)
                 Release,                          // Settings → Updates: a release's changelog and Install (recipe: its index)
-                Factory };                        // Settings → Reset → Factory reset: what to erase (App::factoryPick)
+                Model,                            // … an Automix model: Download, Use, Go back (name: the model's)
+                Factory,                          // Settings → Reset → Factory reset: what to erase (App::factoryPick)
+                Report, Crashes };                // Settings › Support: the report's form, Atmosphère's crash reports (view_support.cpp)
     Page page = Closed;
     int track = -1;
     int queuePos = -1;      // opened on a queue row: its position in play order; Jobs: the row to focus
@@ -113,6 +121,10 @@ struct Sheet {
     // What a page shows of files on the SD card (sizes, whether .lrc lyrics exist, a file's kind): read once, not every
     // frame (the sheet's rows are built each frame, and each read waits on the SD card)
     std::unordered_map<std::string, std::string> memo;
+    // Report (Settings › Support): the form as it is filled
+    int repKind = 0, repArea = -1, repOften = 0;   // a bug or an idea; the part of the app (App::kReportAreas); always, sometimes, once
+    std::string repTitle, repWhat, repSteps;
+    bool repCrashes = true, repLog = true;
 };
 
 class App {
@@ -201,12 +213,162 @@ private:
     // Automix (automix.hpp): while the join runs, the chip on Now playing says so, until mixUntil
     double mixUntil = 0;
     double mixShownAt = 0, mixFrom = 0;   // the chip's start (its animation), and where the join itself begins
+    double mixShowLen = 0;                // the show's length as announced (endJoinShow shortens mixUntil, not this)
     bool mixAnnounced = false;            // shown, the next track not loaded yet (0.4 s: updateAutomix)
+    /** A join's show cut short (a skip, a pause, a seek, Stop: the user, 2026-10-29, "they must end cleanly"): every
+     *  animation carried on from where it is to its end over `over` seconds (the hint's own 0.9 s ease), the swipes too. */
+    void endJoinShow(double over = 0.9);
+    unsigned mixSeeksSeen = 0;            // Player::seeks() last frame (a seek through a join's show: endJoinShow)
+    void holdOrderForAutomix(bool rebuild = false);        // Shuffle set aside while an Automix playlist is queued, back after (app.cpp)
     automix::Model mixModel() const;      // Settings › Debug's Automix model in dev builds; a release plays automix::Latest
+    // Automix's models over the air (the user, 2026-10-30): the ones downloaded (config/gatefold-nx/models/*.model), read at
+    // launch and after a download; the one chosen in Settings › Updates › Automix models plans the joins (planJoin)
+    struct ModelEntry { std::string file; automix::ModelFile m; };
+    std::vector<ModelEntry> modelFiles;
+    void loadModelFiles();
+    const ModelEntry* mixFile() const;    // the downloaded model chosen, or nullptr (a built-in one)
+    std::string mixName() const;          // the model playing, by its name
+    automix::Plan planJoin(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const automix::Join* want) const;
+    struct ModelRow { std::string name; bool builtin = false, downloaded = false; int offer = -1; };
+    std::vector<ModelRow> modelList() const;   // Settings › Updates › Automix models: built in, downloaded, listed
+    void openModel(const std::string& name);   // its sheet (Sheet::Model)
+    void useModel(const std::string& name);
+    void downloadModel(int offer);
+    void modelSheetRows(std::vector<SheetRow>& rows);
+    void modelSheetHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub);
     /** Automix's hold on Now playing during a join: `move` the cover's glide to the middle (0..1), `ui` how much of the rest
      *  shows (1: all), `quiet` how far the cover's pulse rests (1: still). As the Canvas's layout morph. */
     struct Focus { float move = 0, ui = 1, quiet = 0; };
-    Focus automixFocus() const;
+    // mode: Settings › Appearance › Automix: 0 Full, 1 Immersive (the same curve; what it moves and fades is the caller's),
+    // 2 Simple (nothing moves or fades: the pulse's rest only)
+    Focus automixFocus(int mode = 0) const;
+    // The outgoing song through a join (Simple and Immersive: the user, 2026-10-29): what it showed, kept when the next one
+    // loads, so its title, lyrics, Up next and waveform can give way to the next one's as the join goes (mixWipe)
+    struct MixOld {
+        bool on = false;
+        TrackInfo info;
+        std::vector<LyricLine> lyrics;
+        bool synced = false;
+        std::string lyricsSource;
+        std::vector<int> upNext;     // its Up next (the next one first)
+        std::vector<float> wave;     // its seek bar's waveform (Waveform::peaks), empty if it had none yet
+        double lyricsAt = 0, at = 0; // where its lyrics were, and when (they go on with the clock)
+        int track = -1;              // its track (its genre chip)
+        double posAt = 0;            // where it was playing at `at` (its time on the Canvas)
+        bool coverIn = false;        // the next one's cover is in (applyCover): the outgoing one's is now.prevCover, else now.cover
+        Palette palette;             // its palette (the Palette tab's swatches and roles)
+    } mixOld;
+    /** A cover (or its blur, its frost) of either song through a join: the outgoing one's, or the incoming one's. */
+    SDL_Texture* mixCover(bool old, SDL_Texture* cur, SDL_Texture* prev) const { return old && mixOld.coverIn ? prev : cur; }
+    /** The Automix hint above the cover rather than on it (Settings › Appearance › Automix › The hint; Automatic: each
+     *  animation's own place, `simpleAbove` for the ones that set it above) */
+    // Settings › Appearance › Automix › The hint (store.mixHint) is Now playing's Simple's only (the user, 2026-10-29: "Simple
+    // mode will only let the users change the hint position on Now playing"), but its Lyrics tab's (always the lyrics'
+    // place: hintInLyrics): 0 Automatic (above the cover), 1 on the cover, 2 above it. Every other animation, the Canvas's included, has its
+    // own place: on the cover in Full and Immersive; the Canvas's Simple in the lyrics' place, else above the cover.
+    bool nowHintAbove() const { return store.mixAnimNow == 2 && store.mixHint != 1; }
+    // A page swiped (Simple: the whole of Now playing, or the whole Canvas but its controls; the player bar in Immersive and
+    // Simple; the user, 2026-10-29): its images too (wipedImage: the covers, their frost, the Canvas's background). Every
+    // section swipes across its own width, all on the join's one clock (mixWipe): they start together and end together,
+    // each at its own speed ("each section separate, but all start at the same time and end at the same time", the user)
+    struct PageWipe { bool on = false; } pageWipe_;
+    // … but sections drawn as one (Now playing's info column, from the title to Up next or the lyrics: "this one should be
+    // the only one not separated", the user, 2026-10-29): one wipe across x0..x1 for all of them, its light once (groupMagic)
+    struct WipeGroup { bool on = false; float x0 = 0, x1 = 0; } wipeGroup_;
+    void groupMagic(float y0, float y1) {
+        const float p = mixOld.on ? mixWipe() : 1.f;
+        if (!wipeGroup_.on || p <= 0 || p >= 1) return;
+        float soft;
+        magicEdge(wipeEdge(wipeGroup_.x0, wipeGroup_.x1, p, soft), wipeGroup_.x0, wipeGroup_.x1, y0, y1, p);
+    }
+    /** A section's wipe across x0..x1, p of the way: its edge, and `soft`, how wide the change across it is (the letters
+     *  fade over three quarters of it each side of a 10 px gap, blurring over all of it); before it starts and after it
+     *  ends nothing of it is on the section */
+    static float wipeEdge(float x0, float x1, float p, float& soft) {
+        soft = std::max(48.f, (x1 - x0) * 0.3f);
+        const float reach = soft * 0.75f + 5;
+        return x0 - reach + p * (x1 - x0 + 2 * reach);
+    }
+    /** An image of either song through a wipe across x0..x1 (the cover, its frost, the Canvas's background), on the join's
+     *  clock as every section: draw(true) the outgoing one's, draw(false) the incoming one's over it from the left. `under`:
+     *  the outgoing one only right of the edge (where the incoming one does not cover it: translucent, or no cover); `magic`:
+     *  its edge's light down y0..y1. Without a page swiped, the incoming one's. */
+    template <class F> void wipedImage(float x0, float x1, float y0, float y1, bool magic, bool under, F&& draw) {
+        const float p = mixOld.on && pageWipe_.on ? mixWipe() : 1.f;
+        if (p >= 1) { draw(false); return; }
+        if (p <= 0) { draw(true); return; }
+        float soft;
+        const float edge = wipeEdge(x0, x1, p, soft);   // as wiped's
+        if (under) g.setWipe(edge, soft, false);
+        draw(true);
+        g.setWipe(edge, soft, true);
+        draw(false);
+        g.clearWipe();
+        if (magic) magicEdge(edge, x0, x1, y0, y1, p);   // its light inside the image only (it bled past the cover: the user, 2026-10-29)
+    }
+    /** How far the join has gone over to the next song, eased: 0 the outgoing song's, 1 the incoming one's (at least 0.8 s). */
+    float mixWipe() const;
+    /** Draws a block twice through a wipe from left to right (Gfx::setWipe): draw(true) the outgoing song's, draw(false) the
+     *  next one's; once (the next one's) when no join shows. x0..x1: the block's width, y0..y1 its height (the magic's). */
+    template <class F> void wiped(float x0, float x1, float y0, float y1, F&& draw) {
+        const float p = mixOld.on ? mixWipe() : 1.f;
+        if (p >= 1) { draw(false); return; }
+        if (p <= 0) { draw(true); return; }
+        if (wipeGroup_.on) { x0 = wipeGroup_.x0; x1 = wipeGroup_.x1; }   // one of a group's sections: the group's wipe
+        float soft;
+        const float edge = wipeEdge(x0, x1, p, soft), gap = 10;
+        // shapes, images and icons (a chip, a row's cover): the outgoing one's into the next one's across the edge, per pixel
+        // (by their middles, each pair of chips changed at once and the two songs' overlapped: "looks strange", the user)
+        g.setShapesOnly(true);
+        g.setWipe(edge, soft, false);
+        draw(true);
+        g.setWipe(edge, soft, true);
+        draw(false);
+        g.setShapesOnly(false);
+        // the two songs' letters never on top of each other (they blurred into each other, the user said, 2026-10-29): the
+        // outgoing one's gone just right of the edge, the next one's from just left of it, each over 3/4 of the soft width
+        // (smoother, the user, 2026-10-29: over half, the letters turned to blur too abruptly, a title most);
+        // between them a blur: both songs' letters again, faint, spread sideways, round the edge only, under its light
+        ui.setQuiet(true);
+        g.setTextNudge(0, 0, true);
+        const float half = soft * 0.75f;
+        g.setWipe(edge + gap / 2 + half / 2, half, false);
+        draw(true);
+        g.setWipe(edge - gap / 2 - half / 2, half, true);
+        draw(false);
+        g.setTextNudge(0, 0, false);
+        // the blur: each song's letters from their blurred copies (Gfx::blurTexture, made once), round the edge only (copies
+        // of the sharp letters, nudged round, showed as copies however many: "make the blur cleaner", the user, 2026-10-29)
+        const float f0 = g.fade();
+        g.setFade(f0 * 0.65f);
+        g.setWipeBump(edge, soft);
+        g.setTextBlur(true);
+        draw(true);
+        draw(false);
+        g.setTextBlur(false);
+        g.setFade(f0);
+        ui.setQuiet(false);
+        g.clearWipe();
+        if (!wipeGroup_.on) magicEdge(edge, x0, x1, y0, y1, p);   // (a group's: once, groupMagic)
+    }
+    /** In a Simple join, lyrics on screen give the hint their place (the user, 2026-10-29: swiped, the two songs' lines
+     *  never read right, however they met): they fade out as the hint comes in, the hint shows large where they were, and
+     *  the next song's lyrics fade back in as it leaves (automixCoverEase: the hint's 0.9 s). The Canvas always; Now
+     *  playing's Lyrics tab whatever its hint's setting (the user, 2026-10-29: set Above, it stayed on top of the cover). */
+    bool hintInLyrics(bool canvas) const { return canvas ? store.mixAnimCanvas == 1 : store.mixAnimNow == 2; }
+    /** … the hint there: centred in the lyrics' box, k its size (1: the chip's own). */
+    void lyricsHint(float x, float y, float w, float h, float k) {
+        const float e = automixCoverEase();
+        if (e <= 0.002f) return;
+        const float cw = 36 * k + float(g.measure(mixLabel, { int(std::round(css::Xs * k)), Weight::SemiBold }));
+        automixChip(mixLabel, std::round(x + (w - cw) / 2), std::round(y + h * 0.42f), k, e, false, true);
+    }
+    /** The wipe's edge as something magical happening (the user, 2026-10-29): a soft column of light in the accent's ink
+     *  travelling with it and sparkles rising round it, swelling mid-way and gone at both ends (p: how far the wipe has gone).
+     *  Only inside its section, x0..x1 by y0..y1: it fades as the edge comes in and goes out, and is clipped there (the edge
+     *  starts and ends outside the section: the info column's light ran over the cover, the user, 2026-10-29). */
+    void magicEdge(float edge, float x0, float x1, float y0, float y1, float p);
+    void drawMagic(float edge, float y0, float y1, float s);   // (its light and sparkles, s their strength)
     void drawNowCover(float x, float y, float art);
     SDL_FRect glideCover_{};   // where drawNow wants the cover while it glides: App::draw draws it last
     bool glideOn_ = false;
@@ -282,6 +444,7 @@ private:
     std::vector<std::string> automixWaitingTracks(size_t max) const;
     // Automix is only Automix playlists' (the user, 2026-10-28): the queue came from one of them
     bool automixQueue() const;
+    int queuePlaylist() const;   // the playlist the queue came from (by its name), or -1
     void automixProgress(int& done, int& total) const;   // their tracks analysed, of all of them
     void openJoinEditor(const std::string& playlist, int a, int b);
     void closeJoinEditor();
@@ -357,6 +520,10 @@ private:
         unsigned eqGen = 0;
         float xfadeSent = -1;
         int xfadeFlagSent = -1;
+        int modelSent = -1;        // Automix's model, as told to the player (protocol 6)
+        std::string modelFileSent = "\x01";   // … a downloaded one's file ("": the built-in modelSent)
+        bool automix = false;      // the queue it has is an Automix playlist
+        unsigned joinGen = 0;      // its last Automix join, shown
         int coverCount = 0;        // library tracks with an overlay cover (Settings), counted once a second
         double coverCountAt = -10;
     } bgs;
@@ -401,6 +568,8 @@ private:
         float idle = 99;                   // seconds since it last moved
         bool down = false;                 // A held: pressing under it
     } pointer;
+    bool mouseHeld_ = false;               // a mouse's left button held: a finger at the pointer (App::input)
+    float rehover_ = 0;                    // a list scrolled under the still pointer: what it is over, again, while it glides
 
     // ---------------- misc
     std::string toastText;
@@ -409,6 +578,12 @@ private:
     float dt = 0;
     bool running = true;
     float sideW = css::SideW;
+    // The sidebar opening and closing (the user, 2026-10-30: "a nice animation"): sideP_ runs 0 (icons only) to 1 (open) in
+    // 0.38 s, eased in and out; sideW follows it, and the labels, counts and the wordmark fade and slide in with it
+    float sideP_ = 1;
+    double sideOpenedAt_ = -10;   // when it last began to open: the wordmark's shimmer plays as it lands
+    /** How open the sidebar is, 0..1, as drawn (from sideW) */
+    float sideOpen() const { return std::clamp((sideW - css::SideWCollapsed) / (css::SideW - css::SideWCollapsed), 0.f, 1.f); }
     int marqueeTrack = -2;   // the player bar's long title and artist scroll from marqueeAt, again for each track
     double marqueeAt = 0;
     float volumeShown = 1;
@@ -485,6 +660,8 @@ private:
     void loadTrack(int trackIdx, bool paused = false, bool start = true, double fade = 0, const automix::Plan* mix = nullptr);
     /** Every frame: Automix's join at the end of this track, planned from both analyses and started on time. */
     void updateAutomix();
+    void keepMixOld();                          // the outgoing song kept through a join (mixOld)
+    void announceBgJoin(const BgState& s);      // the background player's join announced (protocol 6)
     /** The order position a crossfade at the end of this track goes to, or −1 when this join takes none. */
     int crossfadeNext(double left) const;
     /** Settings → Equalizer: kept, applied here, and sent to the background player. */
@@ -614,10 +791,22 @@ private:
     float automixChip(const std::string& label, float x, float cy, float k, float alpha, bool lap = true, bool glass = false);   // animated, while Automix joins
     /** Now playing's cover frosted over during a join (its beat-scaled box), the hint inside, centred on (hx, hy) and sized
      *  by `rest`: the cover at rest, so the hint holds still while the cover breathes. */
-    void drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float rad = 16);
+    void drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float rad = 16, bool hint = true, float lapW = 2.5f);
+    float automixCoverEase() const;   // the frost's strength now (0.9 s in and out, as the glide): for a hint drawn beside it
     /** A part `p` (0..1) of a rounded box's outline, from the middle of its top edge, clockwise (Automix's progress lap). */
     void lapPath(float x, float y, float w, float h, float r, float p, std::vector<SDL_FPoint>& pts);
     void kicker(const std::string& s, float x, float cy, const Rgb& c, float spacing = 0.12f);
+    void automixKicker(const std::string& s, float x, float cy);
+    // Hints (the user, 2026-10-29): an icon-only button's name, in a small pill by it once it has been focused (the D-pad,
+    // or the pointer over it) for half a second. Registered as the button is drawn; drawn last (widgets.cpp)
+    void hint(Id id, const std::string& text) { hints_.push_back({ id, text }); }
+    void drawHint();
+    std::vector<std::pair<Id, std::string>> hints_;
+    Id hintId_ = 0;
+    double hintSince_ = 0;
+    float hintA_ = 0;
+    std::string hintText_;
+    SDL_FRect hintAt_{};   // "Automix playlist", with a little magic (widgets.cpp)
     void eqGlyph(float x, float cy, const Rgb& c);
     void lyricDots(float x, float cy, float d, const Rgb& c, float alpha, bool current);
     void coverBox(int track, float x, float y, float size, float rad, float alpha = 1);
@@ -656,10 +845,17 @@ private:
     void drawSpectrum(float x, float y, float w, float h);
     void drawUpNext(float x, float y, float w, float h);
     void drawLyrics(float x, float y, float w, float h);
+    // Now playing's lyrics from a source: the song playing (live: the timing control, taps, the scroll by hand), or the
+    // outgoing one in a Simple join (at: where its lines are)
+    void drawLyricsOf(float x, float y, float w, float h, const std::vector<LyricLine>& lyrics, bool synced, const std::string& source,
+                      double at, ScrollArea& sa, bool live);
     void drawPaletteTab(float x, float y, float w, float h);
+    void drawPaletteOf(float x, float y, float w, float h, const Palette& target, bool live);   // (a join's outgoing colours: not live)
     void drawCanvas();
     void warmCanvas();
     void drawCanvasLyrics(float x, float y, float w, float h, int size, int layout, float alpha);
+    void drawCanvasLyricsOf(float x, float y, float w, float h, int size, int layout, float alpha, const std::vector<LyricLine>& lyrics,
+                            bool synced, double at, ScrollArea& sa, bool live);   // (a source: the song playing, or the outgoing one)
     int canvasLayoutShown() const;
     unsigned canvasLayoutsOff() const;   // bit i: Canvas layout i cannot show right now
 
@@ -730,7 +926,6 @@ private:
     float listRowY(const std::vector<ListEntry>& layout, int index) const;
     float drawTrackBody(const char* key, const std::vector<int>& tracks, float x, float top, float w, float clipY, float clipH, ListMode mode,
                         bool extended, const std::function<void(int)>& play, float joinGap = 0);
-    bool mixView = true;   // an Automix playlist page's Mix (as Spotify's): the joins between its tracks shown, each a pill on a line
     int bodyFocus = -1;   // drawTrackBody: the index of the row or tile under focus, −1 when none
     int bodyGrab = -1;    // drawTrackBody: the index drawn picked up (the queue's Move), −1 when none
     int bodyCols = 1;     // drawTrackBody: tiles in a row last drawn (1 in the row views)
@@ -823,7 +1018,7 @@ private:
 
     // ================= view_updates.cpp: Settings → Updates (updater.hpp): releases, changelogs, install, roll back, backups
 public:
-    std::string selfPath = "sdmc:/switch/Gatefold/Gatefold.nro";   // the running .nro (main's argv[0])
+    std::string selfPath = "sdmc:/switch/Songate/Songate.nro";   // the running .nro (main's argv[0])
 private:
     Updater updater;
     bool relaunch = false;              // Gatefold closes and starts again (the new .nro, swapped in at shutdown)
@@ -850,6 +1045,30 @@ private:
     void clearStorage(int which);       // asks first
     const std::vector<UpdBackup>& updateBackups();   // read again every few seconds while shown
     void allowUpdates();                // the card that asks before anything goes online
+    void allowBetas();                  // Settings › Updates › Beta versions: asked first, with the warning
+    // Settings › Support (view_support.cpp, report.hpp): the report's form, sent on a worker; Atmosphère's crash reports and the
+    // console's versions, read on a worker when Support first opens; the app's own log (every toast, with its time)
+    void openReport(int kind);          // 0 a bug, 1 an idea
+    void allowReports();                // Support's switch: asked first, saying what a report sends and where (as Updates)
+    void reportRows(std::vector<SheetRow>& rows);
+    void reportHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub);
+    void reportFooter(float x, float w, float fy);
+    void crashRows(std::vector<SheetRow>& rows);
+    void supportScan();                 // (starts the worker once; again after a report)
+    void supportTick();                 // every frame: takes the workers' results in
+    std::string reportBody() const;     // the form and the app's part, Markdown (the worker adds the console's and the crashes)
+    std::thread supportThread_, reportThread_;
+    std::atomic<bool> supportReady_{ false }, reportDone_{ false };
+    bool supportAsked_ = false;
+    report::System supportSys_;
+    std::vector<report::Crash> supportCrashes_;
+    bool reportOk_ = false;
+    int reportNumber_ = 0;
+    std::string reportErr_;
+    double reportSentAt_ = -1e9;        // one report each five minutes
+    std::vector<std::string> logLines_; // the app's log: at most 200 lines, saved to log.txt now and then (supportTick)
+    bool logDirty_ = false;
+    double logSavedAt_ = 0;
     void checkUpdates(bool quiet);
     void openRelease(int i);            // its changelog and Install / Go back (Sheet::Release)
     void installRelease(int i);         // asks first, saying all that will happen
@@ -908,12 +1127,27 @@ private:
     const char* smartIcon(const std::string& spec) const;
     /** A sidebar playlist's icon: the one chosen (plicons.inc), else its kind's (folder, the smart recipe's, a list); −1 Liked. */
     const char* playlistIcon(int ref) const;
+    const char* playlistKind(int ref) const;
+    static bool isMoodPlaylist(const FolderPlaylist& p) { return p.path.rfind("smart:mood:", 0) == 0; }   // (a smart recipe of its own kind)   // "Automix playlist", "Smart playlist"…: the page's and the menu's kicker
     void openPlaylistMenu(int ref);   // + on the Playlists page: Move, Icon, Rename
     void openPlaylistIcons(int ref);  // the playlist page's icon button: the icon grid at once
     void renamePlaylist(int ref);
     void renameJoins(const std::string& from, const std::string& to);
     std::string smartSummary(const std::string& spec) const;
-    struct SmartCache { unsigned statsGen = ~0u, indexGen = ~0u; int64_t day = -1; std::vector<int> tracks; };
+    struct SmartCache { unsigned statsGen = ~0u, indexGen = ~0u, moodGen = ~0u; int64_t day = -1; std::vector<int> tracks; };
+    // Mood playlists (mood.hpp): the library's moods, built from the analysis when it changes (moodTick); their progress
+    mood::Index moodIdx_;
+    // … sorted on a worker (cores::Files: 2.5 ms on the PC for 3,074 tracks, several times that on the console: never in a
+    // frame), the features copied to it first; taken in when it is done (moodTick), joined at shutdown
+    std::thread moodThread_;
+    std::atomic<bool> moodReady_{ false };
+    mood::Index moodNext_;
+    std::vector<mixan::Mood> moodIn_;
+    unsigned moodGen_ = 0, moodLevelsGen_ = ~0u, moodLibEpoch_ = ~0u;
+    double moodBuiltAt_ = -100;
+    int moodDone_ = 0, moodTotal_ = 0;
+    void moodTick();
+    void moodProgress(int& done, int& total) const { done = moodDone_; total = moodTotal_; }   // (total 0: no Mood playlist)
     mutable std::unordered_map<std::string, SmartCache> smartCache_;
     void drawSheet();
     void applyEdits(Track& t);
@@ -931,6 +1165,6 @@ private:
     bool settingsFocusFirst = false;   // a category was chosen: its first setting takes the focus next frame
     int settingsCatSeen_ = -1;   // the category last drawn: opening one may read the card once (drawSettings)
     /** Settings' categories that other pages open by number (the progress cards, the equalizer button). */
-    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetUpdates = 9, SetReset = 10 };
+    enum SettingsCat { SetAppearance = 0, SetPlayback = 1, SetEqualizer = 2, SetLibrary = 3, SetStorage = 4, SetReset = 9, SetUpdates = 10 };   // (Reset above Updates: the user, 2026-10-30)
     std::string settingsQuery;
 };

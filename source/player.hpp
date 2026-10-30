@@ -41,6 +41,8 @@ public:
     void stop();
     void togglePause();
     void seek(double seconds);
+    /** How many seeks so far (the UI thread's): a join's show ends on one (App::endJoinShow). */
+    unsigned seeks() const { return seeks_; }
     /** The main thread, once a frame: closes an outgoing voice whose fade has ended (not on the audio thread). */
     void update();
     /** Automix (v3): the track playing starts towards the next one's tempo (the plan's speed), a few beats before the join. */
@@ -51,6 +53,8 @@ public:
      * main thread made the first frames of the join's animation stutter (the user, 2026-10-28).
      */
     void prepare(const std::string& path, double offset);
+    /** prepare()'s worker still opening the next track: load() would wait for it on the main thread (Automix waits a frame). */
+    bool preparing() const { return prepRunning_.load(); }
     /**
      * The dev build's audio trace (Settings, Debug: written to audio-trace.txt): since the last call, the longest audio
      * callback (ms), callbacks that took longer than their buffer lasts, buffers lost to the lock (silence), and reads
@@ -96,6 +100,7 @@ private:
     void feedRing(const float* stereo, int frames);
 
     BgClient* bg_ = nullptr;
+    unsigned seeks_ = 0;
     _Mix_Music* music_ = nullptr;
     int rate_ = 48000;
     int frameBytes_ = 4;
@@ -111,6 +116,7 @@ private:
     std::string prepPath_;
     double prepOffset_ = -1, prepOffsetUsed_ = 0;
     void prepJoin() { if (prepThread_.joinable()) prepThread_.join(); }
+    std::atomic<bool> prepRunning_{ false };   // prepare()'s worker has not finished
     std::atomic<bool> doneSet_{ false };   // done_ holds one: update() takes the lock only then (the callback only tries it)
     std::atomic<unsigned> worstUs_{ 0 }, late_{ 0 }, lockMiss_{ 0 };   // the trace
     std::mutex ffLock_;   // the audio callback decodes; load, seek and stop come from the UI thread

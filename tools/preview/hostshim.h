@@ -44,6 +44,7 @@ TTF_Font* hostOpenFont(const char* p, int size);
 Mix_Music* hostLoadMUS(const char* p);
 void hostPresent(SDL_Renderer* r);
 const char* hostPath(const char* p);
+void hostSetPostMix(void (*f)(void*, Uint8*, int), void* arg);
 
 #define fopen(p, m) hostFopen(p, m)
 #define stat(p, s) hostStat(p, s)
@@ -54,6 +55,7 @@ const char* hostPath(const char* p);
 #define TTF_OpenFont(p, s) hostOpenFont(p, s)
 #define Mix_LoadMUS(p) hostLoadMUS(p)
 #define SDL_RenderPresent(r) hostPresent(r)
+#define Mix_SetPostMix(f, a) hostSetPostMix(f, a)
 #ifdef GF_FFMPEG
 #define avformat_open_input(ctx, url, fmt, opts) avformat_open_input(ctx, hostPath(url), fmt, opts)
 #endif

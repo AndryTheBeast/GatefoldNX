@@ -20,7 +20,12 @@ dist/atmosphere/contents/4200000047464E58/exefs.nsp
 sysmodule/deps/
 tools/preview/deps/
 tools/preview/out/
+tools/preview/out-live/
 
 # Developer notes and reference images
 docs/NEXT_SESSION.md
 docs/next-session/
+
+# Settings › Support: the reports token (report.key) and its scrambled build input; never commit either (tools/report-key.py)
+report.key
+source/report_key.inc

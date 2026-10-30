@@ -16,7 +16,7 @@
 #include "plicons.inc"
 
 #ifndef GF_VERSION
-#define GF_VERSION "1.1.0"
+#define GF_VERSION "2.0.0 BETA"
 #endif
 
 namespace {
@@ -462,6 +462,23 @@ void App::drawSettings(float x, float y, float w, float h) {
                           { toggleRow("Collapse the sidebar", "Icons only, more room for everything else", "set.side", store.sidebarCollapsed),
                             toggleRow("Background motion", "The slowly drifting colours behind every view and the Canvas", "set.motion",
                                       store.motion) } });
+        // How an Automix join shows (the user, 2026-10-29), on Now playing and on the Canvas, each its own; where the hint
+        // sits, only for Now playing's Simple (the user, 2026-10-29: every other animation has its own place)
+        std::vector<Row> mixRows = { segRow("On Now playing",
+                                   store.mixAnimNow == 0   ? "The interface steps aside and the cover glides to the middle, frosted with the hint"
+                                   : store.mixAnimNow == 1 ? "The cover glides to the middle of the page; the sidebar and the player bar stay"
+                                                           : "Everything stays in place while the page changes from one song to the next, left to right",
+                                   "set.mixnow", { "Full", "Immersive", "Simple" }, store.mixAnimNow, [this](int i) { store.mixAnimNow = i; store.save(); }),
+                            segRow("On the Canvas",
+                                   store.mixAnimCanvas == 0 ? "The cover glides to the middle, frosted with the hint"
+                                                            : "Everything stays in place while the page changes from one song to the next, left to right",
+                                   "set.mixcanvas", { "Full", "Simple" }, store.mixAnimCanvas, [this](int i) { store.mixAnimCanvas = i; store.save(); }) };
+        if (store.mixAnimNow == 2)
+            mixRows.push_back(segRow("The hint on Now playing",
+                                     store.mixHint == 1 ? "On the cover; on the Lyrics tab, in the lyrics' place"
+                                                        : "Above the cover; on the Lyrics tab, in the lyrics' place",
+                                     "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; store.save(); }));
+        cards.push_back({ "Automix", mixRows });
         cards.push_back({ "Sidebar", sidebarRows });
         cards.push_back({ "Title bar",
                           { toggleRow("Battery percentage", "Beside the battery, top right", "set.batpct", store.batteryPercent),
@@ -475,10 +492,10 @@ void App::drawSettings(float x, float y, float w, float h) {
         // The background player (sysmodule): music on the HOME menu and in games, and its pause-for-apps.
         std::vector<Row> bgRows;
         const bool on = player.remote();
-        bgRows.push_back(Row{ "Keep playing outside Gatefold", "",
-                              on ? "Connected. The music carries on on the HOME menu, in games and after Gatefold closes"
+        bgRows.push_back(Row{ "Keep playing outside Songate", "",
+                              on ? "Connected. The music carries on on the HOME menu, in games and after Songate closes"
                               : store.background ? "Not installed: copy atmosphere/contents/4200000047464E58 to the SD card and restart"
-                                                 : "Off: the music stops when you leave Gatefold",
+                                                 : "Off: the music stops when you leave Songate",
                               40, [this](float rx, float cy) {
                                   if (toggle(uid("set.bg"), rx - 40, cy, store.background && player.remote())) setBackground(!player.remote());
                               } });
@@ -537,7 +554,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 const bool stopped = store.stopThumbs;
                 Row covers = buttonRow("Covers for the overlay",
                                        stopped ? "Stopped. Only the track playing gets one until you resume"
-                                       : left > 0 ? "Being made in the background. Keep Gatefold open until it finishes; the card above Settings shows how far"
+                                       : left > 0 ? "Being made in the background. Keep Songate open until it finishes; the card above Settings shows how far"
                                                   : "Made for each queue sent to the player, or for the whole library here",
                                        "set.bgcovers", stopped ? ICON_PLAY : left > 0 ? ICON_X : ICON_REFRESH,
                                        stopped ? "Resume" : left > 0 ? "Stop" : "Make all", [this, stopped, left] {
@@ -549,15 +566,15 @@ void App::drawSettings(float x, float y, float w, float h) {
                 covers.value = std::to_string(bgs.coverCount) + " of " + std::to_string(lib.tracks.size());
                 bgRows.push_back(covers);
             }
-            bgRows.push_back(infoRow("Controls outside Gatefold", "The Gatefold overlay in Ultrahand's menu (L + D-pad down + R3 unless you changed it)"));
+            bgRows.push_back(infoRow("Controls outside Gatefold", "The Songate overlay in Ultrahand's menu (L + D-pad down + R3 unless you changed it)"));
         }
         // Measured: the count beside the label; Stop / Resume while the library is not all measured.
         const size_t measured = std::min(levels.count(), lib.tracks.size());
         const std::string measuredHint =
             store.levelMode == 0 ? "Starts once levelling is on, with the track playing first (Automix playlists' tracks: always)"
             : store.stopLevels       ? "Stopped. Only the track playing and the next ones are measured until you resume"
-            : levels.secondsPerTrack() > 0 ? "In the background while Gatefold is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
-                                     : "In the background while Gatefold is open, the track playing first";
+            : levels.secondsPerTrack() > 0 ? "In the background while Songate is open, about " + oneDecimal(levels.secondsPerTrack()) + " s a track"
+                                     : "In the background while Songate is open, the track playing first";
         Row measuredRow = store.levelMode && (store.stopLevels || measured < lib.tracks.size())
                               ? buttonRow("Measured", measuredHint, "set.lvlstop", store.stopLevels ? ICON_PLAY : ICON_X,
                                           store.stopLevels ? "Resume" : "Stop",
@@ -567,8 +584,9 @@ void App::drawSettings(float x, float y, float w, float h) {
         static const std::vector<std::string> orders = { "Default", "Repeat list", "Repeat track", "Shuffle" };
         sections.push_back(
             { "Playback", ICON_PLAY,
-              { { "", { segRow("Order", "Also the first button in the player bar", "set.order", orders, int(store.order),
-                               [this](int i) { setOrder(Order(i)); }),
+              { { "", { segRow("Order", automixQueue() ? "Also the first button in the player bar. An Automix playlist plays in its own order: no Shuffle"
+                                                    : "Also the first button in the player bar", "set.order", orders, int(store.order),
+                               [this](int i) { setOrder(Order(i)); }, automixQueue() ? 1u << 3 : 0u),
                         Row{ "Stop after the current track", "", "Then playback stops until you start it again", 40,
                              [this](float rx, float cy) {
                                  if (toggle(uid("set.sac"), rx - 40, cy, stopAfterCurrent)) stopAfterCurrent = !stopAfterCurrent;
@@ -615,7 +633,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                static const int mins[] = { 0, 15, 30, 45, 60, 90 };
                                setSleep(mins[i] * 60.0, i);
                            }),
-                    segRow("Then sleep the console", "When the timer ends with Gatefold open, a card counts down; Stay awake keeps it on",
+                    segRow("Then sleep the console", "When the timer ends with Songate open, a card counts down; Stay awake keeps it on",
                            "set.sleepcon", { "Off", "10 s", "30 s", "1 min" },
                            store.sleepConsole <= 0 ? 0 : store.sleepConsole <= 10 ? 1 : store.sleepConsole <= 30 ? 2 : 3,
                            [this](int i) {
@@ -623,7 +641,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                store.sleepConsole = secs[i];
                                persistSoon(0.3f);
                            }),
-                    toggleRow("Keep the console awake", "While Gatefold is open the screen does not dim and the console does not sleep by "
+                    toggleRow("Keep the console awake", "While Songate is open the screen does not dim and the console does not sleep by "
                                                         "itself. After a sleep timer ends, it may again.",
                               "set.awake", store.keepAwake),
                     segRow("Dim the screen", store.keepAwake ? "After this long without input; any button brings it back"
@@ -665,7 +683,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const int own = store.eq.preset - GFEQ_PRESETS;   // ≥ 0: one of your saved presets
         const bool edited = own >= 0 && store.eq.edited;  // ... changed since it was saved
         const std::string preset = eqPresetName(store.eq.preset) + (edited ? " (edited)" : "");
-        Row onRow{ "Equalizer", "", "Shapes everything Gatefold and the background player play. A strong boost lowers the level a little so it "
+        Row onRow{ "Equalizer", "", "Shapes everything Songate and the background player play. A strong boost lowers the level a little so it "
                                    "does not distort: the preamp brings it back up. Also the equalizer button in the player bar and the Canvas: a press turns it on or off, a long press opens this page",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.eqon"), rx - 40, cy, store.eq.on != 0)) {
@@ -860,7 +878,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                     toggleRow("Peak caps", "The thin marks that fall slowly above the bars", "set.vpeaks", store.vizPeaks) } },
                 { "Cover",
                   { sliderRow("Bass pulse", store.coverPulse < 0.01f ? "Off" : pct(store.coverPulse),
-                              "How much the cover breathes with the bass. 100% is Gatefold's, 0 turns it off", "set.vpulse",
+                              "How much the cover breathes with the bass. 100% is the default, 0 turns it off", "set.vpulse",
                               store.coverPulse),
                     toggleRow("Pulse in the Canvas too", "The full-screen cover breathes with the same strength", "set.vcvpulse",
                               store.canvasPulse) } } } });
@@ -873,7 +891,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                             { "Y", "Search" },           { "L  R", "Previous / next track" },
                                                             { "ZL  ZR", "Seek 10 seconds" }, { "−", "Canvas (full screen)" },
                                                             { "+", "Track menu: tags, cover, queue, delete" },
-                                                            { "HOME", "Leave Gatefold (close it from the HOME menu)" },
+                                                            { "HOME", "Leave Songate (close it from the HOME menu)" },
                                                             { "Right stick", "Scroll" } };
         for (auto& [k, l] : map) {
             const Font f{ css::Sm, Weight::SemiBold };
@@ -901,7 +919,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     {
         struct F { const char* label; const char* dflt; std::string* field; };
         const F fs[5] = { { "Files opens in", "The top of the SD card", &store.filesDir },
-                          { "Importing playlists opens in", "The top of the SD card; then, while Gatefold is open, where you last picked one",
+                          { "Importing playlists opens in", "The top of the SD card; then, while Songate is open, where you last picked one",
                             &store.importDir },
                           { "Exporting playlists opens in", "The music folder's Playlists folder (or the music folder); then where you last exported",
                             &store.exportDir },
@@ -923,7 +941,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         struct K { const char* label; const char* hint; };
         const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (config/gatefold-nx/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
-                          { "Loudness measurements", "Volume levelling's and Automix's measurements of each track (loudness.tsv, mix.tsv, gains.bin)" },
+                          { "Loudness measurements", "Volume levelling's, Automix's and the moods' measurements of each track (loudness.tsv, mix.tsv, mood.tsv, gains.bin)" },
                           { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv)" },
                           { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
                           { "Downloads", "Release zips kept from an install that did not finish (updates)" } };
@@ -963,16 +981,16 @@ void App::drawSettings(float x, float y, float w, float h) {
                     buttonRow("Reset settings", "Every setting as it came, the background player's too. Your music folder, playlists, Liked, "
                                                 "tag edits, covers and saved presets stay",
                               "set.reset", ICON_REFRESH, "Reset", [this] { resetSettings(); }, true, resetW),
-                    buttonRow("Factory reset", "Erase what you choose, your playlists, Liked and statistics among them, or everything, as if Gatefold were newly installed. Your music files and backups stay",
+                    buttonRow("Factory reset", "Erase what you choose, your playlists, Liked and statistics among them, or everything, as if Songate were newly installed. Your music files and backups stay",
                               "set.factory", ICON_X, "Choose", [this] { openFactory(); }, true, resetW) } } } };
 
     // Updates (view_updates.cpp, updater.hpp): off until allowed; then releases with their changelogs, install or go back
     {
         std::vector<Card> cards;
         const std::string me = Updater::thisVersion();
-        Row onRow{ "Updates", "", store.updates ? "Gatefold goes online only when you check, install or go back (and when it starts, if you turn "
+        Row onRow{ "Updates", "", store.updates ? "Songate goes online only when you check, install or go back (and when it starts, if you turn "
                                                   "that on), to GitHub and nowhere else"
-                                                : "Off: Gatefold never connects to the internet. On, it can look for new versions on GitHub, "
+                                                : "Off: Songate never connects to the internet. On, it can look for new versions on GitHub, "
                                                   "show what changed, install one, or go back to an earlier one",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.updon"), rx - 40, cy, store.updates != 0)) {
@@ -980,7 +998,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                store.updates = 0;
                                updater.cancel();
                                persistSoon(0.3f);
-                               toast("Updates off: Gatefold does not go online");
+                               toast("Updates off: Songate does not go online");
                            } else {
                                allowUpdates();   // asks first, saying what going online means
                            }
@@ -989,7 +1007,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         onRow.focus = uid("set.updon");
         std::vector<Row> top = { onRow };
         if (store.updates) {
-            top.push_back(toggleRow("Check when Gatefold starts", "A newer version is announced once, at the bottom of the screen", "set.updstart",
+            top.push_back(toggleRow("Check when Songate starts", "A newer version is announced once, at the bottom of the screen", "set.updstart",
                                     store.updateAtStart));
             std::string hint;
             if (updater.busy()) hint = updateStatus();
@@ -998,9 +1016,26 @@ void App::drawSettings(float x, float y, float w, float h) {
                 char b[64];
                 const time_t t = time_t(updater.checkedAt);
                 strftime(b, sizeof b, "Last checked %d %b, %H:%M", localtime(&t));
-                const int n = updater.newer();
+                const int n = updater.newer(store.betas);
                 hint = std::string(b) + (n >= 0 ? " · " + updater.releases[size_t(n)].version + " is out" : " · up to date");
             } else hint = "Lists every release below, with what changed";
+            // Beta versions (the user, 2026-10-29: "a beta toggle so users can test features early"; asked first, with the
+            // warning: App::allowBetas)
+            Row betaRow{ "Beta versions", "", store.betas ? "Listed apart below. They can be unstable and have bugs: please report them"
+                                                          : "Try new features before they are released. Off: only releases are listed and offered",
+                         40, [this](float rx, float cy) {
+                             if (toggle(uid("set.updbeta"), rx - 40, cy, store.betas)) {
+                                 if (store.betas) {
+                                     store.betas = false;
+                                     persistSoon(0.3f);
+                                     toast("Beta versions off: only releases are offered");
+                                 } else {
+                                     allowBetas();
+                                 }
+                             }
+                         } };
+            betaRow.focus = uid("set.updbeta");
+            top.push_back(betaRow);
             const bool busy = updater.busy();
             top.push_back(buttonRow("Check for updates", hint, "set.updcheck", busy ? ICON_X : ICON_REFRESH, busy ? "Stop" : "Check", [this, busy] {
                 if (busy) updater.cancel();
@@ -1014,9 +1049,9 @@ void App::drawSettings(float x, float y, float w, float h) {
         // Installed, waiting for a restart: the background player (if its file changed), then Gatefold
         const UpdInstalled& ins = updater.installed;
         if (!ins.version.empty() && (ins.appPending || ins.bgChanged || ins.overlayPending || ins.fresh)) {
-            std::string what = ins.appPending ? "Gatefold " + ins.version + " starts when this one closes" : "Gatefold is " + ins.version;
+            std::string what = Updater::releaseName(ins.version) + (ins.appPending ? " starts when this one closes" : " is in");   // (its own name: 1.x was Gatefold NX)
             if (ins.bgChanged) what += "; the background player restarts with it (the music stops for a moment)";
-            if (ins.overlayPending) what += "; the overlay is replaced once Ultrahand lets go of it (close the Gatefold overlay)";
+            if (ins.overlayPending) what += "; the overlay is replaced once Ultrahand lets go of it (close the Songate overlay)";
             if (ins.fresh) what += "; your settings are cleared (they are in the backup)";
             Row fin = buttonRow("Restart to finish", what, "set.updfinish", ICON_REFRESH, "Restart now", [this] { finishUpdate(); });
             fin.value = ins.from + " to " + ins.version;
@@ -1024,28 +1059,58 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
         // Every release: Details opens its changelog and Install / Go back
         if (store.updates || !updater.releases.empty()) {
-            std::vector<Row> rel;
+            std::vector<Row> rel, betas;
             for (int i = 0; i < int(updater.releases.size()); i++) {
                 const UpdRelease& r = updater.releases[size_t(i)];
+                if (r.beta && !store.betas) continue;   // betas only with Beta versions on, and apart
                 const int cmp = Updater::compare(r.version, me);
                 char mb[24];
                 snprintf(mb, sizeof mb, "%.1f MB", double(r.zipSize) / (1024.0 * 1024.0));
                 const std::string hint = r.date + " · " + (cmp > 0 ? "newer" : cmp < 0 ? "earlier" : "this version") + " · " + mb +
                                          (r.manifest ? "" : " · without in-app updates");
                 const float bw = g.measure("Details", { css::Sm, Weight::SemiBold }) + 32;
-                Row row{ "Gatefold NX " + r.version, "", hint, bw, [this, i, bw](float rx, float cy) {
+                Row row{ Updater::releaseName(r.version), "", hint, bw, [this, i, bw](float rx, float cy) {
                             bool c = false;
                             button(uid("set.updrel", i), nullptr, "Details", rx - bw, cy - 17, false, &c);
                             if (c) openRelease(i);
                         } };
                 row.focus = uid("set.updrel", i);
                 if (cmp == 0) row.value = "· installed";
-                rel.push_back(row);
+                (r.beta ? betas : rel).push_back(row);
             }
             if (rel.empty()) rel.push_back(infoRow("No releases listed yet", "Check for updates reads them from GitHub"));
             cards.push_back({ "Releases", rel });
+            if (store.betas) {
+                if (betas.empty()) betas.push_back(infoRow("No beta versions right now", "Check for updates lists them here when there are"));
+                cards.push_back({ "Beta versions", betas });
+            }
         }
-        cards.push_back({ "Backups", { infoRow("Before every install", "Gatefold backs up your settings first. They are put back from Settings › Reset") } });
+        // Automix's models (the user, 2026-10-30): the built-in one, the downloaded ones, and those the model repository lists;
+        // Details opens each one's sheet (Download and use, Use, Go back)
+        {
+            std::vector<Row> mods;
+            const std::vector<ModelRow> list = modelList();
+            const std::string inUse = mixName();
+            for (int i = 0; i < int(list.size()); i++) {
+                const ModelRow& r = list[size_t(i)];
+                const UpdModel* m = r.offer >= 0 ? &updater.models[size_t(r.offer)] : nullptr;
+                const std::string hint = r.builtin ? "Built in · comes with Songate"
+                                       : r.downloaded ? "Downloaded" + (m ? " · " + m->date : std::string())
+                                       : m && Updater::modelUsable(*m) ? m->date + " · available · " + std::to_string(std::max<int64_t>(1, m->size / 1024)) + " KB"
+                                                                      : "Needs a newer Songate";
+                const float bw = g.measure("Details", { css::Sm, Weight::SemiBold }) + 32;
+                Row row{ r.name, "", hint, bw, [this, i, bw, name = r.name](float rx, float cy) {
+                            bool c = false;
+                            button(uid("set.model", i), nullptr, "Details", rx - bw, cy - 17, false, &c);
+                            if (c) openModel(name);
+                        } };
+                row.focus = uid("set.model", i);
+                if (r.name == inUse) row.value = "· in use";
+                mods.push_back(row);
+            }
+            cards.push_back({ "Automix models", mods });
+        }
+        cards.push_back({ "Backups", { infoRow("Before every install", "Songate backs up your settings first. They are put back from Settings › Reset") } });
         sections.push_back({ "Updates", ICON_DOWNLOAD, cards });
     }
     // Reset: the backups (made by hand, before each install, before a restore) are listed here and put back from here,
@@ -1059,7 +1124,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                                                 " (Settings › Storage chooses where new ones go)") };
             const std::string pend = updater.restorePending();
             if (!pend.empty())
-                bk.push_back(buttonRow("A restore waits", "When Gatefold closes: " + pend, "set.updrestx", ICON_X, "Cancel", [this] {
+                bk.push_back(buttonRow("A restore waits", "When Songate closes: " + pend, "set.updrestx", ICON_X, "Cancel", [this] {
                     updater.cancelRestore();
                     toast("The restore is cancelled");
                 }));
@@ -1080,6 +1145,70 @@ void App::drawSettings(float x, float y, float w, float h) {
         resetSection.cards.push_back({ "", resetRows });
     }
     sections.push_back(resetSection);
+
+    // Support (the user, 2026-10-30: "Settings › Support"): a report from the console to Songate's reports on GitHub, through
+    // a form (view_support.cpp, report.hpp); Atmosphère's crash reports; what a report says of this console. Just above About.
+    {
+        std::vector<Card> cards;
+        std::vector<Row> rep;
+        if (report::available()) {
+            // off until allowed, as Updates (the user, 2026-10-30): the prompt says what is sent and where (allowReports)
+            Row onRow{ "Reports", "", store.reports ? "Sent only when you press Send, to Songate's private reports on GitHub, and nowhere else"
+                                                    : "Off: Songate sends nothing. On, you can report a bug or suggest a feature from here",
+                       40, [this](float rx, float cy) {
+                           if (toggle(uid("set.repon"), rx - 40, cy, store.reports)) {
+                               if (store.reports) {
+                                   store.reports = false;
+                                   persistSoon(0.3f);
+                                   toast("Reports off: Songate sends nothing");
+                               } else {
+                                   allowReports();
+                               }
+                           }
+                       } };
+            onRow.focus = uid("set.repon");
+            rep.push_back(onRow);
+            if (store.reports) {
+                rep.push_back(buttonRow("Report a bug", "A short form: what happened, and where", "set.repbug", ICON_BUG, "Report",
+                                        [this] { openReport(0); }));
+                rep.push_back(buttonRow("Suggest a feature", "Something Songate could do, sent the same way", "set.repidea", PLI_BULB, "Suggest",
+                                        [this] { openReport(1); }));
+            }
+        } else {
+            rep.push_back(infoRow("Reports cannot be sent from this build", "Open an issue on GitHub instead: " ISSUES_URL));
+        }
+        cards.push_back({ "Report", rep });
+        // read on a worker the first time this page shows (supportScan): never the card on the main thread
+        const bool read = supportAsked_ && !supportThread_.joinable();
+        std::vector<Row> cr;
+        if (!read) cr.push_back(infoRow("Atmosphère's crash reports", "Reading them…"));
+        else if (supportCrashes_.empty()) cr.push_back(infoRow("Atmosphère's crash reports", "None on this console"));
+        else
+            cr.push_back(buttonRow("Atmosphère's crash reports", std::to_string(supportCrashes_.size()) + (supportCrashes_.size() == 1 ? " report" : " reports") +
+                                       ", the latest " + supportCrashes_.front().when, "set.crashes", ICON_BUG, "See them", [this] {
+                                           if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+                                           const Id back = ui.focusedId();
+                                           sheet = Sheet{};
+                                           sheet.page = Sheet::Crashes;
+                                           sheet.returnFocus = back;
+                                           ui.focusDefault();
+                                       }));
+        cards.push_back({ "Crash reports", cr });
+        // what a report says of this console, each as it is now (never the files' names: the switch's prompt says so)
+        std::string playing = "Nothing";
+        if (now.track >= 0 && !now.info.codec.empty()) {
+            playing = now.info.codec;
+            if (now.info.sampleRate > 0) { char r[24]; snprintf(r, sizeof r, " · %.1f kHz", now.info.sampleRate / 1000.0); playing += r; }
+        }
+        cards.push_back({ "Sent with a report",
+                          { infoRow("Songate", "", Updater::thisVersion()),
+                            infoRow("Firmware", "", read ? supportSys_.firmware : std::string("…")),
+                            infoRow("Atmosphère", "", read ? supportSys_.atmosphere : std::string("…")),
+                            infoRow("Background player", "", player.remote() ? "Connected" : "Not connected"),
+                            infoRow("Playing", "Its format only, never its name", playing),
+                            infoRow("Library", "", std::to_string(lib.tracks.size()) + " tracks") } });
+        sections.push_back({ "Support", ICON_HELP, cards });
+    }
 
 #ifdef GF_DEV
     // Debug: dev builds only (the Makefile's DEV), never in a release: the testing tools
@@ -1120,23 +1249,26 @@ void App::drawSettings(float x, float y, float w, float h) {
         Row head;
         head.blockH = 76;
         head.block = [this](float bx, float by, float) {
-            const Rgb fold{ pal.accent.r * 0.62f, pal.accent.g * 0.62f, pal.accent.b * 0.62f };
+            const Rgb note{ pal.accent.r + (pal.text.r - pal.accent.r) * 0.45f, pal.accent.g + (pal.text.g - pal.accent.g) * 0.45f, pal.accent.b + (pal.text.b - pal.accent.b) * 0.45f };   // (as the sidebar's mark)
             g.roundRect(bx, by + 8, 60, 60, 16, pal.accent, 0.12f);
             g.glow(bx + 30, by + 38, 30, pal.glow, 0.5f);
-            g.icon(ICON_BRAND_G, bx + 30, by + 38, 34, pal.accent);
-            g.icon(ICON_BRAND_FOLD, bx + 30, by + 38, 34, fold);
-            g.text("Gatefold for Nintendo Switch", { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
-            g.text("Version " GF_VERSION " · by AndryTheBeast & DEVIROYrus", { css::Base }, bx + 76, by + 46, pal.text2);
+            g.icon(ICON_BRAND_ARCH, bx + 30, by + 38, 34, pal.accent);
+            g.icon(ICON_BRAND_NOTE, bx + 30, by + 38, 34, note);
+            g.text("Songate for Nintendo Switch", { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
+            g.text("Version " GF_VERSION " · by AndryTheBeast", { css::Base }, bx + 76, by + 46, pal.text2);
         };
         sections.push_back(
             { "About", ICON_INFO,
               { { "", { head } },
-                { "Tour", { buttonRow("Take the tour", "Every part of Gatefold on its own screens, with examples: about 30 short steps, in chapters",
+                { "Tour", { buttonRow("Take the tour", "Every part of Songate on its own screens, with examples: about 30 short steps, in chapters",
                                       "set.tour", ICON_SPARKLE, "Start", [this] { startTour(); }) } },
                 { "Credits",
-                  { infoRow("Gatefold", "The design, colours, icons and app icon. © Gatefold contributors, MIT licence"),
+                  // the project it began as (the user, 2026-10-29: mentioned only as that, respectfully and factually; the
+                  // licence requires the notice: LICENSE-gatefold)
+                  { infoRow("Gatefold", "Songate began as a recreation of Gatefold, DEVIROYrus's interface for foobar2000. Its palette "
+                                        "algorithm, icons, app icon and typeface come from that project. © Gatefold contributors, MIT licence"),
                     infoRow("Inter", "The typeface. © The Inter Project Authors, SIL Open Font Licence"),
-                    infoRow("FFmpeg", "Decoding in Gatefold's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
+                    infoRow("FFmpeg", "Decoding in Songate's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
                     infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
                     infoRow("libcurl and zlib", "Updates: the connection to GitHub, over the console's own secure connection. curl and zlib licences"),
@@ -1154,10 +1286,21 @@ void App::drawSettings(float x, float y, float w, float h) {
             sections.insert(li == sections.end() ? sections.end() : li + 1, std::move(s));
         }
     }
+    // Reset above Updates (the user, 2026-10-30), as App::SetReset and SetUpdates number them
+    {
+        auto rs = std::find_if(sections.begin(), sections.end(), [](const Section& s) { return std::string(s.name) == "Reset"; });
+        if (rs != sections.end()) {
+            Section s = std::move(*rs);
+            sections.erase(rs);
+            auto up = std::find_if(sections.begin(), sections.end(), [](const Section& x) { return std::string(x.name) == "Updates"; });
+            sections.insert(up, std::move(s));
+        }
+    }
     settingsCat = std::clamp(settingsCat, 0, int(sections.size()) - 1);
     // Pages that read the SD card do it once when they open: Storage and reset's sizes, Updates' backups
     if (settingsCat != settingsCatSeen_) {
         settingsCatSeen_ = settingsCat;
+        if (!strcmp(sections[size_t(settingsCat)].name, "Support")) supportScan();   // its reads, on a worker
         if (settingsCat == SetStorage && time - storage.at > 60) storage.at = -100;   // sizes kept a minute (a Clear measures again)
         if (settingsCat == SetReset) backupsAt = -100;
     }
@@ -1165,7 +1308,7 @@ void App::drawSettings(float x, float y, float w, float h) {
     // ------------------------------------------------------------ left column
     const float lx = x + 24, lw = 214;
     float cy = y + 24;
-    kicker("Gatefold", lx, cy + 6, pal.text3, 0.14f);
+    kicker("Songate", lx, cy + 6, pal.text3, 0.14f);
     cy += 16;
     g.text("Settings", { css::Xxl, Weight::ExtraBold }, lx - 1, cy, pal.text);
     cy += 50;
@@ -1181,8 +1324,17 @@ void App::drawSettings(float x, float y, float w, float h) {
                 1, Align::Left, int(lw - 50));
         cy += 38 + 12;
     }
-    // Eleven categories and more (Updates; Debug in dev builds) sit a little closer, so About stays above the player bar
-    const float step = sections.size() > 12 ? 33 : sections.size() > 10 ? 36 : 40, catH = step - 2;   // 13: a dev build's Debug
+    // Eleven categories and more sit a little closer; past what fits (Support, a dev build's Debug: About went under the
+    // player bar, the user, 2026-10-30) the list scrolls, the focused category kept in view (Ui, as every scrolled list)
+    const float step = sections.size() > 10 ? 36 : 40, catH = step - 2;
+    ScrollArea& ca = area("settings.cats");
+    const float listTop = cy;
+    ca.view = { lx - 8, listTop, lw + 16, y + h - listTop };
+    ca.content = sections.size() * step + 8;
+    ca.clamp();
+    ui.pushArea(&ca);
+    g.clip(lx - 8, listTop, lw + 16, y + h - listTop);
+    cy -= ca.y;
     for (int i = 0; i < int(sections.size()); i++) {
         const Id id = uid("set.cat", i);
         const bool on = settingsQuery.empty() && settingsCat == i;
@@ -1200,6 +1352,8 @@ void App::drawSettings(float x, float y, float w, float h) {
                 Align::Left, int(lw - 50));
         cy += step;
     }
+    g.unclip();
+    ui.popArea();
 
     // ------------------------------------------------------------ right pane
     const float px = lx + lw + 28, pw = x + w - 24 - px;

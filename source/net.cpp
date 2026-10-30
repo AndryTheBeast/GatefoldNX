@@ -11,7 +11,7 @@
 #include <mutex>
 
 #ifndef GF_VERSION
-#define GF_VERSION "1.1.0"
+#define GF_VERSION "2.0.0 BETA"
 #endif
 
 namespace net {
@@ -68,6 +68,7 @@ std::string explain(CURLcode rc, long status) {
     case CURLE_WRITE_ERROR: return "Could not write to the SD card (is it full?)";
     case CURLE_PEER_FAILED_VERIFICATION: return "The server's certificate could not be checked";
     case CURLE_HTTP_RETURNED_ERROR:
+        if (status == 401) return "GitHub refused this build's key for reports";
         if (status == 403 || status == 429) return "GitHub says to wait a while (too many checks this hour)";
         if (status == 404) return "Not found on GitHub";
         return "GitHub answered " + std::to_string(status);
@@ -75,15 +76,26 @@ std::string explain(CURLcode rc, long status) {
     }
 }
 
-bool run(const std::string& url, Sink& sink, std::string& err) {
+bool run(const std::string& url, Sink& sink, std::string& err, const std::string* json = nullptr, const char* secret = nullptr) {
     std::string e;
     if (!begin(e)) { err = e; return false; }
     CURL* c = curl_easy_init();
     if (!c) { err = "The network library did not start"; return false; }
     curl_slist* headers = nullptr;
     if (url.find("api.github.com") != std::string::npos) headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+    if (json) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS, json->c_str());
+        curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, long(json->size()));
+    }
+    if (secret) headers = curl_slist_append(headers, secret);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "GatefoldNX/" GF_VERSION);
+    static const std::string agent = [] {   // "Songate/2.0.0-BETA": a product token has no spaces
+        std::string s = "Songate/" GF_VERSION;
+        for (char& ch : s) if (ch == ' ') ch = '-';
+        return s;
+    }();
+    curl_easy_setopt(c, CURLOPT_USERAGENT, agent.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);   // release assets redirect to GitHub's file host
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
@@ -103,6 +115,8 @@ bool run(const std::string& url, Sink& sink, std::string& err) {
     long status = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(c);
+    for (curl_slist* h = headers; h; h = h->next)   // (the secret's copy: wiped before it is freed)
+        if (h->data) { volatile char* d = h->data; while (*d) *d++ = 0; }
     curl_slist_free_all(headers);
     if (rc != CURLE_OK) { err = explain(rc, status); return false; }
     return true;
@@ -137,6 +151,15 @@ bool get(const std::string& url, std::string& out, std::string& err, Progress* p
     s.str = &out;
     s.p = p;
     return run(url, s, err);
+}
+
+bool post(const std::string& url, const std::string& json, char* secret, std::string& out, std::string& err) {
+    out.clear();
+    Sink s;
+    s.str = &out;
+    const bool ok = run(url, s, err, &json, secret);
+    if (secret) { volatile char* d = secret; while (*d) *d++ = 0; }
+    return ok;
 }
 
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p) {
@@ -184,6 +207,29 @@ bool begin(std::string& err) {
 }
 
 void end() {}
+
+/** The preview: a report is written to <GF_NET>/reports/report-<n>.json and answered as GitHub would, with its number. */
+bool post(const std::string& url, const std::string& json, char* secret, std::string& out, std::string& err) {
+    const char* root = getenv("GF_NET");
+    if (secret) { volatile char* d = secret; while (*d) *d++ = 0; }
+    if (!root || !*root) { err = "No internet connection"; return false; }
+    const std::string dir = std::string(root) + "/reports";
+    mkdir(dir.c_str(), 0777);   // (the shim's)
+    int n = 1;
+    for (;; n++) {
+        FILE* t = fopen((dir + "/report-" + std::to_string(n) + ".json").c_str(), "rb");
+        if (!t) break;
+        fclose(t);
+    }
+    FILE* f = fopen((dir + "/report-" + std::to_string(n) + ".json").c_str(), "wb");
+    if (!f) { err = "Could not write the report"; return false; }
+    fwrite(json.data(), 1, json.size(), f);
+    fclose(f);
+    (void)url;
+    out = "{\"number\": " + std::to_string(n) + ", \"html_url\": \"https://github.com/AndryTheBeast/songate-reports/issues/" + std::to_string(n) + "\"}";
+    SDL_Delay(400);   // a little of the wait a real request has
+    return true;
+}
 
 bool get(const std::string& url, std::string& out, std::string& err, Progress* p) {
     std::string path;

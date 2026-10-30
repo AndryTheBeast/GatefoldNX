@@ -23,10 +23,10 @@ float alternate(double t, float period) {
 
 }  // namespace
 
-void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int layout, float alpha) {
-    ScrollArea& sa = area("cv.lyrics", layout);
+void App::drawCanvasLyricsOf(float x, float y, float w, float h, int size, int layout, float alpha, const std::vector<LyricLine>& lyrics,
+                             bool synced, double at, ScrollArea& sa, bool live) {
     sa.view = { x, y, w, h };
-    if (!now.synced) {
+    if (!synced) {
         // .ln.plain: UI font, regular weight; scrolls by touch and the right stick
         // Faded at the bottom as the synced lines are (their mask, below), with room below the last line so every line can
         // be read clear of it; faded at the top too once scrolled, by as much as it is (at the top, the first line sits
@@ -35,13 +35,13 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
         const Font f{ int(clampf(1.25f * vw, 16, 22)) };
         const float below = std::round(h * 0.28f);
         float total = 0;
-        for (const auto& l : now.lyrics) total += 26 * g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3).size();
+        for (const auto& l : lyrics) total += 26 * g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3).size();
         sa.content = total + below;
-        if (!g.ghost()) ui.pushArea(&sa);   // a hidden layout's lyrics take no touch or stick
+        if (live && !g.ghost()) ui.pushArea(&sa);   // a hidden layout's lyrics take no touch or stick
         g.clip(x - 10, y, w + 20, h);
         float ly = y - sa.y;
         const float topK = clampf(sa.y / (h * 0.18f), 0, 1);
-        for (const auto& l : now.lyrics)
+        for (const auto& l : lyrics)
             for (const auto& part : g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3)) {
                 if (ly + 26 > y && ly < y + h) {
                     const float rel = (ly + 13 - y) / h;
@@ -51,21 +51,21 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
                 ly += 26;
             }
         g.unclip();
-        if (!g.ghost()) ui.popArea();
+        if (live && !g.ghost()) ui.popArea();
         return;
     }
     // .lyr-canvas .ln: 760 weight, line-height 1.24, padding .32em; the current line sits a little above the middle
     const Font f{ size, Weight::ExtraBold };
     const float lineH = std::round(size * 1.24f), pad = std::round(size * 0.32f);
-    const double pos = lyricsPos() + 0.15;
+    const double pos = at + 0.15;
     int cur = -1;
-    for (int i = 0; i < int(now.lyrics.size()); i++) if (now.lyrics[i].t <= pos) cur = i;
+    for (int i = 0; i < int(lyrics.size()); i++) if (lyrics[i].t <= pos) cur = i;
 
-    std::vector<std::vector<std::string>> parts(now.lyrics.size());
-    std::vector<float> top(now.lyrics.size());
+    std::vector<std::vector<std::string>> parts(lyrics.size());
+    std::vector<float> top(lyrics.size());
     float yy = h * 0.45f;   // room above the first line, so it can sit at the focus point too
-    for (size_t i = 0; i < now.lyrics.size(); i++) {
-        parts[i] = now.lyrics[i].text.empty() ? std::vector<std::string>{ "♪" } : g.wrap(now.lyrics[i].text, f, int(w - 20), 3);
+    for (size_t i = 0; i < lyrics.size(); i++) {
+        parts[i] = lyrics[i].text.empty() ? std::vector<std::string>{ "♪" } : g.wrap(lyrics[i].text, f, int(w - 20), 3);
         top[i] = yy;
         yy += pad * 2 + lineH * parts[i].size();
     }
@@ -73,9 +73,10 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
     const int focusLine = std::max(cur, 0);
     const float blockH = pad * 2 + lineH * (parts.empty() ? 1 : parts[focusLine].size());
     // Scrolled by hand: left there for 4 s, then back to the line playing.
-    if (ui.now() - sa.manual > 4) sa.target = top.empty() ? 0 : std::max(0.f, top[focusLine] + blockH / 2 - h * 0.45f);
+    if (!live || ui.now() - sa.manual > 4) sa.target = top.empty() ? 0 : std::max(0.f, top[focusLine] + blockH / 2 - h * 0.45f);
 
-    if (!g.ghost()) ui.pushArea(&sa);   // a hidden layout's lyrics take no touch or stick
+    if (!live) sa.y = sa.target;   // (the outgoing song's: it stays on its line)
+    if (live && !g.ghost()) ui.pushArea(&sa);   // a hidden layout's lyrics take no touch or stick
     // text-shadow: 0 0 40px glow — drawn before the clip so it fades out instead of ending at the box edge
     if (cur >= 0) {
         const float by = y + top[cur] - sa.y, bh = pad * 2 + lineH * parts[cur].size();
@@ -85,7 +86,7 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
         g.glow(x + tw / 2, by + bh / 2, std::max(tw * 0.42f, bh), pal.glow, 0.16f * m * alpha);
     }
     g.clip(x - 10, y, w + 20, h);
-    for (size_t i = 0; i < now.lyrics.size(); i++) {
+    for (size_t i = 0; i < lyrics.size(); i++) {
         const float by = y + top[i] - sa.y;
         const float bh = pad * 2 + lineH * parts[i].size();
         if (by + bh < y || by > y + h) continue;
@@ -97,9 +98,9 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
         a *= rel < 0.18f ? clampf(rel / 0.18f, 0, 1) : rel > 0.72f ? clampf((1 - rel) / 0.28f, 0, 1) : 1.f;
         a *= alpha;
         if (a <= 0.01f) continue;
-        if (alpha > 0.5f && ui.item(uid("cv.ln", int(i)), { x, by, w, bh }, 8)) seekLyric(int(i));
+        if (live && alpha > 0.5f && ui.item(uid("cv.ln", int(i)), { x, by, w, bh }, 8)) seekLyric(int(i));
         float ly = by + pad;
-        if (now.lyrics[i].text.empty()) {   // a break: Gatefold's three dots, sized with the lines (7 px at the panel's size)
+        if (lyrics[i].text.empty()) {   // a break: Gatefold's three dots, sized with the lines (7 px at the panel's size)
             lyricDots(x, ly + lineH / 2, std::clamp(std::round(size * 0.24f), 7.f, 14.f), pal.text, a, d == 0);
             continue;
         }
@@ -109,7 +110,30 @@ void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int lay
         }
     }
     g.unclip();
-    if (!g.ghost()) ui.popArea();
+    if (live && !g.ghost()) ui.popArea();
+}
+
+void App::drawCanvasLyrics(float x, float y, float w, float h, int size, int layout, float alpha) {
+    // a Simple join (Settings › Appearance › Automix › On the Canvas): the lyrics fade out, the hint takes their place, the
+    // next song's fade back in (App::hintInLyrics; the user, 2026-10-29); the outgoing song's until the join's middle, on
+    // their own clock. Drawn when hidden too, so the next song's glide to their line meanwhile.
+    if (store.mixAnimCanvas == 1) {
+        const float e = automixCoverEase();
+        if (e > 0.002f) {
+            if (mixOld.on && mixWipe() < 0.5f)
+                drawCanvasLyricsOf(x, y, w, h, size, layout, alpha * (1 - e), mixOld.lyrics, mixOld.synced, mixOld.lyricsAt + (time - mixOld.at),
+                                   area("cv.lyrics.old", layout), false);
+            else drawCanvasLyricsOf(x, y, w, h, size, layout, alpha * (1 - e), now.lyrics, now.synced, lyricsPos(), area("cv.lyrics", layout), true);
+            if (hintInLyrics(true) && !g.ghost()) {
+                const float f0 = g.fade();
+                g.setFade(f0 * alpha);
+                lyricsHint(x, y, w, h, layout == 1 ? 2.f : 1.7f);
+                g.setFade(f0);
+            }
+            return;
+        }
+    }
+    drawCanvasLyricsOf(x, y, w, h, size, layout, alpha, now.lyrics, now.synced, lyricsPos(), area("cv.lyrics", layout), true);
 }
 
 void App::drawCanvas() {
@@ -122,14 +146,16 @@ void App::drawCanvas() {
     // so a change moves the cover and crossfades the text instead of cutting.
     // The switch runs on the clock, not per frame, so a slow frame (a track loading) cannot make it jump:
     // the cover travels on an ease-in-out curve over 0.9 s; the old text fades out first, the new eases in once the cover has nearly arrived.
-    const int layout = canvasLayoutShown();
     // Automix joining (automixFocus, as on Now playing; the user, 2026-10-29): the cover glides from the layout to a stage in
     // the middle and frosts over with the hint while the layout's text fades out; as the join ends it glides to the layout
     // the incoming track needs (Minimal without lyrics). A layout change while the stage hides the layout (one track with
     // lyrics, the other without) is taken at once: the return is a single move, never a switch in the middle of the join
-    const Focus fc = automixFocus();
+    const bool simple = store.mixAnimCanvas == 1;   // Settings › Appearance › Automix › On the Canvas: Simple
+    const Focus fc = automixFocus(simple ? 2 : 0);
     const float m = fc.move;
-    const bool mixing = has && time < mixUntil && !player.remote();
+    const bool mixing = has && time < mixUntil;
+    // Simple: the layout stays as it is through the join (the texts give way in place), and changes after it if it must
+    const int layout = simple && mixing ? cvTo : canvasLayoutShown();
     auto progress = [&] { return clampf(float(time - cvStart) / 0.9f, 0, 1); };
     auto inOut = [](float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; };
     auto weights = [&](float e, float* w) { for (int i = 0; i < 3; i++) w[i] = cvFrom[i] + ((i == cvTo ? 1.f : 0.f) - cvFrom[i]) * e; };
@@ -153,7 +179,13 @@ void App::drawCanvas() {
         textA[i] = i == cvTo ? std::max(cvFrom[i], 1 - (1 - in) * (1 - in) * (1 - in)) : cvFrom[i] * (1 - out) * (1 - out);
         textA[i] *= fc.ui;   // and out while the stage is up (Automix)
     }
-    const bool lyricsOn = store.canvasLyrics && !now.lyrics.empty();
+    // (in a Simple join, while either song has lyrics: the outgoing song's give way to the next one's)
+    const bool lyricsOn = store.canvasLyrics && (!now.lyrics.empty() || (simple && mixOld.on && !mixOld.lyrics.empty()));
+    // Simple: the whole Canvas but its controls (the progress line, the buttons) changes from the outgoing song to the next
+    // from left to right, the background and the cover with it (the user, 2026-10-29): each section across its own width,
+    // all on the join's clock (App::pageWipe_)
+    struct PageOff { PageWipe& p; ~PageOff() { p.on = false; } } pageOff{ pageWipe_ };
+    if (simple && mixing && mixOld.on) pageWipe_.on = true;
 
     // ---- .cv-bg: blurred cover (inset −12%, .62, slow drift), two glows, vignette
     g.fill(pal.bg);
@@ -166,9 +198,16 @@ void App::drawCanvas() {
         SDL_RenderCopyF(renderer_, tex, nullptr, &r);
     };
     // the new over the old, as the share of each a crossfade gives: both at half thinned the blur mid-way (as Now playing's frost)
-    const float bk = now.fade, bn = now.blur ? 0.62f * (now.prevBlur ? bk : 1.f) : 0.f;
-    if (bk < 1) blur(now.prevBlur, 0.62f * (1 - bk) / std::max(1e-3f, 1 - bn));
-    blur(now.blur, bn);
+    if (pageWipe_.on) {   // each song's on its side of the page's edge
+        const float bw = css::W * 1.24f * drift, bh = css::H * 1.24f * drift;
+        wipedImage(0, float(css::W), 0, float(css::H), false, true, [&](bool old) {   // (no light down the whole screen)
+            if (SDL_Texture* tex = mixCover(old, now.blur, now.prevBlur)) g.imageStretched(tex, (css::W - bw) / 2, (css::H - bh) / 2, bw, bh, 0, 0.62f);
+        });
+    } else {
+        const float bk = now.fade, bn = now.blur ? 0.62f * (now.prevBlur ? bk : 1.f) : 0.f;
+        if (bk < 1) blur(now.prevBlur, 0.62f * (1 - bk) / std::max(1e-3f, 1 - bn));
+        blur(now.blur, bn);
+    }
     const float g1 = alternate(t, 60), g3 = alternate(t, 76);
     g.glow(-20 * vmax + 35 * vmax + 14 * vmax * g1, -24 * vmax + 35 * vmax + 10 * vmax * g1, 35 * vmax * (1 + 0.15f * g1), pal.blobs[0], 0.5f);
     g.glow(css::W + 22 * vmax - 35 * vmax + 16 * vmax * g3, css::H + 30 * vmax - 35 * vmax - 12 * vmax * g3, 35 * vmax * (1 + 0.1f * g3),
@@ -232,18 +271,45 @@ void App::drawCanvas() {
     g.roundRect(ax, fy, art, art, rad, pal.surface2);
     const float ken = store.motion && store.canvasZoom ? alternate(t, 42) : 0;
     // the new over the old, drawn whole (as Now playing's): a frost over them never thins mid-way
-    if (now.prevCover && now.fade < 1) g.image(now.prevCover, ax, fy, art, art, rad, 1, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
-    if (now.cover) g.image(now.cover, ax, fy, art, art, rad, now.fade, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
-    else g.icon(ICON_MUSIC, ax + art / 2, fy + art / 2, std::min(72.f, art * 0.4f), pal.text3);
+    if (pageWipe_.on) {   // the outgoing cover gives way to the next one as the page's edge crosses it
+        wipedImage(ax, ax + art, fy, fy + art, false, !now.cover, [&](bool old) {   // (the magic: its frost's)
+            if (SDL_Texture* c = mixCover(old, now.cover, now.prevCover)) g.image(c, ax, fy, art, art, rad, 1, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
+            else g.icon(ICON_MUSIC, ax + art / 2, fy + art / 2, std::min(72.f, art * 0.4f), pal.text3);
+        });
+    } else {
+        if (now.prevCover && now.fade < 1) g.image(now.prevCover, ax, fy, art, art, rad, 1, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
+        if (now.cover) g.image(now.cover, ax, fy, art, art, rad, now.fade, 1 + 0.075f * ken, -ken * 0.3f, ken * 0.2f);
+        else g.icon(ICON_MUSIC, ax + art / 2, fy + art / 2, std::min(72.f, art * 0.4f), pal.text3);
+    }
     // Automix: the frost, the hint and the lap round the cover, as on Now playing (the small chip beside PLAYING is gone)
-    if (mixing) drawAutomixCover(ax, fy, art, restX + restArt / 2, restY + floatY + restArt / 2, restArt, rad);
+    if (mixing) {
+        // Simple: above the cover (Minimal: on it), or with lyrics on screen in their place (drawCanvasLyrics); Full: on it.
+        // Its own places: the hint's setting is Now playing's (App::nowHintAbove)
+        const bool inside = !(simple && cvTo != 2);
+        const bool inLyrics = simple && lyricsOn && cvTo != 2 && hintInLyrics(true);
+        drawAutomixCover(ax, fy, art, restX + restArt / 2, restY + floatY + restArt / 2, restArt, rad, inside && !inLyrics);
+        if (!inside && !inLyrics) {   // above the cover (the user, 2026-10-29); the Lyrics layout's small one: on the right, level with its middle
+            constexpr float K = 1.1f;
+            const float cw = 36 * K + float(g.measure(mixLabel, { int(std::round(css::Xs * K)), Weight::SemiBold }));
+            if (cvTo != 1 || m > 0.5f)
+                automixChip(mixLabel, restX + restArt / 2 - cw / 2, std::max(restY + floatY - 4 - 11 * K, 16 * K), K, automixCoverEase(), false, true);
+            else automixChip(mixLabel, css::W - 8 * vw - cw, restY + floatY + restArt / 2, K, automixCoverEase(), false, true);
+        }
+    }
     g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
 
     // ---- .cv-meta (+ lyrics): each layout's own, faded by its weight and drifting in by a few pixels
     const std::string kick = !has ? "NOTHING PLAYING" : isPlaying() ? "PLAYING" : "PAUSED";
-    std::string album = now.info.album;
-    if (has && now.info.date.size() >= 4) album += (album.empty() ? "" : " · ") + now.info.date.substr(0, 4);
-    const std::string title = has ? now.info.title : "Gatefold";
+    auto albumOf = [&](const TrackInfo& in) {
+        std::string al = in.album;
+        if (has && in.date.size() >= 4) al += (al.empty() ? "" : " · ") + in.date.substr(0, 4);
+        return al;
+    };
+    const std::string title = has ? now.info.title : "Songate";
+    // a Simple join (Settings › Appearance › Automix › On the Canvas): the outgoing song's title, artist, album and lyrics give
+    // way to the next one's, from left to right, timed to the join (the user, 2026-10-29); else the song's own
+    const bool give = simple && mixOld.on;
+    auto infoOf = [&](bool old) -> const TrackInfo& { return old ? mixOld.info : now.info; };
     const Font kf{ int(clampf(0.85f * vw, 11, 14)), Weight::Bold };
     for (int l = 0; l < 3; l++) {
         // the stage hiding them all: only the layout it returns to, as a ghost (its text ready); hidden interface drawn at
@@ -260,14 +326,26 @@ void App::drawCanvas() {
         g.setShift(0, dy);
         if (l == 2) {
             // minimal: centred under the cover, no kicker
-            float ty = s.ay + s.art + 3.5f * vh + dy;
             const Font tf{ int(clampf(2.2f * vw, 22, 40)), Weight::ExtraBold };
-            g.text(title, tf, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
-            ty += tf.size * 1.25f + 6;
-            g.text(now.info.artist, { int(clampf(1.3f * vw, 15, 24)), Weight::SemiBold }, css::W / 2.f, ty, pal.text, A, Align::Center,
-                   int(css::W * 0.8f));
-            ty += 24 + 6;
-            g.text(album, { int(clampf(1.05f * vw, 14, 19)) }, css::W / 2.f, ty, pal.text2, A, Align::Center, int(css::W * 0.8f));
+            auto block = [&](bool old) {
+                const TrackInfo& in = infoOf(old);
+                float ty = s.ay + s.art + 3.5f * vh + dy;
+                g.text(has ? in.title : title, tf, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
+                ty += tf.size * 1.25f + 6;
+                g.text(in.artist, { int(clampf(1.3f * vw, 15, 24)), Weight::SemiBold }, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
+                ty += 24 + 6;
+                g.text(albumOf(in), { int(clampf(1.05f * vw, 14, 19)) }, css::W / 2.f, ty, pal.text2, A, Align::Center, int(css::W * 0.8f));
+            };
+            if (give) {
+                float wide = 0;
+                for (bool o : { true, false })
+                    wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, { int(clampf(1.3f * vw, 15, 24)), Weight::SemiBold })) });
+                wide = std::min(wide, css::W * 0.8f);
+                const float by0 = s.ay + s.art + 3.5f * vh + dy;
+                wiped(css::W / 2.f - wide / 2, css::W / 2.f + wide / 2, by0, by0 + tf.size * 1.25f + 6 + 24 + 6 + 20, block);
+            } else {
+                block(false);
+            }
         } else if (l == 1) {
             // lyrics first: a small cover with the meta beside it, large lines below
             const float mx = s.ax + s.art + 28, mw = css::W - 8 * vw - mx;
@@ -277,9 +355,18 @@ void App::drawCanvas() {
             float my = s.ay + (s.art - block) / 2 + dy;
             g.textSpaced(kick, kf, mx, my + kf.size * 0.7f, 0.16f, pal.accentInk, A);
             my += kf.size * 1.4f + 4;
-            g.text(title, tf, mx, my - 3, pal.text, A, Align::Left, int(mw));
+            auto metaBlock = [&](bool old) {
+                const TrackInfo& in = infoOf(old);
+                g.text(has ? in.title : title, tf, mx, my - 3, pal.text, A, Align::Left, int(mw));
+                g.text(in.artist, arf, mx, my + tf.size * 1.1f + 4, pal.text, A, Align::Left, int(mw));
+            };
+            if (give) {
+                float wide = 0;
+                for (bool o : { true, false }) wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, arf)) });
+                wiped(mx, mx + std::min(mw, wide), my - 4, my + tf.size * 1.1f + 4 + arf.size * 1.4f, metaBlock);
+            }
+            else metaBlock(false);
             my += tf.size * 1.1f + 4;
-            g.text(now.info.artist, arf, mx, my, pal.text, A, Align::Left, int(mw));
             // ending where the Cover layout's lyrics end (its side column's foot), for consistency (the user, 2026-10-29; it
             // ran to 80 % of the screen, past the progress line)
             const float ly = s.ay + s.art + 3 * vh + dy, lh = st[0].sy + st[0].sh + dy - ly;
@@ -294,15 +381,29 @@ void App::drawCanvas() {
             float my = (lyricsOn ? s.sy : s.ay + (s.art - metaH) / 2) + dy;
             g.textSpaced(kick, kf, s.sx, my + kf.size * 0.7f, 0.16f, pal.accentInk, A);
             my += kf.size * 1.4f + 10;
-            for (const auto& ln : lines) {
-                g.text(ln, tf, s.sx - 2, my - tf.size * 0.12f, pal.text, A, Align::Left, int(s.sw));
-                my += std::round(tf.size * 1.02f);
+            auto block = [&](bool old) {   // the next song's lines decide the layout
+                const TrackInfo& in = infoOf(old);
+                const std::vector<std::string> ls = old ? g.wrap(in.title, tf, int(s.sw), 2) : lines;
+                float yy = my;
+                for (const auto& ln : ls) {
+                    g.text(ln, tf, s.sx - 2, yy - tf.size * 0.12f, pal.text, A, Align::Left, int(s.sw));
+                    yy += std::round(tf.size * 1.02f);
+                }
+                yy = my + lines.size() * std::round(tf.size * 1.02f) + 10;
+                g.text(in.artist, arf, s.sx, yy, pal.text, A, Align::Left, int(s.sw));
+                g.text(albumOf(in), alf, s.sx, yy + arf.size * 1.35f + 6, pal.text2, A, Align::Left, int(s.sw));
+            };
+            if (give) {
+                float wide = 0;
+                for (bool o : { true, false }) {
+                    for (const auto& ln : g.wrap(infoOf(o).title, tf, int(s.sw), 2)) wide = std::max(wide, float(g.measure(ln, tf)));
+                    wide = std::max({ wide, float(g.measure(infoOf(o).artist, arf)), float(g.measure(albumOf(infoOf(o)), alf)) });
+                }
+                wiped(s.sx, s.sx + std::min(s.sw, wide), my, my + lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f,
+                      block);
             }
-            my += 10;
-            g.text(now.info.artist, arf, s.sx, my, pal.text, A, Align::Left, int(s.sw));
-            my += arf.size * 1.35f + 6;
-            g.text(album, alf, s.sx, my, pal.text2, A, Align::Left, int(s.sw));
-            my += alf.size * 1.45f;
+            else block(false);
+            my += lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f;
             if (lyricsOn) {
                 const float ly = my + 4 * vh;
                 drawCanvasLyrics(s.sx, ly, s.sw, s.sy + s.sh + dy - ly, int(clampf(2.05f * vw, 20, 40)), 0, A);
@@ -312,6 +413,7 @@ void App::drawCanvas() {
         textShift = 0;
         g.setShift(0, 0);
     }
+    pageWipe_.on = false;   // (the controls: not wiped)
 
     // ---- .cv-chrome: hairline progress, transport, tools; fades out when idle
     const bool idle = canvasIdle > store.canvasIdleAfter && isPlaying();
@@ -377,8 +479,21 @@ void App::drawCanvas() {
     // .cv-time + .cv-transport
     const Font timeF{ 13, Weight::SemiBold };
     const float timeCy = transCy + slide;   // level with the buttons, ~43 px under the bar as on PC
-    g.textC(fmtTime(player.position()), timeF, padX, timeCy, pal.text2, ctlA);
-    g.textC(fmtTime(dur), timeF, css::W - padX, timeCy, pal.text2, ctlA, Align::Right);
+    // in a Simple join the outgoing song's times (where it is, its length) until the swipe passes them: one swipe from the
+    // left one to the right one, on the join's clock (the user, 2026-10-29: the next song's length showed at once)
+    auto times = [&](bool old) {
+        const double pos = old ? mixOld.posAt + (time - mixOld.at) : player.position();
+        g.textC(fmtTime(pos), timeF, padX, timeCy, pal.text2, ctlA);
+        g.textC(fmtTime(old ? mixOld.info.duration : dur), timeF, css::W - padX, timeCy, pal.text2, ctlA, Align::Right);
+    };
+    if (simple && mixing && mixOld.on) {
+        wipeGroup_ = { true, padX, css::W - padX };
+        wiped(padX, css::W - padX, timeCy - 10, timeCy + 10, times);
+        groupMagic(timeCy - 12, timeCy + 12);
+        wipeGroup_.on = false;
+    } else {
+        times(false);
+    }
     // disabled: greyed like the layouts that cannot show, and neither focusable nor pressable
     auto cvBtn = [&](Id id, const char* icon, float cx, float cy, float size, bool big, bool on = false, bool disabled = false, uint8_t flags = 0) {
         bool hit = false;
@@ -391,6 +506,14 @@ void App::drawCanvas() {
         return hit;
     };
     const float mid = css::W / 2.f, tc = transCy + slide;
+    hint(uid("cv.prev"), "Previous");
+    hint(uid("cv.play"), isPlaying() ? "Pause" : "Play");
+    hint(uid("cv.next"), "Next");
+    hint(uid("cv.mute"), volumeShown <= 0.001f ? "Unmute" : "Mute");
+    hint(uid("cv.sleep"), "Sleep timer");
+    hint(uid("cv.lyrics"), store.canvasLyrics ? "Hide the lyrics" : "Show the lyrics");
+    hint(uid("cv.eq"), "Equalizer (hold for its settings)");
+    hint(uid("cv.close"), "Close the Canvas");
     if (cvBtn(uid("cv.prev"), ICON_PREV, mid - 30 - 14 - 21, tc, 42, false)) prev();
     if (cvBtn(uid("cv.play"), isPlaying() ? ICON_PAUSE : ICON_PLAY, mid, tc, 60, true)) togglePlay();
     if (cvBtn(uid("cv.next"), ICON_NEXT, mid + 30 + 14 + 21, tc, 42, false)) next(false);

@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Gatefold Live</title>
+<style>
+:root {
+  --bg: #0d0e12; --pad: #1a1c23; --key: #2a2d37; --key-on: #4a4f60; --ink: #e8e9ee; --dim: #8b8e9a;
+  --accent: #ff5a6a; --ok: #49c486; --warn: #e3b341;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden;
+  font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; -webkit-user-select: none;
+  touch-action: none; overscroll-behavior: none; }
+#app { position: fixed; inset: 0; display: grid; gap: 8px; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto 1fr;
+  grid-template-areas: "bar bar bar" "left screen right"; }
+#bar { grid-area: bar; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }
+#bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+#bar .dot.ok { background: var(--ok); } #bar .dot.bad { background: var(--accent); }
+#state { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 120px; }
+#bar button, #bar select { background: var(--key); color: var(--ink); border: 0; border-radius: 8px; padding: 6px 10px; font: inherit; }
+#bar button.on { background: var(--accent); color: #fff; }
+#screenWrap { grid-area: screen; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; position: relative; }
+canvas { display: block; background: #000; border-radius: 10px; max-width: 100%; max-height: 100%; aspect-ratio: 16 / 9; touch-action: none; }
+#toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(20,22,28,.92); color: var(--ink);
+  padding: 8px 14px; border-radius: 10px; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+#toast.show { opacity: 1; }
+#kbd { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 5; }
+#kbd.show { display: flex; }
+#kbd form { background: #1d2028; border-radius: 14px; padding: 18px; width: min(520px, 100%); display: grid; gap: 12px; }
+#kbd b { font-size: 16px; }
+#kbd input { font: 16px system-ui, sans-serif; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3e4a; background: #0d0e12; color: var(--ink); }
+#kbd .row { justify-content: flex-end; }
+#kbd button { background: var(--key); color: var(--ink); border: 0; border-radius: 10px; padding: 9px 16px; font: inherit; }
+#kbd button[type=submit] { background: var(--accent); color: #fff; }
+.pad { display: grid; align-content: center; justify-items: center; gap: 14px; min-width: 150px; }
+#left { grid-area: left; } #right { grid-area: right; }
+.row { display: flex; gap: 8px; justify-content: center; width: 100%; }
+.key { background: var(--key); color: var(--ink); border: 0; font: 600 14px system-ui, sans-serif; touch-action: none; }
+.key.on { background: var(--key-on); }
+.sh { width: 58px; height: 34px; border-radius: 10px; }
+.small { width: 36px; height: 36px; border-radius: 50%; font-size: 20px; line-height: 1; }
+.diamond { display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); }
+.diamond .key { width: 48px; height: 48px; border-radius: 50%; }
+.dpad .key { border-radius: 10px; font-size: 16px; }
+.dpad .key.u { grid-area: 1 / 2; } .dpad .key.l { grid-area: 2 / 1; } .dpad .key.r { grid-area: 2 / 3; } .dpad .key.d { grid-area: 3 / 2; }
+.abxy .key.x { grid-area: 1 / 2; } .abxy .key.y { grid-area: 2 / 1; } .abxy .key.a { grid-area: 2 / 3; } .abxy .key.b { grid-area: 3 / 2; }
+.stick { width: 96px; height: 96px; border-radius: 50%; background: var(--pad); position: relative; touch-action: none; }
+.stick i { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px; border-radius: 50%; background: var(--key); }
+.hint { color: var(--dim); font-size: 11px; text-align: center; max-width: 160px; }
+/* No on-screen pad (the default: a controller or the keyboard): the screen alone under the bar */
+#app.nopad { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar" "screen"; }
+#app.nopad .pad { display: none; }
+
+/* Upright or squarish (a phone held upright, a narrow window): the screen on top, the two halves under it */
+@media (max-aspect-ratio: 3/2) {
+  #app { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "bar bar" "screen screen" "left right"; }
+  canvas { width: 100%; }
+  .pad { align-content: start; gap: 10px; min-width: 0; }
+  .hint { display: none; }
+}
+/* A short landscape phone: smaller keys */
+@media (min-aspect-ratio: 3/2) and (max-height: 500px) {
+  #bar { min-height: 26px; } #bar button, #bar select { padding: 4px 8px; }
+  .pad { gap: 8px; } .diamond { grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 40px); }
+  .diamond .key { width: 40px; height: 40px; } .stick { width: 80px; height: 80px; } .sh { width: 50px; height: 30px; }
+  .hint { display: none; }
+}
+</style>
+</head>
+<body>
+<div id="app" class="nopad">
+  <div id="bar">
+    <span class="dot" id="dot"></span>
+    <span id="state">Connecting…</span>
+    <button id="sound">Sound off</button>
+    <select id="quality" title="Picture">
+      <option value="85 1 100">60 fps · sharp (home Wi-Fi)</option>
+      <option value="75 2 100" selected>30 fps</option>
+      <option value="60 2 75">30 fps · smaller</option>
+      <option value="50 3 60">20 fps · data saver</option>
+    </select>
+    <button id="restart" title="Start Gatefold again">Restart</button>
+    <button id="reset" title="Settings, playlists and analysis back to the start (your music is never touched)">Reset card</button>
+    <button id="padBtn" title="Buttons on the screen, for a phone without a controller">Pad</button>
+    <button id="full">Full screen</button>
+  </div>
+
+  <div class="pad" id="left">
+    <div class="row"><button class="key sh" data-b="ZL">ZL</button><button class="key sh" data-b="L">L</button></div>
+    <div class="row"><button class="key small" data-b="MINUS">−</button></div>
+    <div class="stick" id="stick"><i></i></div>
+    <div class="diamond dpad">
+      <button class="key u" data-b="UP">▲</button><button class="key l" data-b="LEFT">◀</button>
+      <button class="key r" data-b="RIGHT">▶</button><button class="key d" data-b="DOWN">▼</button>
+    </div>
+  </div>
+
+  <div id="screenWrap"><canvas id="screen" width="1280" height="720"></canvas><div id="toast"></div></div>
+<div id="kbd"><form id="kbdForm" autocomplete="off"><b id="kbdHead"></b><input id="kbdText" enterkeyhint="done">
+  <div class="row"><button type="button" id="kbdCancel">Cancel</button><button type="submit">OK</button></div></form></div>
+
+  <div class="pad" id="right">
+    <div class="row"><button class="key sh" data-b="R">R</button><button class="key sh" data-b="ZR">ZR</button></div>
+    <div class="row"><button class="key small" data-b="PLUS">+</button></div>
+    <div class="diamond abxy">
+      <button class="key x" data-b="X">X</button><button class="key y" data-b="Y">Y</button>
+      <button class="key a" data-b="A">A</button><button class="key b" data-b="B">B</button>
+    </div>
+    <div class="hint">Keys: arrows, Enter A, Backspace B, Space X, F Y, Q/E L/R, 1/2 ZL/ZR, Tab −, Esc +, IJKL stick. A game pad works too.</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const PAGE = '__PAGE__';   // this page's version, filled in by server.py
+const BIT = { A: 1 << 0, B: 1 << 1, X: 1 << 2, Y: 1 << 3, L: 1 << 6, R: 1 << 7, ZL: 1 << 8, ZR: 1 << 9,
+  PLUS: 1 << 10, MINUS: 1 << 11, LEFT: 1 << 12, UP: 1 << 13, RIGHT: 1 << 14, DOWN: 1 << 15 };
+const $ = (id) => document.getElementById(id);
+const canvas = $('screen'), g = canvas.getContext('2d');
+const key = new URLSearchParams(location.search).get('k') || '';
+let ws = null, open = false;
+
+function send(line) { if (open) ws.send(line); }
+function toast(text) { const t = $('toast'); t.textContent = text; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
+
+// ---------------------------------------------------------------- connection
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?k=' + encodeURIComponent(key));
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { open = true; sendQuality(); lastBits = -1; lastStick = ''; };
+  ws.onclose = () => { open = false; setState('bad', 'Disconnected · trying again…'); setTimeout(connect, 1000); };
+  ws.onmessage = (e) => (typeof e.data === 'string' ? status(JSON.parse(e.data)) : packet(e.data));
+}
+function setState(kind, text) { $('dot').className = 'dot ' + kind; $('state').textContent = text; }
+let info = {};
+function status(s) {
+  if (s.keyboardClosed) { closeKeyboard(); return; }
+  if (s.page && PAGE !== '__' + 'PAGE__' && s.page !== PAGE) { location.reload(); return; }   // the page itself changed
+  info = s;
+  if (s.updated) toast('Updated: build ' + s.build);
+  updateState();
+}
+function updateState() {
+  if (!open) return;
+  const run = info.state === 'running';
+  setState(run ? 'ok' : info.state && info.state.startsWith('crashed') ? 'bad' : '',
+    (run ? '' : (info.state || '') + ' · ') + 'build ' + (info.build || '?') + ' · ' + stats.fps + ' fps · ' + stats.kbps + ' kB/s' +
+    (audio.ctx ? ' · sound ' + Math.round(audio.ahead * 1000) + ' ms' : ''));
+}
+
+// ---------------------------------------------------------------- frames and sound
+// [type u8][time f64 LE, ms on the app's clock][payload]; 1 a JPEG frame, 2 sound (u32 rate, u8 channels, S16 samples)
+const frames = [];
+const stats = { fps: 0, kbps: 0, n: 0, bytes: 0, at: performance.now() };
+function packet(buf) {
+  stats.bytes += buf.byteLength;
+  const v = new DataView(buf), kind = v.getUint8(0), t = v.getFloat64(1, true) / 1000;
+  if (kind === 1) {
+    createImageBitmap(new Blob([new Uint8Array(buf, 9)], { type: 'image/jpeg' })).then((bmp) => {
+      frames.push({ t, bmp });
+      while (frames.length > 40) frames.shift().bmp.close();
+    }).catch(() => {});
+  } else if (kind === 3) {
+    const [head, guide, initial] = new TextDecoder().decode(new Uint8Array(buf, 9)).split('\0');
+    openKeyboard(head || guide || 'Text', guide, initial || '');
+  } else if (kind === 2) {
+    playSound(t, v.getUint32(9, true), v.getUint8(13), new Int16Array(buf.slice(14)));
+  }
+}
+
+const audio = { ctx: null, next: 0, offset: null, ahead: 0, gain: null };
+const LEAD = 0.25;   // the sound's buffer; the picture waits as long, so the two stay together
+function playSound(t, rate, ch, s) {
+  const a = audio;
+  if (!a.ctx || a.ctx.state !== 'running') return;
+  const n = s.length / ch, buf = a.ctx.createBuffer(ch, n, rate);
+  for (let c = 0; c < ch; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < n; i++) d[i] = s[i * ch + c] / 32768;
+  }
+  const now = a.ctx.currentTime;
+  if (a.next < now + 0.02 || a.next > now + LEAD * 3) a.next = now + LEAD;   // the start, a gap, or far behind: start again
+  const src = a.ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(a.gain);
+  src.start(a.next);
+  const off = a.next - t;   // where the app's clock falls on the sound's
+  a.offset = a.offset === null || Math.abs(off - a.offset) > 0.1 ? off : a.offset * 0.9 + off * 0.1;
+  a.next += buf.duration;
+  a.ahead = a.next - now;
+}
+$('sound').onclick = async () => {
+  const a = audio;
+  if (a.ctx && a.ctx.state === 'running') { await a.ctx.suspend(); a.offset = null; $('sound').textContent = 'Sound off'; $('sound').classList.remove('on'); return; }
+  if (!a.ctx) { a.ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' }); a.gain = a.ctx.createGain(); a.gain.connect(a.ctx.destination); }
+  await a.ctx.resume();
+  a.next = 0; a.offset = null;
+  $('sound').textContent = 'Sound on'; $('sound').classList.add('on');
+};
+
+let lastDraw = 0;
+function draw() {
+  requestAnimationFrame(draw);   // first: one bad frame never stops the picture
+  tick();
+}
+function tick() {
+  lastDraw = performance.now();
+  try { drawFrame(); } catch (e) { console.error('draw', e); }
+}
+// Some embedded or background views slow requestAnimationFrame to once a second: a timer takes over then
+setInterval(() => { if (performance.now() - lastDraw > 40) tick(); }, 16);
+function drawFrame() {
+  // With sound, a frame shows when the sound of its moment plays; without, at once
+  let pick = -1;
+  if (audio.ctx && audio.ctx.state === 'running' && audio.offset !== null) {
+    const now = audio.ctx.currentTime;
+    for (let i = 0; i < frames.length; i++) if (frames[i].t + audio.offset <= now) pick = i;
+  } else pick = frames.length - 1;
+  if (pick >= 0) {
+    const f = frames[pick];
+    g.drawImage(f.bmp, 0, 0, canvas.width, canvas.height);
+    stats.n++;
+    for (let i = 0; i <= pick; i++) frames[i].bmp.close();
+    frames.splice(0, pick + 1);
+  }
+  pollPad();
+  const t = performance.now();
+  if (t - stats.at > 1000) {
+    stats.fps = Math.round(stats.n * 1000 / (t - stats.at)); stats.kbps = Math.round(stats.bytes / (t - stats.at));
+    stats.n = 0; stats.bytes = 0; stats.at = t; updateState();
+  }
+}
+// ---------------------------------------------------------------- the keyboard (the console's applet: Gatefold waits for it)
+function keyboardOpen() { return $('kbd').classList.contains('show'); }
+function openKeyboard(head, guide, initial) {
+  $('kbdHead').textContent = head; $('kbdText').placeholder = guide || ''; $('kbdText').value = initial;
+  $('kbd').classList.add('show'); setTimeout(() => { $('kbdText').focus(); $('kbdText').select(); }, 0);
+}
+function closeKeyboard() { $('kbd').classList.remove('show'); $('kbdText').blur(); }
+$('kbdForm').onsubmit = (e) => { e.preventDefault(); send('k ' + $('kbdText').value.replace(/[\r\n]/g, ' ')); closeKeyboard(); };
+$('kbdCancel').onclick = () => { send('K'); closeKeyboard(); };
+$('kbdText').addEventListener('keydown', (e) => { if (e.key === 'Escape') { send('K'); closeKeyboard(); } e.stopPropagation(); });
+
+// ---------------------------------------------------------------- touch on the screen
+let finger = null;
+function at(e) {
+  const r = canvas.getBoundingClientRect();
+  return [Math.round((e.clientX - r.left) / r.width * 1280), Math.round((e.clientY - r.top) / r.height * 720)];
+}
+canvas.addEventListener('pointerdown', (e) => {
+  if (finger !== null) return;
+  finger = e.pointerId; canvas.setPointerCapture(e.pointerId);
+  const [x, y] = at(e); send(`d ${x} ${y}`); e.preventDefault();
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== finger) {   // a mouse with no button held: Songate's pointer follows it
+    if (finger === null && e.pointerType === 'mouse') { const [x, y] = at(e); send(`p ${x} ${y}`); }
+    return;
+  }
+  const [x, y] = at(e); send(`m ${x} ${y}`);
+});
+// the wheel scrolls the list under the mouse, as on the console with a USB mouse (notches: 100 px of the page each)
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const [x, y] = at(e);
+  const n = -e.deltaY / (e.deltaMode === 1 ? 3 : e.deltaMode === 2 ? 0.3 : 100);
+  send(`w ${x} ${y} ${n.toFixed(3)}`);
+}, { passive: false });
+const lift = (e) => { if (e.pointerId !== finger) return; const [x, y] = at(e); send(`u ${x} ${y}`); finger = null; };
+canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointercancel', lift);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ---------------------------------------------------------------- buttons: on screen, keyboard, game pad
+const held = { screen: new Set(), keys: new Set(), pad: 0 };
+document.querySelectorAll('.key[data-b]').forEach((k) => {
+  const name = k.dataset.b, ids = new Set();
+  const down = (e) => { ids.add(e.pointerId); k.setPointerCapture(e.pointerId); held.screen.add(name); k.classList.add('on'); sendButtons(); e.preventDefault(); };
+  const up = (e) => { ids.delete(e.pointerId); if (!ids.size) { held.screen.delete(name); k.classList.remove('on'); sendButtons(); } };
+  k.addEventListener('pointerdown', down);
+  k.addEventListener('pointerup', up);
+  k.addEventListener('pointercancel', up);
+  k.addEventListener('contextmenu', (e) => e.preventDefault());
+});
+const KEYS = { ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT', Enter: 'A', Backspace: 'B', ' ': 'X',
+  f: 'Y', q: 'L', e: 'R', 1: 'ZL', 2: 'ZR', Tab: 'MINUS', Escape: 'PLUS' };
+const STICK_KEYS = { j: [-1, 0], l: [1, 0], i: [0, 1], k: [0, -1] };
+const stickKeys = new Set();
+addEventListener('keydown', (e) => {
+  if (keyboardOpen()) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (KEYS[k]) { held.keys.add(KEYS[k]); sendButtons(); e.preventDefault(); }
+  else if (STICK_KEYS[k]) { stickKeys.add(k); sendStick(); e.preventDefault(); }
+});
+addEventListener('keyup', (e) => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (KEYS[k]) { held.keys.delete(KEYS[k]); sendButtons(); }
+  else if (STICK_KEYS[k]) { stickKeys.delete(k); sendStick(); }
+});
+addEventListener('blur', () => { held.keys.clear(); held.screen.clear(); stickKeys.clear(); sendButtons(); sendStick(); });
+
+let lastBits = -1;
+function sendButtons() {
+  let b = held.pad;
+  for (const n of held.screen) b |= BIT[n];
+  for (const n of held.keys) b |= BIT[n];
+  if (b !== lastBits) { lastBits = b; send('b ' + b); }
+}
+
+// The stick on screen: drag the knob
+const stick = $('stick'), knob = stick.querySelector('i');
+let stickTouch = [0, 0], stickId = null, padStick = [0, 0];
+function stickAt(e) {
+  const r = stick.getBoundingClientRect(), rad = r.width / 2;
+  let x = (e.clientX - r.left - rad) / rad, y = (e.clientY - r.top - rad) / rad;
+  const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; }
+  stickTouch = [x, -y]; knob.style.transform = `translate(${x * rad * 0.55}px, ${y * rad * 0.55}px)`; sendStick();
+}
+stick.addEventListener('pointerdown', (e) => { stickId = e.pointerId; stick.setPointerCapture(e.pointerId); stickAt(e); e.preventDefault(); });
+stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickId) stickAt(e); });
+const stickUp = (e) => { if (e.pointerId !== stickId) return; stickId = null; stickTouch = [0, 0]; knob.style.transform = ''; sendStick(); };
+stick.addEventListener('pointerup', stickUp);
+stick.addEventListener('pointercancel', stickUp);
+
+let lastStick = '';
+function sendStick() {
+  let [x, y] = stickTouch;
+  for (const k of stickKeys) { x += STICK_KEYS[k][0]; y += STICK_KEYS[k][1]; }
+  if (Math.abs(padStick[0]) > 0.15 || Math.abs(padStick[1]) > 0.15) [x, y] = padStick;
+  x = Math.max(-1, Math.min(1, x)); y = Math.max(-1, Math.min(1, y));
+  const s = `s ${x.toFixed(2)} ${y.toFixed(2)}`;
+  if (s !== lastStick) { lastStick = s; send(s); }
+}
+
+// A game pad (standard mapping) by the letters printed on an Xbox-style pad (Legion Go): bottom A, right B, left X, top Y
+const PAD = [['A', 0], ['B', 1], ['X', 2], ['Y', 3], ['L', 4], ['R', 5], ['ZL', 6], ['ZR', 7], ['MINUS', 8], ['PLUS', 9],
+  ['UP', 12], ['DOWN', 13], ['LEFT', 14], ['RIGHT', 15]];
+function pollPad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let b = 0, st = [0, 0];
+  for (const p of pads) {
+    if (!p) continue;
+    for (const [n, i] of PAD) if (p.buttons[i] && p.buttons[i].pressed) b |= BIT[n];
+    if (p.axes.length >= 2) st = [p.axes[0], -p.axes[1]];
+  }
+  if (keyboardOpen()) b = 0;   // the controller is not Gatefold's while the keyboard is open
+  if (b !== held.pad) { held.pad = b; sendButtons(); }
+  if (Math.abs(st[0] - padStick[0]) > 0.02 || Math.abs(st[1] - padStick[1]) > 0.02) { padStick = st; sendStick(); }
+}
+
+// ---------------------------------------------------------------- the bar
+function sendQuality() { const [q, f, z] = $('quality').value.split(' '); send('q ' + q); send('f ' + f); send('z ' + z); }
+$('quality').onchange = sendQuality;
+try {
+  const v = localStorage.getItem('gf-live-quality');
+  if (v && [...$('quality').options].some((o) => o.value === v)) $('quality').value = v;
+} catch (e) {}
+$('quality').addEventListener('change', () => { try { localStorage.setItem('gf-live-quality', $('quality').value); } catch (e) {} });
+$('restart').onclick = () => { send('!restart'); toast('Starting Gatefold again…'); };
+$('reset').onclick = () => {
+  if (confirm('Reset the test card? Settings, playlists and the analysis start over. Your music is never touched.')) { send('!reset'); toast('Resetting the card…'); }
+};
+function showPad(on) {
+  $('app').classList.toggle('nopad', !on); $('padBtn').classList.toggle('on', on);
+  try { localStorage.setItem('gf-live-pad', on ? '1' : '0'); } catch (e) {}
+}
+$('padBtn').onclick = () => showPad($('app').classList.contains('nopad'));
+try { showPad(localStorage.getItem('gf-live-pad') === '1'); } catch (e) {}
+$('full').onclick = () => {
+  const d = document.documentElement;
+  if (document.fullscreenElement) document.exitFullscreen();
+  else (d.requestFullscreen || d.webkitRequestFullscreen).call(d).then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(() => {})).catch(() => {});
+};
+
+connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

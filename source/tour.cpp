@@ -66,8 +66,8 @@ const std::vector<TourStep>& App::tourSteps() {
     static const std::vector<TourStep> s = {
         // ---- Welcome
         { 0, ICON_SPARKLE, "Welcome to the tour",
-          "This tour walks through Gatefold on its own screens, using your music. {A} or Next moves on, {B} or Back goes "
-          "back, Chapters jumps to a topic and × ends the tour. If Gatefold is still reading your music, lists fill in as "
+          "This tour walks through Songate on its own screens, using your music. {A} or Next moves on, {B} or Back goes "
+          "back, Chapters jumps to a topic and × ends the tour. If Songate is still reading your music, lists fill in as "
           "you go. You can take the tour again from Settings › About.",
           page(View::Now), {} },
         // ---- Playing
@@ -104,7 +104,7 @@ const std::vector<TourStep>& App::tourSteps() {
           page(View::Queue), { { "@main" } } },
         // ---- Library
         { 2, ICON_GRID, "The sidebar",
-          "Gatefold sorts your music by its tags, never by how your folders are arranged. Albums, Artists, Genres, "
+          "Songate sorts your music by its tags, never by how your folders are arranged. Albums, Artists, Genres, "
           "Folders and Library each show it a different way. Settings › Appearance › Sidebar can reorder these tabs, "
           "hide some, or add dividing lines.",
           nullptr, { { "nav.now" }, { "nav.queue" }, { "nav.albums" }, { "nav.artists" }, { "nav.genres" }, { "nav.folders" }, { "nav.library" } } },
@@ -170,13 +170,13 @@ const std::vector<TourStep>& App::tourSteps() {
           true },
         // ---- Background player and overlay
         { 7, ICON_GAME, "The background player",
-          "The background player keeps the music going on the HOME menu, in games, and after Gatefold is closed. Game "
+          "The background player keeps the music going on the HOME menu, in games, and after Songate is closed. Game "
           "actions decide what it does when a game opens, when you go to HOME, when you return and when the game "
           "closes: nothing, play, resume, pause, or start one of your playlists.",
           settings(App::SetPlayback), { { "set.bg" } } },   // drawTour scrolls the page to it
         { 7, ICON_GAME, "The overlay",
           "While a game is running, open Ultrahand ({L} + {BTN-DOWN} + a click of the right stick {RS}, unless you changed it) and choose "
-          "Gatefold. From there you control the music, the queue, game actions, the equalizer, the sleep timer and the "
+          "Songate. From there you control the music, the queue, game actions, the equalizer, the sleep timer and the "
           "volume without leaving the game.",
           nullptr, {} },
         // ---- Settings
@@ -185,13 +185,13 @@ const std::vector<TourStep>& App::tourSteps() {
           "timer, the console's sleep and the screen dimming.",
           settings(0), { { "@settingsCats" } } },
         { 8, ICON_HISTORY, "Backups and resets",
-          "Back up the settings now keeps a copy you can restore later, and Gatefold backs up by itself before every "
+          "Back up the settings now keeps a copy you can restore later, and Songate backs up by itself before every "
           "update. Reset settings puts every setting back as it came. Factory reset erases what you choose, or "
           "everything.",
           settings(App::SetReset), { { "set.backupnow" }, { "set.reset" }, { "set.factory" } } },
         { 8, ICON_DOWNLOAD, "Updates",
-          "Updates stays off until you turn it on. Then Gatefold can check GitHub for new versions, show what changed, "
-          "install one, or go back to an earlier one. With it off, Gatefold never goes online.",
+          "Updates stays off until you turn it on. Then Songate can check GitHub for new versions, show what changed, "
+          "install one, or go back to an earlier one. With it off, Songate never goes online.",
           settings(App::SetUpdates), { { "set.updon" } } },
         { 8, ICON_SPARKLE, "You're all set",
           "{DPAD} reaches everything, {B} goes back, and touch works everywhere. {LS} moves a pointer and {RS} "
@@ -506,6 +506,7 @@ void App::drawTour() {
             if (c) { tourBack(); return; }
         }
     }
+    hint(uid("tour.x"), "Close");
     if (iconButton(uid("tour.x"), ICON_X, x + w - pad - 14, y + pad + 14)) { endTour(); return; }
     if (tourFocus) {   // each step opens on Next (on the chapter list, the chapter shown)
         tourFocus = false;
@@ -516,8 +517,8 @@ void App::drawTour() {
 
 /** A first launch whose folder was chosen in the picker (not on the welcome card): the tour, offered once. */
 void App::offerTour() {
-    confirm(ICON_SPARKLE, "Welcome to Gatefold", "A tour of Gatefold", "About 30 short steps, in chapters", "Take the tour?",
-            "Gatefold shows you around its own screens, with your music: playing, the library, playlists, files, sound, the "
+    confirm(ICON_SPARKLE, "Welcome to Songate", "A tour of Songate", "About 30 short steps, in chapters", "Take the tour?",
+            "Songate shows you around its own screens, with your music: playing, the library, playlists, files, sound, the "
             "Canvas, the background player and the overlay, and Settings. It starts once your music is read. It is also in "
             "Settings › About.",
             "Take the tour", [this] { tourPending = true; });

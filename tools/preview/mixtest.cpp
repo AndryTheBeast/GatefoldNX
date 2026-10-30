@@ -9,6 +9,9 @@
  *   mixtest --bands file [window]    the file's level per window in four bands (a mix's envelopes)
  * Built by tools/preview/build-mixtest.sh.
  */
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -30,10 +33,28 @@ namespace fs = std::filesystem;
 std::string cleanGenre(const std::string& s) { return s; }
 
 // AUTOMIX_MODEL=1.0.0 (or "Automix V1.0.0"): the model to measure (automix.hpp); else the newest. Its name is printed first
+/** AUTOMIX_MODEL naming a .model file (automix::ModelFile): it plans the joins instead of a built-in model. */
+static const automix::ModelFile* modelFile() {
+    static automix::ModelFile f;
+    static const bool ok = [] {
+        const char* e = getenv("AUTOMIX_MODEL");
+        if (!e || !strstr(e, ".model")) return false;
+        std::ifstream in(fs::u8path(e), std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string why;
+        if (!f.parse(text, &why)) { fprintf(stderr, "%s: %s\n", e, why.c_str()); exit(2); }
+        fprintf(stderr, "model: %s (from its file)\n", f.name.c_str());
+        return true;
+    }();
+    return ok ? &f : nullptr;
+}
+
+static automix::Plan planOf(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const automix::Join* want);
+
 static automix::Model model() {
     static const automix::Model m = [] {
         automix::Model r = automix::Latest;
-        if (const char* e = getenv("AUTOMIX_MODEL"); e && *e) {
+        if (const char* e = getenv("AUTOMIX_MODEL"); e && *e && !strstr(e, ".model")) {
             std::string n = e;
             if (n.rfind("Automix ", 0) != 0) n = "Automix " + std::string(n[0] == 'V' ? "" : "V") + n;
             if (!automix::modelFromName(n, r)) { fprintf(stderr, "no model %s\n", e); exit(2); }
@@ -42,6 +63,11 @@ static automix::Model model() {
         return r;
     }();
     return m;
+}
+
+static automix::Plan planOf(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const automix::Join* want) {
+    if (const automix::ModelFile* f = modelFile()) return automix::plan(a, dur, b, fallback, want, *f);
+    return automix::plan(a, dur, b, fallback, want, model());
 }
 
 static std::string utf8(const fs::path& p) {
@@ -70,7 +96,7 @@ static int render(const std::string& fa, const std::string& fb, const std::strin
     }
     if (loopBars && want.preset == automix::Preset::Auto) want = automix::fromPreset(automix::Preset::Blend);
     want.loopBars = loopBars;
-    const automix::Plan pl = automix::plan(&ia, ia.seconds, &ib, 4, &want, model());
+    const automix::Plan pl = planOf(&ia, ia.seconds, &ib, 4, &want);
     printf("a: %.1f BPM (sure %.2f), music %.2f-%.2f s, fade-out from %.2f\nb: %.1f BPM (sure %.2f), music from %.2f, first beat %.3f\n",
            ia.bpm, ia.confidence, ia.start, ia.end, ia.fadeStart, ib.bpm, ib.confidence, ib.start, ib.beatIn);
     printf("plan: at %.3f s of a, b from %.3f s, %.2f s%s (%d beats); %s: %s, %s, filter %s, effect %s, loop %d (%.2f-%.2f)\n", pl.startOut,
@@ -224,7 +250,7 @@ static int plans(const std::string& dir) {
         for (size_t k = 0; k + 1 < ord.size(); k++) {
             const mixan::Info& a = info[size_t(ord[k])];
             const mixan::Info& b = info[size_t(ord[k + 1])];
-            const automix::Plan pl = automix::plan(&a, a.seconds, &b, 4, nullptr, model());
+            const automix::Plan pl = planOf(&a, a.seconds, &b, 4, nullptr);
             n++;
             score += automix::joinScore(&a, &b, model());
             if (pl.drop && pl.beatmatched) drops++;

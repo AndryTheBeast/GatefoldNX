@@ -37,14 +37,14 @@ include $(DEVKITPRO)/libnx/switch_rules
 #   of a homebrew executable (.nro). This is intended to be used for sysmodules.
 #   NACP building is skipped as well.
 #---------------------------------------------------------------------------------
-TARGET		:=	Gatefold
+TARGET		:=	Songate
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
 INCLUDES	:=	source sysmodule/include
-APP_TITLE	:=	Gatefold
-APP_AUTHOR	:=	AndryTheBeast & DEVIROYrus
-APP_VERSION	:=	1.1.0
+APP_TITLE	:=	Songate
+APP_AUTHOR	:=	AndryTheBeast
+APP_VERSION	:=	2.0.0 BETA
 ROMFS	:=	romfs
 
 #---------------------------------------------------------------------------------
@@ -55,7 +55,7 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
-CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION=\"$(APP_VERSION)\"
+CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION='"$(APP_VERSION)"'
 
 # Dev builds (the default) keep what is only for testing: the sleep timer's 1-minute choice and
 # Settings → About → Frame times. A release is `make clean && make DEV=0` (make does not notice a changed flag).

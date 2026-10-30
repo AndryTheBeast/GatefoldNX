@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "../../source/automix.hpp"   // Gatefold's own Automix (automix_shared.cpp builds it in)
 #include "decoder.hpp"
 #include "gfbg.h"
 #include "gfeq.hpp"
@@ -131,6 +132,48 @@ private:
     bool sleepFading_ = false;
     u32 sleepGen_ = 0;
     void watchSleep(u64 now);  // the watch thread, without the lock
+
+    // ---- Automix (protocol 6): an Automix playlist's queue joins its tracks as Gatefold does, with Gatefold's model, from
+    // Gatefold's analysis (GFBG_MIX: the player never analyses). The watch thread plans the join to the next track and opens
+    // that one at the plan's offset ahead of time; the audio thread starts it on its sample (delay_ frames into a buffer) and
+    // the two go through automix::Fader, the very mixer of Gatefold's player. A track not analysed yet: a plain fade.
+    bool automix_ = false;            // the queue is an Automix playlist (GfbgQueue_Automix): in its order, joined by Automix
+    struct MixJoin {
+        u32 gen = 0;                  // trackGen_ it was planned for (0: none)
+        s32 pos = -1;                 // the next track's position in the order
+        std::string next;             // … its path: a queue edit that changes it plans again
+        automix::Plan plan;
+        bool off = false;             // no join (Off, or a track shorter than two of it): this one plays whole
+        std::unique_ptr<Decoder> dec; // the next track, at the plan's offset (handed over by the watch thread)
+        std::string cover;
+    };
+    MixJoin mj_;                      // m_ held
+    // the watch thread's own: the next track being opened and decoded to its offset, a few seconds a tick
+    std::unique_ptr<Decoder> prepDec_;
+    std::string prepPath_, prepCover_;
+    u32 prepGen_ = 0;
+    u64 prepDone_ = 0, prepWant_ = 0; // its frames decoded so far, and the offset's
+    // the two analyses last read (mix.tsv is long: the next track's is this one's at the next join)
+    std::string infoPath_[2];
+    mixan::Info info_[2];
+    bool infoOk_[2] = {};
+    bool mixInfo(const std::string& path, mixan::Info& out);   // the watch thread, without the lock
+    // a downloaded Automix model (GfbgConfig.automixFile: config/gatefold-nx/models/<file>), read once it is named
+    std::string modelName_;           // the file read (the watch thread's)
+    automix::ModelFile modelFile_;
+    bool modelOk_ = false;
+    // the join playing (audio thread, m_ held)
+    automix::Fader fader_;
+    automix::Plan joinPlan_;
+    bool joining_ = false;            // outDec_ is a join's outgoing track (not a plain crossfade)
+    u64 joinLen_ = 0, joinAt_ = 0, delay_ = 0;   // 48 kHz frames: its length, how far it is, and before the incoming one starts
+    bool joinEcho_ = false;           // its echo rings on past the outgoing track's end
+    float outLvl_ = 1;                // the outgoing track's own levelling gain
+    u32 joinGen_ = 0;
+    void watchAutomix();              // the watch thread, without the lock
+    bool startJoin();                 // the planned join begins (audio thread, m_ held)
+    void endJoin();                   // … and its outgoing track goes (m_ held)
+    static char kindOf(const std::string& name);   // a playlist's kind from GFBG_PLAYLISTS' "!kinds" line (0: unknown)
 
     // ---- persistence
     bool dirty_ = false;

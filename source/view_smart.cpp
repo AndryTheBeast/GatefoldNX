@@ -8,8 +8,9 @@
  * opens the sheet: your own playlist or a smart one, then the recipes (.sp-card), then the chosen
  * recipe (.sp-form): its setting, the count with five of the tracks, the name, and Create.
  *
- * Left out from the PC: High rating (no ratings here), your own foobar2000 query, the sound-analysis
- * recipes, and Lossless / Hi-Res (the Switch's output gains nothing from them).
+ * Left out from the PC: High rating (no ratings here), your own foobar2000 query, and Lossless / Hi-Res (the Switch's
+ * output gains nothing from them). The sound-analysis recipe is Mood ("smart:mood:<mood>", mood.hpp: our own analysis):
+ * a kind of its own in the sidebar, the New playlist sheet and every page, hidden from the recipes here.
  */
 #include <algorithm>
 #include <cmath>
@@ -18,6 +19,7 @@
 #include <strings.h>
 
 #include "app.hpp"
+#include "cores.hpp"
 #include "icons.inc"
 #include "plicons.inc"
 
@@ -50,11 +52,15 @@ const std::vector<Recipe>& recipes() {
           { { 1950, "50s" }, { 1960, "60s" }, { 1970, "70s" }, { 1980, "80s" }, { 1990, "90s" }, { 2000, "00s" }, { 2010, "10s" }, { 2020, "20s" } },
           1990 },
         { "long", ICON_HOURGLASS, "Long tracks", "Five minutes or more: suites, mixes, epics", 1, nullptr, {}, 0 },
+        // Mood playlists (group 2: not among the recipes; New playlist › Mood playlist… opens its form)
+        { "mood", PLI_MOOD, "Mood playlist", "Your library sorted by how it sounds: its energy, its beat, its key", 2, "Mood",
+          { { mood::Happy, "Happy" }, { mood::Party, "Party" }, { mood::Relaxed, "Relaxed" }, { mood::Sad, "Sad" }, { mood::Aggressive, "Aggressive" } },
+          mood::Happy },
     };
     return r;
 }
 
-const char* const kGroups[] = { "By listening", "By tags" };
+const char* const kGroups[] = { "By listening", "By tags", "New playlist" };
 
 const Recipe* recipeOf(const std::string& id) {
     for (const auto& r : recipes()) if (id == r.id) return &r;
@@ -74,6 +80,7 @@ std::string decadeName(int d) { return d >= 2000 ? "The " + std::to_string(d) + 
 std::string defaultName(const Recipe& r, const std::string& arg) {
     if (r.genre) return arg.empty() ? "Genre" : arg;
     if (!strcmp(r.id, "decade")) return decadeName(atoi(arg.c_str()));
+    if (!strcmp(r.id, "mood")) return mood::name(atoi(arg.c_str()));
     return r.title;
 }
 
@@ -100,9 +107,10 @@ constexpr int64_t Day = 86400;
 const std::vector<int>& App::smartTracks(const std::string& spec) const {
     SmartCache& c = smartCache_[spec];
     const int64_t now = int64_t(std::time(nullptr)), hour = now / 3600;   // "the last 7 days" moves on by itself
-    if (c.statsGen == stats.gen() && c.indexGen == indexGen && c.day == hour) return c.tracks;
+    if (c.statsGen == stats.gen() && c.indexGen == indexGen && c.moodGen == moodGen_ && c.day == hour) return c.tracks;
     c.statsGen = stats.gen();
     c.indexGen = indexGen;
+    c.moodGen = moodGen_;
     c.day = hour;
     c.tracks.clear();
     std::string id, arg;
@@ -120,6 +128,7 @@ const std::vector<int>& App::smartTracks(const std::string& spec) const {
         if (id == "genre") return !arg.empty() && hasGenre(tr.genre, arg);
         if (id == "decade") { const int y = atoi(tr.date.substr(0, 4).c_str()); return y >= n && y < n + 10; }
         if (id == "long") return tr.duration >= 300;
+        if (id == "mood") return size_t(t) < moodIdx_.best.size() && moodIdx_.best[size_t(t)] == n;
         return false;
     };
     for (int i = 0; i < int(lib.tracks.size()); i++) if (keep(i)) c.tracks.push_back(i);
@@ -142,7 +151,9 @@ const std::vector<int>& App::smartTracks(const std::string& spec) const {
             return albumLess(a, b);
         });
     };
-    if (id == "recent") by([](const PlayStat* s) { return s ? s->added : 0; }, true);
+    if (id == "mood")   // the strongest first (ordered again as more of the library is analysed)
+        std::stable_sort(c.tracks.begin(), c.tracks.end(), [&](int a, int b) { return moodIdx_.score[size_t(a)] > moodIdx_.score[size_t(b)]; });
+    else if (id == "recent") by([](const PlayStat* s) { return s ? s->added : 0; }, true);
     else if (id == "top") by([](const PlayStat* s) { return s ? int64_t(s->plays) : 0; }, true);
     else if (id == "played") by([](const PlayStat* s) { return s ? s->last : 0; }, true);
     else if (id == "forgot") by([](const PlayStat* s) { return s ? s->last : 0; }, false);
@@ -159,7 +170,14 @@ const char* App::smartIcon(const std::string& spec) const {
     std::string id, arg;
     parse(spec, id, arg);
     const Recipe* r = recipeOf(id);
-    return r ? r->icon : ICON_SPARKLE;
+    // a Mood playlist: its mood's own icon (the user, 2026-10-30: "the five should have their own"), as each recipe has; the
+    // masks are the kind's (New playlist, its form)
+    if (id == "mood") {
+        static const char* const icons[mood::Count] = { PLI_SMILE, PLI_PARTY, PLI_LEAF, PLI_RAIN, PLI_FLAME };
+        const int m = atoi(arg.c_str());
+        return m >= 0 && m < mood::Count ? icons[m] : PLI_MOOD;
+    }
+    return r ? r->icon : PLI_SMART;
 }
 
 std::string App::smartSummary(const std::string& spec) const {
@@ -175,6 +193,7 @@ std::string App::smartSummary(const std::string& spec) const {
     if (id == "genre") return "Genre: " + arg;
     if (id == "decade") return "Released " + std::to_string(n) + "–" + std::to_string(n + 9);
     if (id == "long") return "Five minutes or longer";
+    if (id == "mood") return std::string(mood::name(n)) + ": " + mood::desc(n);
     return "Smart playlist";
 }
 
@@ -187,7 +206,52 @@ const char* App::playlistIcon(int ref) const {
     if (ref < 0 || ref >= int(store.playlists.size())) return ICON_HEART;   // Liked
     const FolderPlaylist& p = store.playlists[size_t(ref)];
     if (const char* chosen = p.icon.empty() ? nullptr : playlistIconSvg(p.icon)) return chosen;
-    return p.smart() ? smartIcon(p.path) : p.folder() ? ICON_FOLDER : p.automix ? ICON_LINK : ICON_LIST;   // an Automix playlist: the link
+    return p.smart() ? smartIcon(p.path) : p.folder() ? ICON_FOLDER : p.automix ? ICON_SPARKLE : ICON_LIST;   // an Automix playlist: the two stars, its chip's
+}
+
+const char* App::playlistKind(int ref) const {
+    if (ref < 0 || ref >= int(store.playlists.size())) return "Playlist";   // Liked
+    const FolderPlaylist& p = store.playlists[size_t(ref)];
+    return p.own() ? (p.automix ? "Automix playlist" : "Playlist") : isMoodPlaylist(p) ? "Mood playlist" : p.smart() ? "Smart playlist" : "Folder playlist";
+}
+
+/** Mood playlists' sorting (mood.hpp), built again when the analysis or the library changed: at most every 5 s while the
+ *  library is analysed (the playlists reorder as it goes), at once when it is done; only while a Mood playlist exists. */
+void App::moodTick() {
+    if (moodThread_.joinable()) {   // a sort under way: taken in once it is done
+        if (!moodReady_) return;
+        moodThread_.join();
+        moodIdx_ = std::move(moodNext_);
+        moodGen_++;
+    }
+    bool any = false;
+    for (const auto& p : store.playlists) if (isMoodPlaylist(p)) { any = true; break; }
+    if (!any) { moodTotal_ = moodDone_ = 0; return; }
+    if (!levels.loaded() || (levels.gen() == moodLevelsGen_ && libEpoch == moodLibEpoch_)) return;
+    const bool libNew = libEpoch != moodLibEpoch_;
+    if (!libNew && time - moodBuiltAt_ < 5 && moodDone_ + 1 < moodTotal_) return;   // (the last one: at once)
+    moodLevelsGen_ = levels.gen();
+    moodLibEpoch_ = libEpoch;
+    moodBuiltAt_ = time;
+    moodIn_.assign(lib.tracks.size(), mixan::Mood{});   // (invalid: not measured yet)
+    int done = 0;
+    for (size_t i = 0; i < lib.tracks.size(); i++) {
+        const Level* l = levels.find(lib.tracks[i].path);
+        if (!l || !l->moodTried) continue;
+        done++;
+        moodIn_[i] = l->mix.mood;
+    }
+    moodDone_ = done;
+    moodTotal_ = int(lib.tracks.size());
+    moodReady_ = false;
+    moodThread_ = std::thread([this] {
+        cores::moveHere(cores::Files);
+        std::vector<const mixan::Mood*> per(moodIn_.size(), nullptr);
+        for (size_t i = 0; i < moodIn_.size(); i++)
+            if (moodIn_[i].valid) per[i] = &moodIn_[i];
+        moodNext_.build(per);
+        moodReady_ = true;
+    });
 }
 
 void App::renamePlaylist(int ref) {
@@ -430,6 +494,7 @@ void App::drawColourSheet() {
     const int textW = int(w - 64 - 16 - 24 - 24 - 40);
     g.text(pick.what, { css::Lg, Weight::Bold }, hx + 64 + 16, hy + 18, pal.text, 1, Align::Left, textW);
     g.text("Pick it on the square and the bar, or type its hex code", { css::Sm }, hx + 64 + 16, hy + 44, pal.text3, 1, Align::Left, textW);
+    hint(uid("cp.close"), "Close");
     if (iconButton(uid("cp.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeColourPicker(false); return; }
     g.rect(x + 24, y + headH - 1, w - 48, 1, pal.text, 0.09f);
 
@@ -586,13 +651,18 @@ void App::drawSmartSheet() {
     constexpr int IconCols = 8;
     constexpr float IconTile = 58, IconRowH = 68;
     const bool filePage = page == Sheet::FileMenu || page == Sheet::FileInfo || page == Sheet::FileLink;
-    const bool relPage = page == Sheet::Release;
+    const bool relPage = page == Sheet::Release || page == Sheet::Model;
     if (filePage) {
         fileSheetRows(rows);
         if (sheet.page != page) return;   // the file went
     } else if (relPage) {
-        updateSheetRows(rows);   // view_updates.cpp: Install / Go back, then the changelog
+        if (page == Sheet::Model) modelSheetRows(rows);   // view_updates.cpp: Download, Use, Go back, then its notes
+        else updateSheetRows(rows);   // view_updates.cpp: Install / Go back, then the changelog
         if (sheet.page != page) return;
+    } else if (page == Sheet::Report) {
+        reportRows(rows);   // view_support.cpp: the report's form
+    } else if (page == Sheet::Crashes) {
+        crashRows(rows);    // … Atmosphère's crash reports
     } else if (page == Sheet::Factory) {
         factoryRows(rows);   // view_updates.cpp: a switch for each part, then Erase what is ticked / Erase everything
     } else if (page == Sheet::PlMenu) {
@@ -624,11 +694,23 @@ void App::drawSmartSheet() {
                              closeSheet();
                              newPlaylist(-1);
                          } });
-        rows.push_back({ Row::Action, ICON_LINK, "Automix playlist…", "Pick songs; Gatefold orders them for the best joins", "",
+        rows.push_back({ Row::Action, ICON_SPARKLE, "Automix playlist…", "Pick songs; Songate orders them for the best joins", "",
                          [this] { openAutomixPicker(); } });
-        rows.push_back({ Row::Action, ICON_SPARKLE, "Smart playlist…", "Fills itself from your library and keeps up to date", "", [this] {
+        rows.push_back({ Row::Action, PLI_SMART, "Smart playlist…", "Fills itself from your library and keeps up to date", "", [this] {
                              sheet.page = Sheet::Smart;
                              ui.focusDefault();
+                         } });
+        rows.push_back({ Row::Action, PLI_MOOD, "Mood playlist…", "Your library sorted by how it sounds: Happy, Party, Relaxed…", "", [this] {
+                             for (int i = 0; i < int(recipes().size()); i++)
+                                 if (!strcmp(recipes()[size_t(i)].id, "mood")) {
+                                     const Recipe& p = recipes()[size_t(i)];
+                                     sheet.recipe = i;
+                                     sheet.arg = std::to_string(p.def);
+                                     sheet.name = defaultName(p, sheet.arg);
+                                     sheet.nameTouched = false;
+                                     sheet.page = Sheet::SmartForm;
+                                     ui.focusDefault();
+                                 }
                          } });
         rows.push_back({ Row::Action, ICON_DOWNLOAD, "Import a playlist file…", "An .m3u or .m3u8 file anywhere on the SD card", "",
                          [this] { openPlaylistPicker(); } });
@@ -786,7 +868,7 @@ void App::drawSmartSheet() {
             rows.back().h = 44;
             rows.back().on = store.eq.preset < 0;
         }
-        if (rows.size()) { rows.push_back({ Row::Group, nullptr, "Gatefold's" }); rows.back().h = 34; }
+        if (rows.size()) { rows.push_back({ Row::Group, nullptr, "Songate's" }); rows.back().h = 34; }
         for (int i = 0; i < GFEQ_PRESETS; i++) {
             rows.push_back({ Row::Choice, nullptr, kGfEqPresets[i].name, "", "", [this, i] {
                                  GfbgEq e = store.eq;
@@ -861,7 +943,7 @@ void App::drawSmartSheet() {
     g.rect(0, 0, css::W, css::H, { 0, 0, 0 }, 0.55f);
     const float w = 600, x = (css::W - w) / 2;
     const bool ask = page == Sheet::Confirm;
-    const bool footer = page == Sheet::SmartForm || ask;
+    const bool footer = page == Sheet::SmartForm || page == Sheet::Report || ask;
     const float headH = 24 + 64 + 18, footH = footer ? 64 : 0, maxBody = css::H - 60 - headH - footH - 16;
     float bodyH = 8;
     for (const auto& r : rows) bodyH += r.h;
@@ -898,7 +980,8 @@ void App::drawSmartSheet() {
     const char* fileIcon = nullptr;
     std::string fileKick, fileTitle, fileSub;
     if (filePage) fileSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
-    if (relPage) updateSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
+    if (page == Sheet::Model) modelSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
+    else if (relPage) updateSheetHeader(fileIcon, fileKick, fileTitle, fileSub);
     const bool facPage = page == Sheet::Factory;
     if (facPage) {
         fileIcon = ICON_X;
@@ -906,13 +989,21 @@ void App::drawSmartSheet() {
         fileTitle = "Choose what to erase";
         fileSub = "Your music files and backups always stay";
     }
-    const bool ownHead = filePage || relPage || facPage;   // pages that say their own header
+    const bool supPage = page == Sheet::Report || page == Sheet::Crashes;
+    if (page == Sheet::Report) reportHeader(fileIcon, fileKick, fileTitle, fileSub);
+    if (page == Sheet::Crashes) {
+        fileIcon = ICON_BUG;
+        fileKick = "Support";
+        fileTitle = "Crash reports";
+        fileSub = "Atmosphère's, newest first";
+    }
+    const bool ownHead = filePage || relPage || facPage || supPage;   // pages that say their own header
     if (filePage && sheet.preview) g.image(sheet.preview, hx, hy, 64, 64, 14);   // an image shows itself
     else if (ownHead) g.icon(fileIcon, hx + 32, hy + 32, 28, pal.accentInk);
     else
-    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? ICON_SPARKLE : ICON_LIST,
+    g.icon(plp ? playlistIcon(sheet.recipe) : ask && sheet.askIcon ? sheet.askIcon : eqp ? ICON_EQ : actl || lacts ? ICON_GAME : rc ? rc->icon : plFile ? ICON_LIST : sleep ? ICON_MOON : jobs ? ICON_REFRESH : job ? (jb.stop == Stoppable::Levels ? ICON_WAVE : ICON_IMAGE) : page == Sheet::Smart ? PLI_SMART : ICON_LIST,
            hx + 32, hy + 32, 28, pal.accentInk);
-    const std::string kick = ownHead ? fileKick : plp ? (plp->own() ? "Playlist" : plp->smart() ? "Smart playlist" : "Folder playlist") : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
+    const std::string kick = ownHead ? fileKick : plp ? playlistKind(sheet.recipe) : ask ? sheet.askKicker : eqp ? "Equalizer" : actl ? "Background player" : lacts ? "Games" : rc ? kGroups[rc->group] : plFile ? "Playlist file" : sleep ? "Sleep timer" : job || jobs ? "In the background" : page == Sheet::Smart ? "New playlist" : "Playlists";
     const std::string title = ownHead ? fileTitle : plp ? plp->name : ask ? sheet.askTitle
                             : eqp ? "Preset"
                             : actl ? evNames[std::clamp(sheet.recipe, 0, 3)]
@@ -924,7 +1015,7 @@ void App::drawSmartSheet() {
                             : jobs ? "Running now"
                             : page == Sheet::Smart ? "Smart playlist" : "New playlist";
     const std::string sub = ownHead ? fileSub : page == Sheet::PlIcon ? "Its icon in the sidebar: A picks one" : plp ? "More for this playlist" : ask ? sheet.askSub
-                          : eqp ? "Yours keep the whole sound; Gatefold's set the ten bands only"
+                          : eqp ? "Yours keep the whole sound; Songate's set the ten bands only"
                           : actl ? "The playlist it plays, faded in"
                           : lacts ? "The game events that play it; off, they do what they usually do"
                           : rc ? rc->desc
@@ -940,6 +1031,7 @@ void App::drawSmartSheet() {
     // A job's count rises while the card is open: fixed-width digits, as the progress cards draw it, so nothing shifts
     if (job || jobs) g.textNum(sub, { css::Sm }, hx + 64 + 16, hy + 44, pal.text3);
     else g.text(sub, { css::Sm }, hx + 64 + 16, hy + 44, pal.text3, 1, Align::Left, textW);
+    hint(uid("sp.close"), "Close");
     if (iconButton(uid("sp.close"), ICON_X, x + w - 24 - 14, hy + 14)) { closeSheet(); return; }
     g.rect(x + 24, y + headH - 1, w - 48, 1, pal.text, 0.09f);
 
@@ -1024,6 +1116,12 @@ void App::drawSmartSheet() {
         }
         case Row::Setting: {
             g.textC(r.label, { css::Base, Weight::SemiBold }, x + 24, ry + r.h / 2, pal.text2);
+            if (r.pick) {   // its own options (Support's form)
+                int pick = -1;
+                segmented(uid("sp.seg", int(i)), x + w - 24, ry + r.h / 2, r.opts, r.cur, &pick);
+                if (pick >= 0) r.pick(pick);
+                break;
+            }
             std::vector<std::string> labels;
             int cur = 0;
             for (size_t k = 0; k < rc->opts.size(); k++) {
@@ -1044,8 +1142,11 @@ void App::drawSmartSheet() {
             const float nw = float(g.measure(n, { css::Xl, Weight::ExtraBold }));
             g.textC(n, { css::Xl, Weight::ExtraBold }, x + 24, ry + r.h / 2, matched.empty() ? pal.text3 : pal.accentInk);
             const bool stats0 = rc->group == 0 && matched.empty();
-            g.textC(matched.empty() ? (stats0 ? "Nothing yet: plays are counted from now on" : "Nothing matches yet")
-                                    : std::string(matched.size() == 1 ? "track matches" : "tracks match") + " now",
+            // Mood: the library is analysed for it (from its first Mood playlist on): the songs come as it goes
+            const bool moodWait = rc->group == 2 && moodDone_ < int(lib.tracks.size());
+            g.textC(moodWait && matched.empty() ? "Songs arrive as your library is analysed"
+                    : matched.empty() ? (stats0 ? "Nothing yet: plays are counted from now on" : "Nothing matches yet")
+                    : std::string(matched.size() == 1 ? "track matches" : "tracks match") + (moodWait ? " so far" : " now"),
                     { css::Base }, x + 24 + nw + 10, ry + r.h / 2 + 1, pal.text2);
             break;
         }
@@ -1172,6 +1273,8 @@ void App::drawSmartSheet() {
         return;
     }
 
+    if (page == Sheet::Report) { reportFooter(x, w, fy); return; }   // view_support.cpp: Send, Cancel
+
     // ---- footer: Cancel, Create
     const float cw = g.measure("Create", bf) + 32 + 24, kw = g.measure("Back", bf) + 32;
     button(uid("sp.create"), ICON_CHECK, "Create", x + w - 24 - cw, fy + 7, true, &c, false, false, DefaultFocus);
@@ -1183,9 +1286,9 @@ void App::drawSmartSheet() {
         const std::string made = store.playlists[size_t(p)].name;
         closeSheet();
         navigate(View::List, p);
-        toast("Made the smart playlist “" + made + "”");
+        toast(std::string(rc->group == 2 ? "Made the mood playlist “" : "Made the smart playlist “") + made + "”");
         return;
     }
     button(uid("sp.back"), nullptr, "Back", x + w - 24 - cw - 8 - kw, fy + 7, false, &c);
-    if (c) { sheet.page = Sheet::Smart; ui.focusDefault(); }
+    if (c) { sheet.page = rc->group == 2 ? Sheet::NewList : Sheet::Smart; ui.focusDefault(); }   // (Mood's form: from New playlist)
 }

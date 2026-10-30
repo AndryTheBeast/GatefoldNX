@@ -243,7 +243,7 @@ private:
         std::string scrollText;
     };
 
-    static constexpr const char *TITLE = "Gatefold \u266B";
+    static constexpr const char *TITLE = "Songate \u266B";
 
     void calcScrollWidth(tsl::gfx::Renderer *renderer, ScrollState &s,
                          const char *text, u32 fontSize, bool widgetDrawn) {

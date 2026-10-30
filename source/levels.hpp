@@ -26,7 +26,8 @@ struct Level {
     float lufs = NAN;   // NaN: could not be measured (silence, or a file FFmpeg cannot read)
     float peak = 0;     // true peak, linear
     float blocks = 0;   // 400 ms blocks above the gates: the track's weight in its album
-    mixan::Info mix;    // Automix's analysis, made in the same decode (mix.tsv)
+    mixan::Info mix;    // Automix's analysis, made in the same decode (mix.tsv); its mood (mix.mood) in mood.tsv
+    bool moodTried = false;   // the mood measured, or tried (too short, silent, unreadable): not decoded again for it
 };
 
 class Levels {
@@ -45,6 +46,11 @@ public:
     bool dirty() const { return dirty_; }
     std::string serialise();   // loudness.tsv; clears dirty
     std::string serialiseMix() const;   // mix.tsv: written with loudness.tsv, each time
+    std::string serialiseMood() const;  // mood.tsv: with them (Mood playlists' features, their own version)
+    /** Mood playlists want every track's mood: the tracks measured before it (or with another version of it) are decoded
+     *  again for it, in the library's turn; off, they are not (nobody needs them). */
+    void wantMood(bool on);
+    size_t moodCount() const { return moodDone_; }   // tracks whose mood is known (or was tried)
     /** Settings → Storage and reset: every measurement forgotten (loudness.tsv is written again, empty); measured anew as wanted. */
     void forget();
     size_t count() const { return done_; }   // tracks measured and analysed (one measured before Automix: not yet)
@@ -62,7 +68,7 @@ private:
 
     std::unordered_map<std::string, Level> map_;
     unsigned gen_ = 0;
-    size_t done_ = 0;
+    size_t done_ = 0, moodDone_ = 0;
     bool dirty_ = false, loaded_ = false;
     double measuredS_ = 0;   // the gaps between library tracks finishing (gaps over 30 s, a pause, left out)
     int measuredN_ = 0;
@@ -80,6 +86,8 @@ private:
     std::vector<std::string> first_, all_;
     size_t allAt_ = 0;
     std::unordered_set<std::string> known_;   // the worker's: measured or tried
+    std::unordered_set<std::string> moodKnown_;   // … and with the mood's features (of this version) or tried
+    bool moodWanted_ = false;
     bool fileRead_ = false;
     std::unordered_map<std::string, Level> fromFile_;
     std::vector<std::pair<std::string, Level>> found_;

@@ -88,11 +88,12 @@ std::vector<std::string> readLines(const std::string& p) {
 
 void Engine::start() {
     mutexInit(&m_);
+    fader_.init(GFBG_RATE, 0);   // Automix's mixer: the echo's delay line only for a join that echoes (startJoin)
     loadFiles();
     static Thread audio, watch;
     // The audio thread sits just under the IPC thread's priority, on the same core.
     threadCreate(&audio, audioMain, this, nullptr, 0x8000, 0x2B, -2);
-    threadCreate(&watch, watchMain, this, nullptr, 0x4000, 0x2E, -2);
+    threadCreate(&watch, watchMain, this, nullptr, 0x8000, 0x2E, -2);   // (Automix decodes the next track's start on it)
     threadStart(&audio);
     threadStart(&watch);
 }
@@ -141,6 +142,23 @@ GfbgState Engine::state() {
     if (sleepAt_) s.sleepLeft = float(double(sleepAt_ > nowMs() ? sleepAt_ - nowMs() : 0) / 1000.0);
     s.sleepGen = sleepGen_;
     s.eqGen = eqGen_;
+    // Automix's join, on what is heard (audout holds inFlight_ frames): the one playing, or the next one planned
+    s.joinGen = joinGen_;
+    const automix::Plan* jp = nullptr;
+    if (joining_ && outDec_) {
+        s.joining = 2;
+        jp = &joinPlan_;
+        s.joinAt = float((double(joinAt_) - double(delay_) - double(inFlight_)) / GFBG_RATE);
+    } else if (automix_ && dec_ && mj_.gen == trackGen_ && !mj_.off) {
+        s.joining = 1;
+        jp = &mj_.plan;
+        s.joinAt = float(s.position - mj_.plan.startOut);
+    }
+    if (jp) {
+        s.joinLength = float(jp->length);
+        s.joinBpm = jp->beatmatched ? jp->bpm : 0.f;
+        s.joinFlags = (jp->beatmatched ? GfbgJoin_Beat : 0u) | (jp->drop ? GfbgJoin_Drop : 0u);
+    }
     return s;
 }
 
@@ -195,6 +213,9 @@ bool Engine::setQueue(const u8* data, size_t size, u32 by) {
     memcpy(order_.data(), data + sizeof h, orderBytes);
     pos_ = h.count ? std::clamp(h.pos, 0, s32(h.count) - 1) : -1;
     mode_ = h.mode <= GfbgMode_Shuffle ? h.mode : GfbgMode_Default;
+    automix_ = (h.flags & GfbgQueue_Automix) != 0;
+    if (automix_ && mode_ == GfbgMode_Shuffle) mode_ = GfbgMode_Default;   // its own order (Gatefold's holdOrderForAutomix)
+    mj_ = MixJoin{};   // planned again for this queue
     name_.assign(h.name, strnlen(h.name, sizeof h.name));
     // Whatever plays now carries on: Gatefold follows a new queue with PlayAt when it wants
     // another track. KeepCurrent only says the track is the one at pos already.
@@ -216,6 +237,7 @@ void Engine::getQueue(u8* out, size_t cap) {
     h.count = u32(count());
     h.pos = pos_;
     h.mode = mode_;
+    h.flags = automix_ ? GfbgQueue_Automix : 0;
     h.pathBytes = u32(blob_.size());
     memcpy(h.name, name_.c_str(), std::min(name_.size(), sizeof h.name - 1));
     if (sizeof h + order_.size() * 4 + blob_.size() > cap) return;
@@ -253,6 +275,7 @@ void Engine::setVolume(float v) {
 void Engine::setMode(u32 mode, u32 by) {
     if (mode > GfbgMode_Shuffle) return;
     Lock l(&m_);
+    if (automix_ && mode == GfbgMode_Shuffle) mode = GfbgMode_Default;   // an Automix playlist plays in its own order
     const s32 cur = current();
     mode_ = mode;
     lvlTarget_ = levelFor(playing_);   // Auto levels by track while shuffling, by album otherwise
@@ -356,6 +379,8 @@ void Engine::setConfig(const GfbgConfig& c) {
         cfg_.crossfade = std::isfinite(cfg_.crossfade) ? std::clamp(cfg_.crossfade, 0.f, 12.f) : 0.f;
         cfg_.xfadeFlags &= GfbgXfade_NotInAlbum;
         cfg_.listStart = std::min<u32>(cfg_.listStart, GfbgListStart_Shuffle);
+        cfg_.automixModel = std::min<u32>(cfg_.automixModel, u32(automix::Model::Count) - 1);
+        cfg_.automixFile[sizeof cfg_.automixFile - 1] = 0;
         lvlTarget_ = levelFor(playing_);   // the levelling mode may have changed: eased to the new gain
         applyGameVolume();   // the default may be the one the game in front uses
     }
@@ -531,7 +556,7 @@ void Engine::runCommands() {
         case Cmd::Prev: prev(); trackBy_ = c.by; break;
         case Cmd::Seek:
             if (!dec_) { resumeAt_ = c.t; break; }
-            outDec_.reset();   // a seek ends a crossfade
+            endJoin();   // a seek ends a crossfade or a join
             dec_->seek(c.t);
             rs_.reset(dec_->rate, GFBG_RATE);
             tailFlushed_ = false;
@@ -559,6 +584,7 @@ bool Engine::load(s32 pos, double start) {
 bool Engine::adopt(s32 pos, std::unique_ptr<Decoder> d, const std::string& p, const std::string& cover, double start) {
     pos_ = pos;   // even when it failed: the skip carries on from here
     trackGen_++;
+    if (mj_.gen && mj_.gen != trackGen_) mj_ = MixJoin{};   // a join planned for the track before: its decoder goes
     if (!d) return false;
     dec_ = std::move(d);
     rs_.reset(dec_->rate, GFBG_RATE);
@@ -582,12 +608,12 @@ void Engine::playAtPos(s32 pos, bool paused, double start) {
     if (n == 0) return;
     pos = std::clamp(pos, 0, n - 1);
     // With crossfade on, a track changed by hand while one plays fades in 0.3 s instead of cutting.
-    if (!paused && start <= 0.5 && cfg_.crossfade > 0 && status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_ && !outDec_ &&
-        crossfadeInto(pos, 0.3, false)) {
+    if (!paused && start <= 0.5 && (cfg_.crossfade > 0 || automix_) && status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_ &&
+        !outDec_ && crossfadeInto(pos, 0.3, false)) {
         failed_ = 0;
         return;
     }
-    outDec_.reset();
+    endJoin();
     for (s32 tries = 0; tries < n; tries++) {
         if (load(pos, start)) {
             failed_ = 0;
@@ -690,6 +716,11 @@ bool Engine::crossfadeInto(s32 pos, double fade, bool albumRule) {
     if (!d || !dec_) return false;
     if (albumRule && (cfg_.xfadeFlags & GfbgXfade_NotInAlbum) && !album.empty() && !strcasecmp(album.c_str(), d->tags.album.c_str()))
         return false;   // the next track of the same album: it keeps its gapless join
+    if (joining_) {
+        if (joinEcho_) fader_.releaseEcho();
+        joining_ = joinEcho_ = false;
+        joinLen_ = joinAt_ = delay_ = 0;
+    }
     outDec_ = std::move(dec_);
     std::swap(outRs_, rs_);
     outTail_ = tailFlushed_;
@@ -700,9 +731,208 @@ bool Engine::crossfadeInto(s32 pos, double fade, bool albumRule) {
     return true;
 }
 
+// ============================================================ Automix (protocol 6)
+
+/** The join the watch thread planned and prepared: the next track, already at its offset, takes over as Gatefold's player
+ *  does (App::updateAutomix, Player::load): this one becomes the outgoing voice and the next starts on its sample. */
+bool Engine::startJoin() {
+    const s32 pos = mj_.pos;
+    if (pos < 0 || pos >= s32(order_.size()) || mj_.next != path(order_[size_t(pos)])) {   // the queue changed under it
+        mj_ = MixJoin{};
+        return false;
+    }
+    automix::Plan pl = mj_.plan;
+    // the echo's delay line, only for a join that echoes and only with room for it; else the same join, dry
+    if (pl.join.effect == automix::Effect::Echo) {
+        const size_t bytes = (size_t(std::ceil(pl.echoDelay * GFBG_RATE)) + 1) * 2 * sizeof(float);
+        if (heapHas(bytes + 64 * 1024)) fader_.reserveEcho(pl.echoDelay);
+        else pl.join.effect = automix::Effect::None;
+    }
+    const double at = base_ + double(outFrames_) / GFBG_RATE;
+    outDec_ = std::move(dec_);
+    std::swap(outRs_, rs_);
+    outTail_ = tailFlushed_;
+    outLvl_ = lvl_;
+    joinPlan_ = pl;
+    joinLen_ = std::max<u64>(1, u64(std::llround(pl.length * GFBG_RATE)));
+    joinAt_ = 0;
+    delay_ = at < pl.startOut ? u64(std::llround((pl.startOut - at) * GFBG_RATE)) : 0;
+    joinEcho_ = pl.join.effect == automix::Effect::Echo;
+    fader_.begin(pl);
+    joining_ = true;
+    joinGen_++;
+    std::unique_ptr<Decoder> d = std::move(mj_.dec);
+    const std::string p = mj_.next, cover = mj_.cover;
+    mj_ = MixJoin{};
+    adopt(pos, std::move(d), p, cover, 0);
+    base_ = pl.offset;   // (adopt counts from 0 under half a second)
+    trackBy_ = 0;
+    return true;
+}
+
+void Engine::endJoin() {
+    outDec_.reset();
+    if (joining_ && joinEcho_) fader_.releaseEcho();
+    joining_ = joinEcho_ = false;
+    joinLen_ = joinAt_ = delay_ = 0;
+}
+
+/** A track's analysis from GFBG_MIX ("path<TAB>mixan::Info::pack()"), read a line at a time: the file runs to a MB. */
+bool Engine::mixInfo(const std::string& path, mixan::Info& out) {
+    for (int k = 0; k < 2; k++)
+        if (infoPath_[k] == path) { out = info_[k]; return infoOk_[k]; }
+    bool ok = false;
+    if (FILE* f = fopen(GFBG_MIX, "rb")) {
+        static char line[2048];   // (the watch thread's only)
+        const size_t n = path.size();
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, path.c_str(), n) != 0 || line[n] != '\t') continue;
+            size_t len = strlen(line);
+            while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
+            ok = mixan::Info::unpack(std::string(line + n + 1), out) && out.valid;
+            break;
+        }
+        fclose(f);
+    }
+    if (!ok) out = mixan::Info{};
+    infoPath_[0] = std::move(infoPath_[1]);
+    info_[0] = std::move(info_[1]);
+    infoOk_[0] = infoOk_[1];
+    infoPath_[1] = path;
+    info_[1] = out;
+    infoOk_[1] = ok;
+    return ok;
+}
+
+/**
+ * Every watch tick, for an Automix playlist's queue: the join from this track to the next is planned once both are known
+ * (crossfadeNextPos's rules: Repeat one, Stop after, the sleep timer, the end of the list), with Gatefold's model; then,
+ * from 12 s before it, the next track is opened and decoded up to the plan's offset, a few seconds each tick, so neither
+ * the audio thread nor the game events ever wait on it.
+ */
+void Engine::watchAutomix() {
+    u32 gen;
+    double dur, at;
+    std::string cur, next;
+    s32 pos;
+    automix::Model model;
+    std::string modelFile;
+    float fallback;
+    bool planned;
+    automix::Plan pl;
+    {
+        Lock l(&m_);
+        if (!automix_ || !dec_ || status_ != GfbgStatus_Playing || joining_) { prepDec_.reset(); prepGen_ = 0; return; }
+        gen = trackGen_;
+        dur = dec_->duration;
+        at = base_ + double(outFrames_) / GFBG_RATE;
+        pos = crossfadeNextPos(dur > 0 ? dur - at : 1e9);
+        cur = playing_;
+        next = pos >= 0 ? path(order_[size_t(pos)]) : std::string();
+        model = automix::Model(std::min<u32>(cfg_.automixModel, u32(automix::Model::Count) - 1));
+        modelFile = cfg_.automixFile;
+        fallback = cfg_.crossfade;
+        planned = mj_.gen == gen && mj_.pos == pos && mj_.next == next;
+        pl = mj_.plan;
+        if (planned && (mj_.off || mj_.dec)) return;   // nothing to do until the join
+    }
+    if (pos < 0) return;   // looked at again next tick: the queue, the order or Stop after may change
+    if (modelFile != modelName_) {   // the model Gatefold chose, from its file (the same one Gatefold plans with)
+        modelName_ = modelFile;
+        modelOk_ = false;
+        std::string text;
+        if (!modelFile.empty())
+            if (FILE* f = fopen((std::string(GFBG_MODELS) + "/" + modelFile).c_str(), "rb")) {
+                char buf[1024];
+                for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0 && text.size() < 65536;) text.append(buf, n);
+                fclose(f);
+            }
+        modelOk_ = !text.empty() && modelFile_.parse(text);   // (unreadable: the built-in model it named)
+        planned = false;
+    }
+    if (!planned) {
+        mixan::Info a, b;
+        const bool ka = mixInfo(cur, a), kb = mixInfo(next, b);
+        if (dur <= 0 && ka) dur = a.seconds;   // no length from the decoder: the analysis measured it
+        if (dur <= 0) return;
+        pl = modelOk_ ? automix::plan(ka ? &a : nullptr, dur, kb ? &b : nullptr, fallback, nullptr, modelFile_)
+                      : automix::plan(ka ? &a : nullptr, dur, kb ? &b : nullptr, fallback, nullptr, model);
+        Lock l(&m_);
+        if (trackGen_ != gen) return;
+        mj_ = MixJoin{};
+        mj_.gen = gen;
+        mj_.pos = pos;
+        mj_.next = next;
+        mj_.plan = pl;
+        mj_.off = pl.off || dur <= pl.length * 2;   // Off, or a track shorter than two fades: it plays whole
+        if (mj_.off) return;
+    }
+    if (at < pl.startOut - 12) return;
+    // the next track, opened and moved to the plan's offset by decoding up to it: exact to the sample, as FfDecoder::skip
+    if (!prepDec_ || prepGen_ != gen || prepPath_ != next) {
+        prepDec_.reset();
+        prepGen_ = 0;
+        {
+            Lock l(&m_);
+            const struct mallinfo mi = mallinfo();
+            if (gfHeapSize < size_t(mi.uordblks) + 320 * 1024) return;   // two decoders at once only with room to spare
+        }
+        prepDec_ = openDecoder(next.c_str());
+        if (!prepDec_) return;   // unplayable: the queue's own rules skip it when it comes
+        prepCover_ = !prepDec_->tags.coverKind ? folderCover(next) : std::string();
+        prepPath_ = next;
+        prepGen_ = gen;
+        prepDone_ = 0;
+        prepWant_ = u64(std::llround(std::max(0.0, pl.offset) * prepDec_->rate));
+    }
+    // up to 4 s of it a tick (4 ticks a second: 16 times faster than it plays)
+    s16 buf[1024 * 2];
+    for (u64 budget = u64(prepDec_->rate) * 4; prepDone_ < prepWant_ && budget > 0;) {
+        const int want = int(std::min<u64>({ 1024, prepWant_ - prepDone_, budget }));
+        const int r = prepDec_->read(buf, want);
+        if (r <= 0) { prepWant_ = prepDone_; break; }   // shorter than its offset: it starts where it ends
+        prepDone_ += u64(r);
+        budget -= std::min<u64>(budget, u64(r));
+    }
+    if (prepDone_ < prepWant_) return;
+    Lock l(&m_);
+    if (mj_.gen == gen && mj_.next == next && !mj_.dec) {
+        mj_.dec = std::move(prepDec_);
+        mj_.cover = std::move(prepCover_);
+    }
+    prepDec_.reset();
+    prepGen_ = 0;
+}
+
+/** A playlist's kind (GFBG_KIND_*) from GFBG_PLAYLISTS: its "!kinds" line, a letter per "#" line in the file's order. */
+char Engine::kindOf(const std::string& name) {
+    FILE* f = fopen(GFBG_PLAYLISTS, "rb");
+    if (!f) return 0;
+    std::string kinds, line;
+    char out = 0;
+    int idx = 0;
+    char buf[1024];
+    while (fgets(buf, sizeof buf, f)) {
+        size_t n = strlen(buf);
+        const bool whole = n && buf[n - 1] == '\n';
+        while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
+        line += buf;
+        if (!whole && !feof(f)) continue;   // the rest of a long line
+        if (!line.compare(0, 7, "!kinds ")) kinds = line.substr(7);
+        else if (line[0] == '#') {
+            if (line.compare(1, std::string::npos, name) == 0) { out = idx < int(kinds.size()) ? kinds[size_t(idx)] : 0; break; }
+            idx++;
+        }
+        line.clear();
+    }
+    fclose(f);
+    return out;
+}
+
 void Engine::stop(bool cut) {
     dec_.reset();
-    outDec_.reset();
+    endJoin();
+    mj_ = MixJoin{};
     playing_.clear();
     status_ = GfbgStatus_Stopped;
     pauseAtSilence_ = autoPausing_ = false;
@@ -728,9 +958,17 @@ void Engine::rampTo(float target, float seconds, bool pauseAfter) {
  */
 int Engine::produce(s16* out, int frames) {
     {
-        // Crossfade: once the track being decoded is within the fade of its end, the next one starts under it.
         Lock l(&m_);
-        if (cfg_.crossfade > 0 && dec_ && !outDec_ && !xfChecked_ && status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_->duration > 0) {
+        if (joining_ && !outDec_) endJoin();   // its outgoing track went (a seek, a track picked by hand, Stop)
+        if (automix_) {
+            // Automix: the join planned by the watch thread starts 0.6 s before its moment, as in Gatefold, the next track
+            // waiting delay_ frames for its sample; not ready yet (still being opened), this one plays on and it starts as
+            // soon as it is (late: at once)
+            if (dec_ && !outDec_ && mj_.gen == trackGen_ && mj_.dec && status_ == GfbgStatus_Playing && !pauseAtSilence_ &&
+                base_ + double(outFrames_) / GFBG_RATE >= mj_.plan.startOut - 0.6)
+                startJoin();
+        } else if (cfg_.crossfade > 0 && dec_ && !outDec_ && !xfChecked_ && status_ == GfbgStatus_Playing && !pauseAtSilence_ && dec_->duration > 0) {
+            // Crossfade: once the track being decoded is within the fade of its end, the next one starts under it.
             const double left = dec_->duration - (base_ + double(outFrames_) / GFBG_RATE);
             if (left <= cfg_.crossfade && left > 0.25) {
                 xfChecked_ = true;
@@ -740,14 +978,18 @@ int Engine::produce(s16* out, int frames) {
             }
         }
     }
-    int n = 0;
-    while (n < frames && dec_) {
-        const int got = rs_.pull(mix_ + n * 2, frames - n);
-        n += got;
-        if (got > 0) {
+    // A join: the incoming track starts dd frames into this buffer (before that the outgoing one plays alone)
+    const int dd = joining_ ? int(std::min<u64>(delay_, u64(frames))) : 0;
+    float* const in = mix_ + dd * 2;
+    const int want = frames - dd;
+    int got = 0;
+    while (got < want && dec_) {
+        const int g = rs_.pull(in + got * 2, want - got);
+        got += g;
+        if (g > 0) {
             Lock l(&m_);
-            outFrames_ += u64(got);
-            heardFrames_ += u64(got);   // what was heard, seeks or not: foo_playcount counts listening time
+            outFrames_ += u64(g);
+            heardFrames_ += u64(g);   // what was heard, seeks or not: foo_playcount counts listening time
             const double dur = dec_->duration;
             const double need = dur > 0 ? std::min(60.0, dur * 0.9) : 60.0;   // Gatefold's Stats::threshold
             if (!counted_ && double(heardFrames_) >= need * GFBG_RATE) {
@@ -755,7 +997,7 @@ int Engine::produce(s16* out, int frames) {
                 if (plays_.size() < 256) plays_.push_back(playing_);
             }
         }
-        if (n >= frames) break;
+        if (got >= want) break;
         const int r = dec_->read(decBuf_, 1024);
         if (r > 0) { rs_.push(decBuf_, r); continue; }
         if (!tailFlushed_) {
@@ -770,12 +1012,13 @@ int Engine::produce(s16* out, int frames) {
         next(true);
         if (status_ != GfbgStatus_Playing) break;
     }
+    int n = got > 0 || dd > 0 ? dd + got : 0;
     if (outDec_ && n > 0) {
-        // The track fading out: decoded and resampled on its own, then the two meet, sin in and cos out.
+        // The track fading out: decoded and resampled on its own, then the two meet: Automix's Fader, or sin in and cos out.
         int m = 0;
         while (m < n) {
-            const int got = outRs_.pull(outMix_ + m * 2, n - m);
-            m += got;
+            const int g = outRs_.pull(outMix_ + m * 2, n - m);
+            m += g;
             if (m >= n) break;
             const int r = outDec_->read(decBuf_, 1024);
             if (r > 0) { outRs_.push(decBuf_, r); continue; }
@@ -785,16 +1028,30 @@ int Engine::produce(s16* out, int frames) {
             outTail_ = true;
         }
         std::fill(outMix_ + m * 2, outMix_ + n * 2, 0.f);
-        for (int i = 0; i < n; i++) {
-            const float t = std::min(1.f, float(xfAt_ + u64(i)) / float(xfLen_));
-            const float gin = std::sin(t * float(M_PI) / 2), gout = std::cos(t * float(M_PI) / 2);
-            mix_[i * 2] = mix_[i * 2] * gin + outMix_[i * 2] * gout;
-            mix_[i * 2 + 1] = mix_[i * 2 + 1] * gin + outMix_[i * 2 + 1] * gout;
-        }
-        xfAt_ += u64(n);
-        if (xfAt_ >= xfLen_ || m < n) {
+        if (joining_) {
+            // its own levelling: the gain below is the incoming track's (Gatefold's player keeps it the same way)
+            const float keep = outLvl_ / std::max(1e-4f, lvl_);
+            for (int i = 0; i < n * 2; i++) outMix_[i] *= keep;
+            std::copy(outMix_, outMix_ + dd * 2, mix_);
+            if (n > dd) fader_.mix(in, outMix_ + dd * 2, n - dd, double(joinAt_) / double(joinLen_), 1.0 / double(joinLen_));
             Lock l(&m_);
-            outDec_.reset();
+            delay_ -= u64(dd);
+            joinAt_ += u64(n - dd);
+            if (m < n && delay_ > 0) delay_ = 0;   // the outgoing track ended before its mix point: no gap
+            // the join's end; or the outgoing track's, unless its echo still rings on
+            if (joinAt_ >= joinLen_ || (m < n && !joinEcho_)) endJoin();
+        } else {
+            for (int i = 0; i < n; i++) {
+                const float t = std::min(1.f, float(xfAt_ + u64(i)) / float(xfLen_));
+                const float gin = std::sin(t * float(M_PI) / 2), gout = std::cos(t * float(M_PI) / 2);
+                mix_[i * 2] = mix_[i * 2] * gin + outMix_[i * 2] * gout;
+                mix_[i * 2 + 1] = mix_[i * 2 + 1] * gin + outMix_[i * 2 + 1] * gout;
+            }
+            xfAt_ += u64(n);
+            if (xfAt_ >= xfLen_ || m < n) {
+                Lock l(&m_);
+                outDec_.reset();
+            }
         }
     }
     if (n == 0) return 0;
@@ -1062,17 +1319,21 @@ bool Engine::playPlaylist(u64 hash) {
     if (!f) return false;
     // Packed as the queue is, straight away (a std::string per path cost several times the paths themselves); a list
     // too big for the heap plays as far as it fits, rather than aborting the module.
-    std::string blob, name;
+    std::string blob, name, kinds;
     std::vector<u32> offs;
     bool in = false;
+    char kind = 0;
+    int idx = 0;
     char line[1024];
     while (fgets(line, sizeof line, f)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        if (!in && !strncmp(line, "!kinds ", 7)) { kinds = line + 7; continue; }   // (protocol 6)
         if (line[0] == '#') {
             if (in) break;   // the next playlist: this one is complete
             in = gfbgHash(line + 1, n - 1) == hash;
-            if (in) name = line + 1;
+            if (in) { name = line + 1; kind = idx < int(kinds.size()) ? kinds[size_t(idx)] : 0; }
+            idx++;
             continue;
         }
         if (!in || !n) continue;
@@ -1090,10 +1351,12 @@ bool Engine::playPlaylist(u64 hash) {
     offs_ = std::move(offs);
     name_ = name;
     listHash_ = hash;
+    automix_ = kind == GFBG_KIND_AUTOMIX;
+    mj_ = MixJoin{};
     identityOrder();
     s32 pos = 0;
     double start = 0;
-    if (cfg_.listStart == GfbgListStart_Shuffle) {
+    if (cfg_.listStart == GfbgListStart_Shuffle && !automix_) {   // an Automix playlist: in its order, where it was left
         mode_ = GfbgMode_Shuffle;
         shuffle();
     } else {
@@ -1211,6 +1474,7 @@ void Engine::watchMain(void* self) {
         mutexUnlock(&e->m_);
         if (due) e->saveSession();
         e->writePlays();
+        e->watchAutomix();
         e->watchSleep(now);
         if (now - gainsAt >= 2000) { gainsAt = now; e->watchGains(); }
         mutexLock(&e->m_);
@@ -1249,6 +1513,8 @@ void Engine::loadFiles() {
         else if (k == "crossfade") cfg_.crossfade = std::clamp(float(atof(v)), 0.f, 12.f);
         else if (k == "xfadeFlags") cfg_.xfadeFlags = u32(atoi(v)) & GfbgXfade_NotInAlbum;
         else if (k == "listStart") cfg_.listStart = u32(std::clamp(atoi(v), 0, 1));
+        else if (k == "automixModel") cfg_.automixModel = u32(std::clamp(atoi(v), 0, int(automix::Model::Count) - 1));
+        else if (k == "automixFile") snprintf(cfg_.automixFile, sizeof cfg_.automixFile, "%s", v);
         else if (!k.compare(0, 4, "list") && k.size() == 5 && k[4] >= '0' && k[4] <= '3') cfg_.lists[k[4] - '0'] = strtoull(v, nullptr, 16);
         else if (k == "eqOn") eqCfg_.on = u8(atoi(v) != 0);
         else if (k == "eqAdvanced") eqCfg_.advanced = u8(atoi(v) != 0);
@@ -1305,6 +1571,7 @@ void Engine::loadFiles() {
             blob_.push_back('\0');
         }
         else if (k == "name") name_ = v;
+        else if (k == "automix") automix_ = atoi(v) != 0;
         else if (k == "list") listHash_ = strtoull(v, nullptr, 16);
         else if (k == "pos") pos_ = atoi(v);
         else if (k == "position") resumeAt_ = std::max(0.0, atof(v));
@@ -1316,6 +1583,8 @@ void Engine::loadFiles() {
         }
     }
     if (sf) fclose(sf);
+    if (!own) automix_ = kindOf(name_) == GFBG_KIND_AUTOMIX;   // Gatefold's own session: its queue's playlist says
+    if (automix_ && mode_ == GfbgMode_Shuffle) mode_ = GfbgMode_Default;
     bool ok = order.size() == offs_.size();
     for (s32 o : order) ok = ok && o >= 0 && o < count();
     if (ok) order_ = std::move(order);
@@ -1362,8 +1631,8 @@ void Engine::saveSession() {
         serial = edits_;
         char head[256];
         const double position = status_ == GfbgStatus_Stopped ? resumeAt_ : std::max(0.0, base_ + (double(outFrames_) - double(inFlight_)) / GFBG_RATE);
-        snprintf(head, sizeof head, "pos=%d\nposition=%.2f\nmode=%u\nvolume=%.3f\nlist=%016llx\norder=", pos_, position, mode_, volume_,
-                 (unsigned long long)listHash_);
+        snprintf(head, sizeof head, "pos=%d\nposition=%.2f\nmode=%u\nvolume=%.3f\nlist=%016llx\nautomix=%d\norder=", pos_, position, mode_,
+                 volume_, (unsigned long long)listHash_, automix_ ? 1 : 0);
         chunk = "name=" + name_ + "\n" + head;
     }
     bool ok = true, orderDone = false;
@@ -1401,6 +1670,7 @@ void Engine::saveConfig() {
                 c.onClose, c.onReturn, double(c.fadeOut), double(c.fadeIn), double(c.gameVolume));
         fprintf(f, "levelling=%u\n", unsigned(c.reserved[0]));
         fprintf(f, "crossfade=%.1f\nxfadeFlags=%u\nlistStart=%u\n", double(c.crossfade), unsigned(c.xfadeFlags), unsigned(c.listStart));
+        fprintf(f, "automixModel=%u\nautomixFile=%s\n", unsigned(c.automixModel), c.automixFile);
         for (int i = 0; i < 4; i++) fprintf(f, "list%d=%016llx\n", i, (unsigned long long)c.lists[i]);
         const GfbgEq e = eq();
         fprintf(f, "eqEdited=%d\n", e.edited);

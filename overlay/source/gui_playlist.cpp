@@ -249,7 +249,7 @@ PlaylistGui::PlaylistGui(std::function<void(u32)> on_count_changed)
         m_start = at > kWindow / 4 ? std::min(at - kWindow / 4, count - kWindow) : 0;
         shown = kWindow;
         const std::string note = "Tracks " + std::to_string(m_start + 1) + "-" + std::to_string(m_start + shown) + " of " +
-                                 std::to_string(count) + " " + ult::DIVIDER_SYMBOL + " Gatefold Shows Them All";
+                                 std::to_string(count) + " " + ult::DIVIDER_SYMBOL + " Songate Shows Them All";
         m_list->addItem(new tsl::elm::CustomDrawer([note](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32 h) {
             const auto tw = r->getTextDimensions(note, false, 15).first;
             r->drawString(note, false, x + (w - s32(tw)) / 2, y + 20, 15, tsl::offTextColor);

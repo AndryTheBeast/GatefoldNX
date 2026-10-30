@@ -48,6 +48,11 @@ struct Store {
     Order order = Order::RepeatAll;
     bool sidebarCollapsed = false;
     bool motion = true;
+    // Settings › Appearance › Automix (the user, 2026-10-29): how a join shows. Now playing: 0 Full (the interface steps
+    // aside, the cover glides to the screen's middle), 1 Immersive (the cover to the page's middle, the bars stay), 2 Simple
+    // (all in place: the cover frosts, the texts wipe from one song to the next). The Canvas: 0 Full, 1 Simple
+    int mixAnimNow = 0, mixAnimCanvas = 0;
+    int mixHint = 0;   // the Automix hint: 0 Automatic (each animation's own place), 1 on the cover, 2 above it
     bool showSpectrum = true;
     int canvasLayout = 0;     // 0 cover, 1 lyrics, 2 minimal
     bool canvasLyrics = true;
@@ -85,7 +90,10 @@ struct Store {
     float pointerSpeed = 0.2f;   // Settings shows it doubled: 40%
     bool pointerAccel = true;
     bool frameTimes = false;        // Settings → About: the frame-time graph
-    std::string automixModel;       // Settings › Debug (dev builds): the Automix model by its name ("Automix V1.0.0"); empty: the newest
+    int heldOrder = -1;             // Shuffle, set aside while an Automix playlist plays (App::holdOrderForAutomix); -1 none
+    std::string automixModel;       // the Automix model by its name ("Automix V1.2.0"): Settings › Updates › Automix models (a
+                                    // downloaded one, or the built-in); Settings › Debug's built-in ones in dev builds; empty: the newest built-in
+    std::string modelToasted;       // the downloadable model announced at launch (once each)
     bool keepAwake = true;          // while Gatefold is open: no dimming and no auto-sleep (until a sleep timer ends)
     int dimAfter = 0;               // … but dim the screen after this many minutes without input; 0 off
     bool batteryPercent = true;     // the title bar: the battery's percentage
@@ -134,6 +142,8 @@ struct Store {
     // the newer version already announced at launch (once per version)
     int updates = 0;
     bool updateAtStart = false;
+    bool betas = false;   // Beta versions: listed (apart) and offered; asked first (App::allowBetas)
+    bool reports = false; // Settings › Support › Reports: off, nothing can be sent; on, asked first (App::allowReports)
     std::string updateToasted;
 
     void load();

@@ -121,9 +121,8 @@ float App::automixChip(const std::string& label, float x, float cy, float k, flo
         const float sweep = std::fmod(ph, 3.2f) / 3.2f, sx = x - half + sweep * (w + 2 * half);
         g.bandInPill(x + 1, cy - h / 2 + 1, w - 2, h - 2, sx - half, 2 * half, { 1, 1, 1 }, a * 0.24f);
     }
-    // the sparkle, twinkling
-    const float tw = still ? 1.f : 0.85f + 0.15f * std::sin(ph * 5.3f);
-    g.icon(ICON_SPARKLE, x + pad + icon / 2, cy, icon, mixc(ink, { 1, 1, 1 }, 0.35f * tw), a, tw);   // one icon, scaled smoothly
+    // the sparkle, still (it twinkled: "the little icon inside the hint should be static", the user, 2026-10-29)
+    g.icon(ICON_SPARKLE, x + pad + icon / 2, cy, icon, mixc(ink, { 1, 1, 1 }, 0.35f), a);
     g.textC(label, f, x + pad + icon + 5 * k, cy, glass ? pal.text : ink, a);
     g.unclip();
     // the join's progress: a full lap of its own outline, from the middle of its left end, clockwise over the top, round the
@@ -211,41 +210,164 @@ void App::lapPath(float x, float y, float w, float h, float r, float p, std::vec
  * middle of its top edge, clockwise ("around the whole cover"); all of it eases in and, as the join ends, back out to the
  * sharp cover.
  */
-void App::drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float Rad) {
-    const bool still = !store.motion;
+void App::magicEdge(float edge, float x0, float x1, float y0, float y1, float p) {
+    // swells mid-way, gone at both ends; and gone where the edge is outside its section, coming in over the light's width
+    const float inside = std::clamp(std::min(edge - x0, x1 - edge) / 32.f, 0.f, 1.f);
+    const float s = std::sin(std::clamp(p, 0.f, 1.f) * 3.14159265f) * inside * inside * (3 - 2 * inside);
+    if (s <= 0.01f || y1 <= y0 || x1 <= x0) return;
+    // clipped to the section, within any clip already on
+    SDL_Rect prev{};
+    const bool had = SDL_RenderIsClipEnabled(renderer_);
+    if (had) SDL_RenderGetClipRect(renderer_, &prev);
+    SDL_Rect r{ int(std::floor(x0)), int(std::floor(y0)), int(std::ceil(x1 - x0)), int(std::ceil(y1 - y0)) }, in = r;
+    if (had && !SDL_IntersectRect(&prev, &r, &in)) return;
+    SDL_RenderSetClipRect(renderer_, &in);
+    drawMagic(edge, y0, y1, s);
+    SDL_RenderSetClipRect(renderer_, had ? &prev : nullptr);
+}
+
+void App::drawMagic(float edge, float y0, float y1, float s) {
+    const Rgb ink = pal.accentInk, light{ ink.r + (1 - ink.r) * 0.4f, ink.g + (1 - ink.g) * 0.4f, ink.b + (1 - ink.b) * 0.4f };
+    const float h = y1 - y0, ph = store.motion ? float(time) : 0.f;
+    // the light: soft glows down the edge (round at its ends, as a glow is), a little wider at its middle
+    const int n = std::max(2, int(h / 26));
+    for (int i = 0; i <= n; i++) {
+        const float u = float(i) / n, r = 22 + 10 * std::sin(u * 3.14159265f);
+        g.glow(edge, y0 + h * u, r, light, 0.10f * s);
+    }
+    // sparkles rising round it, each on its own cycle, twinkling as they go
+    if (!store.motion) return;
+    for (int i = 0; i < 7; i++) {
+        const float cyc = std::fmod(ph / 1.3f + i * 0.383f, 1.f), side = std::fmod(i * 0.618f, 1.f) - 0.5f;
+        const float mx = edge + side * 22 + std::sin(ph * 2.3f + i) * 3, my = y1 - cyc * h;
+        const float r = 1 + 0.8f * std::fmod(i * 0.41f, 1.f);
+        g.circle(mx, my, r, i % 3 ? light : Rgb{ 1, 1, 1 }, 0.85f * s * std::sin(cyc * 3.14159265f));
+    }
+}
+
+float App::automixCoverEase() const {
     // in and out over 0.9 s, cubic in and out: the glide's timing (automixFocus), as the Canvas's morph
     auto inOut = [](float p) { return p < 0.5f ? 4 * p * p * p : 1 - std::pow(-2 * p + 2, 3.f) / 2; };
-    const float in = still ? 1.f : std::clamp(float(time - mixShownAt) / 0.9f, 0.f, 1.f), out = std::clamp(float(mixUntil - time) / 0.9f, 0.f, 1.f);
-    const float e = inOut(in) * inOut(out);
+    const float in = !store.motion ? 1.f : std::clamp(float(time - mixShownAt) / 0.9f, 0.f, 1.f), out = std::clamp(float(mixUntil - time) / 0.9f, 0.f, 1.f);
+    return inOut(in) * inOut(out);
+}
+
+void App::drawAutomixCover(float x, float y, float s, float hx, float hy, float rest, float Rad, bool hint, float lapW) {
+    const float e = automixCoverEase();
     if (e <= 0.002f) return;
+    // the frost, in a swiped join (Simple; the player bar in Immersive too): it starts clearing well before the end and
+    // slowly, over the join's last 35 % (0.9-4 s), the cover coming back as the lap closes ("the cover blur should slowly
+    // start fading sooner", the user, 2026-10-29); else with the hint (0.9 s)
+    float ef = e;
+    if (pageWipe_.on && mixUntil > mixFrom) {
+        const double L = std::clamp(0.35 * (mixUntil - mixFrom), 0.9, 4.0);
+        const float u = std::clamp(float((mixUntil - time) / L), 0.f, 1.f);
+        ef = std::min(e, u * u * (3 - 2 * u));
+    }
     // the frost: the cover's blur (both, while the covers crossfade), else a tint
     const float k = now.fade;
     // the old frost and the new one as e·(1 − k) and e·k of the whole, the new drawn over the old: whole while the covers
     // change (both at half had thinned it), and nothing of the old left as the frost clears at the join's end (drawn at e
     // under e·k, a quarter of the old cover's colours showed through there: the user, 2026-10-28)
-    const float wn = now.frost ? e * (now.prevFrost ? k : 1.f) : 0.f;
-    if (now.prevFrost && k < 1) g.image(now.prevFrost, x, y, s, s, Rad, e * (1 - k) / std::max(1e-3f, 1 - wn));
-    if (now.frost) g.image(now.frost, x, y, s, s, Rad, wn);
-    else g.roundRect(x, y, s, s, Rad, pal.surface2, e * 0.9f);
-    g.roundRect(x, y, s, s, Rad, pal.bg, e * (pal.dark ? 0.2f : 0.12f));
+    if (pageWipe_.on && mixOld.on) {   // a page swiped (Simple): each song's frost on its side of the edge, its magic
+        // (the outgoing one whole under the next one: each only on its side thinned the frost across the edge, the cover
+        // showing through: "the cover blur disappears on the swipe", the user, 2026-10-29)
+        wipedImage(x, x + s, y, y + s, true, !now.frost, [&](bool old) {
+            if (SDL_Texture* f = mixCover(old, now.frost, now.prevFrost)) g.image(f, x, y, s, s, Rad, ef);
+            else g.roundRect(x, y, s, s, Rad, pal.surface2, ef * 0.9f);
+        });
+    } else {
+        const float wn = now.frost ? e * (now.prevFrost ? k : 1.f) : 0.f;
+        if (now.prevFrost && k < 1) g.image(now.prevFrost, x, y, s, s, Rad, e * (1 - k) / std::max(1e-3f, 1 - wn));
+        if (now.frost) g.image(now.frost, x, y, s, s, Rad, wn);
+        else g.roundRect(x, y, s, s, Rad, pal.surface2, e * 0.9f);
+    }
+    g.roundRect(x, y, s, s, Rad, pal.bg, ef * (pal.dark ? 0.2f : 0.12f));
     // the hint, large, and what the join does under it
     // by the cover at rest (its size did breathe with the beat), and never wider than most of it (the Canvas's small
     // cover in its Lyrics layout, in a join too short to glide)
     const float k1 = 36 + float(g.measure(mixLabel, { css::Xs, Weight::SemiBold }));
     const float kk = std::min(std::clamp(rest / 210.f, 1.4f, 2.0f), std::max(0.5f, rest * 0.85f / k1));
     const float cw = 36 * kk + float(g.measure(mixLabel, { int(std::round(css::Xs * kk)), Weight::SemiBold }));
-    automixChip(mixLabel, hx - cw / 2, hy, kk, e, false, true);   // alone, in the middle of the cover at rest (the user, 2026-10-28)
+    // alone, in the middle of the cover at rest (the user, 2026-10-28); not on the player bar's small cover, nor where the
+    // caller sets it beside the cover (Simple: above it)
+    if (hint) automixChip(mixLabel, hx - cw / 2, hy, kk, e, false, true);
     // the join's progress: a lap round the whole cover
     if (mixUntil > mixFrom) {
         const float p = float(std::clamp((time - mixFrom) / (mixUntil - mixFrom), 0.0, 1.0));
         lapPath(x + 1, y + 1, s - 2, s - 2, Rad - 1, p, lapPts_);
-        if (lapPts_.size() >= 2) g.polyline(lapPts_, 2.5f, pal.accentInk, e);   // (its colour blends with the palette)
+        if (lapPts_.size() >= 2) g.polyline(lapPts_, lapW, pal.accentInk, e);   // (its colour blends with the palette)
     }
 }
 
 void App::kicker(const std::string& s, float x, float cy, const Rgb& c, float spacing) {
     std::string u = s;
     g.textSpaced(upperAscii(u), { css::Xs, Weight::Bold }, x, cy, spacing, c);
+}
+
+/**
+ * The kicker of an Automix playlist (its page, and the Playlist page while one plays), with a little magic (the user,
+ * 2026-10-29), in the hint's language: a light in the accent's ink passing through its letters every 3.2 s, as the
+ * hint's sweep, and the sparkle after it, twinkling. Still with Motion off. No texture made: the letters' own, again.
+ */
+/**
+ * The hint of the button focused, if it has one (App::hint): once focused for half a second with the focus showing (the
+ * D-pad, or the pointer over it; not touch, which has no hover), a small pill with its name fades in under it (above
+ * it when there is no room below), over 0.15 s, and out as the focus moves on. Its text is made once and cached.
+ */
+void App::drawHint() {
+    const Id f = ui.focusedId();
+    const std::string* text = nullptr;
+    if (f && ui.showFocusRing() && ui.hasItem(f))
+        for (const auto& [id, t] : hints_)
+            if (id == f) { text = &t; break; }
+    if (text) {
+        const SDL_FRect r = ui.rectOf(f);
+        if (f != hintId_) { hintId_ = f; hintSince_ = time; hintA_ = 0; hintAt_ = r; }
+        // where it is: kept unless the button really moved (a scroll), so a fraction of a pixel of the page's scroll does not
+        // move it (it trembled: the text snaps to whole pixels, the user said, 2026-10-29)
+        if (std::fabs(r.x - hintAt_.x) > 1.5f || std::fabs(r.y - hintAt_.y) > 1.5f) hintAt_ = r;
+        hintText_ = *text;
+    } else {
+        hintId_ = 0;
+    }
+    const float want = text && time - hintSince_ >= 0.5 ? 1.f : 0.f;
+    // (at its full strength it stays there: `want > hintA_` took that for a fade-out, and the text dipped every third frame)
+    hintA_ = want >= 1 ? std::min(1.f, hintA_ + dt / 0.15f) : std::max(0.f, hintA_ - dt / 0.1f);
+    hints_.clear();
+    if (hintA_ <= 0.01f || hintText_.empty()) return;
+    const Font f2{ css::Xs, Weight::SemiBold };
+    const float a = hintA_ * hintA_ * (3 - 2 * hintA_);
+    // on whole pixels, the pill and its text together; it fades in and out in place. No text shift left from a list's
+    // scroll (Gfx::setShift: a fraction of a pixel there blurred its text by turns, a flicker, the user said, 2026-10-29)
+    g.setShift(0, 0);
+    const float pw = std::round(float(g.measure(hintText_, f2)) + 24), ph = 28;
+    const float px = std::round(std::clamp(hintAt_.x + hintAt_.w / 2 - pw / 2, 8.f, css::W - 8 - pw));
+    // under the button; above it in the screen's lower quarter (the player bar, the Canvas's controls: under them it
+    // crowded the seek bar and the screen's edge, the user said, 2026-10-29), or when it would leave the screen
+    float py = std::round(hintAt_.y + hintAt_.h + 8);
+    if (hintAt_.y + hintAt_.h / 2 > css::H * 0.75f || py + ph > css::H - 8) py = std::round(hintAt_.y - 8 - ph);
+    // the toast's look (drawToast), the rest of the interface's: its surface, edge, text and soft shadow, in the palette
+    g.roundRect(px, py + 4, pw, ph, 10, { 0, 0, 0 }, 0.25f * a);
+    g.roundRect(px, py, pw, ph, 10, pal.surface2, a);
+    g.roundStroke(px, py, pw, ph, 10, 1, pal.text, 0.09f * a);
+    g.textC(hintText_, f2, px + pw / 2, py + ph / 2, pal.text, a, Align::Center);
+}
+
+void App::automixKicker(const std::string& s, float x, float cy) {
+    std::string copy = s;
+    const std::string u = upperAscii(copy);
+    const Font f{ css::Xs, Weight::Bold };
+    const Rgb ink = pal.accentInk, light{ ink.r + (1 - ink.r) * 0.25f, ink.g + (1 - ink.g) * 0.25f, ink.b + (1 - ink.b) * 0.25f };
+    constexpr float Spacing = 0.12f;
+    const int w = g.textSpaced(u, f, x, cy, Spacing, pal.text3);
+    const bool still = !store.motion;
+    const float ph = still ? 0.f : float(time);
+    if (!still) {   // enters wholly before the first letter and leaves wholly after the last
+        const float bw = 56, sweep = std::fmod(ph, 3.2f) / 3.2f;
+        g.textSpacedShine(u, f, x, cy, Spacing, x - bw + sweep * (w + bw), bw, light, 0.95f);
+    }
+    g.icon(ICON_SPARKLE, x + w + 10, cy, 12, pal.accentInk, 0.9f);   // still: only the letters shine (the user, 2026-10-29)
 }
 
 /**

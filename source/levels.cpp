@@ -48,6 +48,16 @@ const Level* Levels::find(const std::string& path) const {
     return it == map_.end() ? nullptr : &it->second;
 }
 
+void Levels::wantMood(bool on) {
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (moodWanted_ == on) return;
+        moodWanted_ = on;
+        allAt_ = 0;   // the library again: the ones without their mood
+    }
+    wake_.notify_all();
+}
+
 void Levels::want(std::vector<std::string> first, std::vector<std::string> all) {
     {
         std::lock_guard<std::mutex> g(m_);
@@ -78,8 +88,11 @@ bool Levels::poll() {
     }
     for (auto& [p, l] : got) map_[p] = l;
     if (read || !got.empty()) {
-        done_ = 0;
-        for (const auto& [p, l] : map_) if (l.mix.seconds != 0) done_++;
+        done_ = moodDone_ = 0;
+        for (const auto& [p, l] : map_) {
+            if (l.mix.seconds != 0) done_++;
+            if (l.moodTried) moodDone_++;
+        }
     }
     if (!got.empty()) dirty_ = true;
     gen_++;
@@ -90,11 +103,12 @@ void Levels::forget() {
     {
         std::lock_guard<std::mutex> g(m_);
         known_.clear();
+        moodKnown_.clear();
         found_.clear();
         allAt_ = 0;
     }
     map_.clear();
-    done_ = 0;
+    done_ = moodDone_ = 0;
     dirty_ = true;
     gen_++;
     wake_.notify_all();
@@ -122,6 +136,19 @@ std::string Levels::serialiseMix() const {
         out += p;
         out += '\t';
         out += l.mix.pack();
+        out += '\n';
+    }
+    return out;
+}
+
+std::string Levels::serialiseMood() const {
+    std::string out;
+    out.reserve(map_.size() * 110);
+    for (const auto& [p, l] : map_) {
+        if (!l.moodTried) continue;
+        out += p;
+        out += '\t';
+        out += l.mix.mood.valid ? l.mix.mood.pack() : std::to_string(mixan::Mood::Version) + ",x";   // x: tried, nothing to measure
         out += '\n';
     }
     return out;
@@ -166,9 +193,27 @@ void Levels::loadFile() {
             const auto it = file.find(line.substr(0, t1));
             if (it != file.end() && mixan::Info::unpack(line.substr(t1 + 1), it->second.mix)) mixed.insert(it->first);
         }
+        // mood.tsv: path, the mood's features (mixan::Mood::pack) or "<version>,x" (tried); another version's are measured again
+        const std::string mood = readFile(dir_ + "/mood.tsv");
+        at = 0;
+        while (at < mood.size()) {
+            size_t eol = mood.find('\n', at);
+            if (eol == std::string::npos) eol = mood.size();
+            const std::string line = mood.substr(at, eol - at);
+            at = eol + 1;
+            const size_t t1 = line.find('\t');
+            if (t1 == std::string::npos || t1 == 0) continue;
+            const auto it = file.find(line.substr(0, t1));
+            if (it == file.end()) continue;
+            const std::string v = line.substr(t1 + 1);
+            if (mixan::Mood::unpack(v, it->second.mix.mood)) it->second.moodTried = true;
+            else if (v == std::to_string(mixan::Mood::Version) + ",x") it->second.moodTried = true;
+        }
         std::lock_guard<std::mutex> g(m_);
-        for (const auto& [p, l] : file)
+        for (const auto& [p, l] : file) {
             if (mixed.count(p)) known_.insert(p);
+            if (l.moodTried) moodKnown_.insert(p);
+        }
         fromFile_ = std::move(file);
         fileRead_ = true;
     }
@@ -190,17 +235,20 @@ void Levels::run(int) {
         // The next path not measured yet: the ones asked for first, then the library in order.
         std::string path;
         bool background = false;
+        // (with Mood playlists, a track measured before without its mood is decoded again for it, in the library's turn)
+        auto todo = [&](const std::string& p) { return !known_.count(p) || (moodWanted_ && !moodKnown_.count(p)); };
         for (const auto& p : first_)
             if (!known_.count(p)) { path = p; break; }
         while (path.empty() && !paused_ && allAt_ < all_.size()) {
             const std::string& p = all_[allAt_++];
-            if (!known_.count(p)) { path = p; background = true; }
+            if (todo(p)) { path = p; background = true; }
         }
         if (path.empty()) {
             wake_.wait(g);
             continue;
         }
         known_.insert(path);
+        moodKnown_.insert(path);
         if (background) busy_++;
         g.unlock();
         loud::Meter::Result r;
@@ -218,6 +266,7 @@ void Levels::run(int) {
         } else {
             l.mix.seconds = -1;   // tried: not decoded again at every launch
         }
+        l.moodTried = true;   // (measured with it, or tried)
         if (ok && !std::isnan(r.lufs)) {
             l.lufs = float(r.lufs);
             l.peak = float(r.truePeak);

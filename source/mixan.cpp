@@ -132,6 +132,8 @@ void Analyzer::begin(int rate, int channels) {
     bass_.clear();
     low_.clear();
     snare_.clear();
+    centroid_.clear();
+    hf_.clear();
     chroma_.clear();
     chromaN_ = 0;
     for (float& c : chromaAcc_) c = 0;
@@ -222,6 +224,8 @@ void Analyzer::frame() {
         bass_.push_back(0);
         low_.push_back(0);
         snare_.push_back(0);
+        centroid_.push_back(0);
+        hf_.push_back(0);
         if (++chromaN_ == 4) { chroma_.insert(chroma_.end(), 12, 0.f); chromaN_ = 0; }
         return;
     }
@@ -249,12 +253,14 @@ void Analyzer::frame() {
     }
     const int top = std::min(N / 2, int(5000 / (ar_ / N)));   // onsets: up to 5 kHz
     const int low = std::max(1, int(150 / (ar_ / N)));       // bass: below 150 Hz
-    double flux = 0, all = 0, bass = 0, kick = 0, snare = 0;
-    const int snLo = int(1500 / (ar_ / N));
+    double flux = 0, all = 0, bass = 0, kick = 0, snare = 0, cen = 0, hf = 0;
+    const int snLo = int(1500 / (ar_ / N)), hfLo = int(3000 / (ar_ / N));
     for (int k = 1; k <= N / 2; k++) {
         const float m = 2 * std::sqrt(re_[size_t(k)] * re_[size_t(k)] + im_[size_t(k)] * im_[size_t(k)]) / N;
         const double p = double(m) * m;
         all += p;
+        cen += p * k;   // (Mood: the centroid and the top; nothing Automix reads)
+        if (k >= hfLo) hf += p;
         if (k <= low) bass += p;
         if (k <= top) {
             const float l = std::log1p(1000 * m), up = std::max(0.f, l - prevLog_[size_t(k)]);
@@ -274,6 +280,8 @@ void Analyzer::frame() {
     bass_.push_back(all > 1e-12 ? float(bass / all) : 0.f);
     low_.push_back(float(kick));
     snare_.push_back(float(snare));
+    centroid_.push_back(all > 1e-12 ? float(cen / all * (ar_ / N)) : 0.f);
+    hf_.push_back(all > 1e-12 ? float(hf / all) : 0.f);
     if (++chromaN_ == 4) {
         chroma_.insert(chroma_.end(), chromaAcc_, chromaAcc_ + 12);
         for (float& c : chromaAcc_) c = 0;
@@ -282,6 +290,117 @@ void Analyzer::frame() {
 }
 
 Info Analyzer::finish() {
+    Info r = finishMix();
+    r.mood = finishMood(r);
+    return r;
+}
+
+/**
+ * Mood's features (mixan.hpp, Mood): over the music (Info::start..end), from what each hop measured. Independent of the
+ * beat: an ambient or classical track has its mood too (Automix's analysis stops early for it).
+ */
+Mood Analyzer::finishMood(const Info& mix) const {
+    Mood m;
+    const int n = int(db_.size());
+    const double fr = ar_ / H;
+    if (n < int(fr * 5) || mix.level <= -99) return m;
+    const int a = std::clamp(int(mix.start * fr), 0, n - 1), b = std::clamp(int(mix.end * fr), a, n - 1);
+    if (b - a < int(fr * 5)) return m;
+    m.loud = mix.level;
+    // the loudness a second at a time: its spread, and how much of it is quiet
+    const std::vector<float> s1 = smoothDb(db_, std::max(1, int(fr)));
+    std::vector<float> lv;
+    for (int j = a; j <= b; j += std::max(1, int(fr / 4))) lv.push_back(s1[size_t(j)]);
+    std::vector<float> sorted = lv;
+    std::sort(sorted.begin(), sorted.end());
+    m.dyn = sorted[sorted.size() * 9 / 10] - sorted[sorted.size() / 10];
+    int quiet = 0;
+    for (float v : lv) quiet += v < mix.level - 6 ? 1 : 0;
+    m.calm = float(quiet) / float(lv.size());
+    // the spectrum: weighted by each hop's power, so the quiet bits do not decide it
+    double w = 0, cen = 0, hf = 0, bass = 0, flux = 0, kick = 0, snare = 0;
+    for (int j = a; j <= b; j++) {
+        const double p = std::pow(10.0, db_[size_t(j)] / 10);
+        w += p;
+        cen += centroid_[size_t(j)] * p;
+        hf += hf_[size_t(j)] * p;
+        bass += bass_[size_t(j)] * p;
+        flux += flux_[size_t(j)];
+        kick += low_[size_t(j)];
+        snare += snare_[size_t(j)];
+    }
+    const int hops = b - a + 1;
+    if (w > 0) { m.bright = float(cen / w); m.hf = float(hf / w); m.bass = float(bass / w); }
+    m.flux = float(flux / hops);
+    m.perc = flux > 0 ? float((kick + snare) / flux) : 0.f;
+    // onsets: the flux's local peaks over its running median (a second each side) by half its spread
+    int peaks = 0;
+    {
+        const int half = std::max(2, int(fr * 0.5));
+        std::vector<float> win;
+        for (int j = a + 1; j < b; j++) {
+            const float v = flux_[size_t(j)];
+            if (v <= flux_[size_t(j - 1)] || v < flux_[size_t(j + 1)]) continue;
+            win.assign(flux_.begin() + std::max(a, j - half), flux_.begin() + std::min(b, j + half) + 1);
+            std::nth_element(win.begin(), win.begin() + win.size() / 2, win.end());
+            const float med = win[win.size() / 2];
+            if (v > med * 1.5f + 1e-3f) { peaks++; j += std::max(1, int(fr * 0.05)); }   // (50 ms apart at least)
+        }
+    }
+    m.onsets = float(peaks / ((b - a) / fr));
+    // the mode: the whole track's chroma against Krumhansl and Kessler's major and minor profiles, every tonic
+    {
+        float c[12] = {};
+        const int nc = int(chroma_.size() / 12);
+        const int c0 = std::max(0, int((a - 2.5) / 4)), c1 = std::min(nc, int((b - 2.5) / 4));
+        for (int i = c0; i < c1; i++)
+            for (int k = 0; k < 12; k++) c[k] += chroma_[size_t(i) * 12 + size_t(k)];
+        for (int k = 0; k < 12; k++) c[k] /= pcNorm_[k];
+        static const double maj[12] = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+        static const double mnr[12] = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+        auto corr = [&](const double* prof, int tonic) {
+            double xm = 0, pm = 0;
+            for (int i = 0; i < 12; i++) { xm += c[i] / 12.0; pm += prof[i] / 12; }
+            double num = 0, dx = 0, dp = 0;
+            for (int i = 0; i < 12; i++) {
+                const double x = c[(tonic + i) % 12] - xm, y = prof[i] - pm;
+                num += x * y;
+                dx += x * x;
+                dp += y * y;
+            }
+            return dx > 0 ? num / std::sqrt(dx * dp) : 0.0;
+        };
+        double bMaj = -1, bMin = -1;
+        for (int t = 0; t < 12; t++) { bMaj = std::max(bMaj, corr(maj, t)); bMin = std::max(bMin, corr(mnr, t)); }
+        m.minor = float(bMin - bMaj);
+    }
+    // the pulse: each onset envelope's normalised autocorrelation, its best lag a quarter of a second to a second
+    auto pulseOf = [&](const std::vector<float>& v) {
+        const int len = b - a + 1;
+        double mean = 0;
+        for (int j = a; j <= b; j++) mean += v[size_t(j)];
+        mean /= len;
+        double ac0 = 0;
+        for (int j = a; j <= b; j++) ac0 += (v[size_t(j)] - mean) * (v[size_t(j)] - mean);
+        if (ac0 <= 0) return 0.f;
+        ac0 /= len;
+        double best = 0;
+        for (int lag = std::max(1, int(fr * 0.25)); lag <= int(fr * 1.0) && lag < len / 2; lag++) {
+            double s = 0;
+            for (int j = a; j + lag <= b; j++) s += (v[size_t(j)] - mean) * (v[size_t(j + lag)] - mean);
+            best = std::max(best, s / (len - lag) / ac0);
+        }
+        return float(std::clamp(best, 0.0, 1.0));
+    };
+    m.pulse = pulseOf(flux_);
+    m.kickPulse = pulseOf(low_);
+    m.bpm = mix.bpm;
+    m.beat = mix.confidence;
+    m.valid = true;
+    return m;
+}
+
+Info Analyzer::finishMix() {
     Info r;
     const int n = int(db_.size());
     const double fr = ar_ / H;                       // hops a second
@@ -689,6 +808,25 @@ bool Info::unpack(const std::string& s, Info& out) {
     if (r.bars == "-") r.bars.clear();
     if (r.bass == "-") r.bass.clear();
     r.valid = ok != 0;
+    out = r;
+    return true;
+}
+
+std::string Mood::pack() const {
+    char s[256];
+    snprintf(s, sizeof s, "%d,%.2f,%.2f,%.3f,%.0f,%.4f,%.2f,%.3f,%.3f,%.3f,%.4f,%.2f,%.3f,%.3f,%.3f", Version, double(loud), double(dyn),
+             double(calm), double(bright), double(hf), double(onsets), double(perc), double(flux), double(minor), double(bass), double(bpm),
+             double(beat), double(pulse), double(kickPulse));
+    return s;
+}
+
+bool Mood::unpack(const std::string& s, Mood& out) {
+    Mood r;
+    int v = 0, used = 0;
+    if (sscanf(s.c_str(), "%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f%n", &v, &r.loud, &r.dyn, &r.calm, &r.bright, &r.hf, &r.onsets,
+               &r.perc, &r.flux, &r.minor, &r.bass, &r.bpm, &r.beat, &r.pulse, &r.kickPulse, &used) != 15 || v != Version || used <= 0)
+        return false;
+    r.valid = true;
     out = r;
     return true;
 }

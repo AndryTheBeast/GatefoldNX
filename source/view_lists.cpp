@@ -22,6 +22,12 @@ void App::drawTrackList(float x, float y, float w, float h) {
     std::string kick = "Playlist", title, sub, playName;
     const char* placeholder = ICON_LIST;
     if (v == View::Queue) {
+        // the queue wears the kind and icon of the playlist it came from, as that playlist's own page
+        // (Automix: the user, 2026-10-29; Smart and the rest: 2026-10-29, session 6)
+        if (const int src = queuePlaylist(); src >= 0) {
+            kick = playlistKind(src);
+            placeholder = playlistIcon(src);
+        } else if (q.name == "Liked") placeholder = ICON_HEART;
         title = q.name.empty() ? "Nothing queued" : q.name;
         playName = q.name;
     } else if (v == View::Search) {
@@ -34,7 +40,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
         placeholder = ICON_HEART;
     } else if (route.ref < int(store.playlists.size())) {
         const FolderPlaylist& p = store.playlists[route.ref];
-        kick = p.own() ? (p.automix ? "Automix playlist" : "Playlist") : p.smart() ? "Smart playlist" : "Folder playlist";
+        kick = playlistKind(route.ref);
         title = playName = p.name;
         placeholder = playlistIcon(route.ref);
     }
@@ -45,6 +51,11 @@ void App::drawTrackList(float x, float y, float w, float h) {
             int more = 0;
             for (const auto& path : p.tracks) more += pathIndex.count(path) && !automixReady(path) ? 1 : 0;
             if (more > 0) sub += "  ·  " + std::to_string(more) + (more == 1 ? " more song being analysed" : " more songs being analysed");
+        }
+        // a Mood playlist while the library's moods are measured: as an Automix playlist building up
+        if (isMoodPlaylist(p) && moodTotal_ > moodDone_) {
+            const int more = moodTotal_ - moodDone_;
+            sub += "  ·  " + std::to_string(more) + (more == 1 ? " more song being analysed" : " more songs being analysed");
         }
     }
     if (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && !store.playlists[route.ref].own()) {
@@ -57,11 +68,15 @@ void App::drawTrackList(float x, float y, float w, float h) {
     sa.view = { x, y, w, h };
     ui.pushArea(&sa);
     const float oy = y - sa.y;
-    const ListMode mode = ListMode(store.viewPlaylist);
-    // Mix: room between the rows for the joins (a playlist's page, not the grid)
-    const bool mixable = v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].automix &&
-                         tracks.size() > 1;   // Automix playlists only
-    const float joinGap = mixable && mixView && mode != ListMode::Grid ? 46 : 0;
+    // Room between the rows for the joins (a playlist's page, not the grid): Automix playlists, and the queue while it plays
+    // one, its joins the same (the user, 2026-10-30: "the temporary automix playlist should also show them")
+    const bool mixable = (v == View::List && route.ref >= 0 && route.ref < int(store.playlists.size()) && store.playlists[route.ref].automix) ||
+                         (v == View::Queue && automixQueue());
+    // no Grid there (the user, 2026-10-30: "in Automix playlists this view makes no sense": tiles have no order to join): shown
+    // with covers instead, your choice for other playlists kept
+    const ListMode mode = mixable && ListMode(store.viewPlaylist) == ListMode::Grid ? ListMode::Covers : ListMode(store.viewPlaylist);
+    // the joins always shown: no Mix button to hide them (the user, 2026-10-30: it read as turning the mixing off)
+    const float joinGap = mixable && mode != ListMode::Grid ? 46 : 0;
 
     // .pl-head: cover, kicker, title, sub, actions
     const float cx = x + 28, cyTop = oy + 18;
@@ -72,7 +87,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
         g.icon(placeholder, cx + 60, cyTop + 60, 40, pal.text3, 0.7f);
     }
     const float tx = cx + 120 + 22, tw = w - (tx - x) - 28;
-    kicker(kick, tx, cyTop + 8, pal.text3);
+    if (kick == "Automix playlist") automixKicker(kick, tx, cyTop + 8);   // with a little magic (widgets.cpp)
+    else kicker(kick, tx, cyTop + 8, pal.text3);
     g.text(title, { css::Xxl, Weight::Bold }, tx, cyTop + 16, pal.text, 1, Align::Left, int(tw));
     g.text(sub, { css::Sm }, tx, cyTop + 58, pal.text3, 1, Align::Left, int(tw));
     float bx = tx;
@@ -85,10 +101,13 @@ void App::drawTrackList(float x, float y, float w, float h) {
     // The actions after Play and Shuffle shrink to round icon buttons when their labels would run into the views
     // (a folder playlist with Games has seven); the playlist's icon button is always one.
     bool compact = false;
+    // An Automix playlist plays in its own order: no Shuffle on its page, nor on the Playlist page while one plays (the user,
+    // 2026-10-29; App::holdOrderForAutomix)
+    const bool noShuffle = (v == View::Queue && automixQueue()) || (ownPage && store.playlists[ref].automix);
     {
         const Font bf{ css::Sm, Weight::SemiBold };
         auto bw = [&](const char* label) { return 16 + 24 + g.measure(label, bf) + 16 + 8.f; };
-        float need = bw("Play") + bw("Shuffle") + (mixable ? bw("Mix") : 0);
+        float need = bw("Play") + (noShuffle ? 0 : bw("Shuffle"));
         if (v == View::Queue) need += bw("Current track") + bw("Clear");
         else if (v == View::Search) need += bw("New search");
         else if (ownPage && !store.playlists[ref].folder()) need += bw("Delete") + bw("Rename") + (store.playlists[ref].automix ? bw("Order again") : 0);
@@ -106,6 +125,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
             return c;
         }
         const Id id = uid(key);
+        hint(id, label);   // round with its icon only: its name when focused (App::drawHint)
         const bool c = ui.item(id, { bx, by, 34, 34 }, 17);
         const bool hot = ui.pressed(id) || (ui.focused(id) && ui.showFocusRing());
         g.roundRect(bx, by, 34, 34, 17, toggled ? pal.accent : pal.text, toggled ? 0.18f : hot ? 0.11f : 0.065f);
@@ -116,11 +136,9 @@ void App::drawTrackList(float x, float y, float w, float h) {
     };
     bx += button(uid("pl.play"), ICON_PLAY, "Play", bx, by, true, &clicked, false, false, DefaultFocus) + 8;
     if (clicked && !tracks.empty()) { if (v == View::Queue) playAt(0); else playTracks(tracks, 0, playName); }
-    bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
-    if (clicked && !tracks.empty()) playTracks(tracks, 0, playName, true);
-    if (mixable && action("pl.mix", ICON_SLIDERS, "Mix", mixView)) {
-        mixView = !mixView;
-        if (mixView && mode == ListMode::Grid) store.viewPlaylist = int(ListMode::Covers);   // the joins sit between rows
+    if (!noShuffle) {
+        bx += button(uid("pl.shuffle"), ICON_SHUFFLE, "Shuffle", bx, by, false, &clicked) + 8;
+        if (clicked && !tracks.empty()) playTracks(tracks, 0, playName, true);
     }
     if (v == View::Queue) {
         clicked = action("pl.jump", ICON_DISC, "Current track");
@@ -164,6 +182,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
     // The playlist's sidebar icon, as a round button wearing it: the icon grid opens at once
     if (ownPage) {
         const Id iid = uid("pl.icon");
+        hint(iid, "The playlist's icon");
         if (ui.item(iid, { bx, by, 34, 34 }, 17)) openPlaylistIcons(ref);
         const bool hot = ui.pressed(iid) || (ui.focused(iid) && ui.showFocusRing());
         g.roundRect(bx, by, 34, 34, 17, pal.accent, hot ? 0.24f : 0.14f);
@@ -181,7 +200,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
             const FolderPlaylist& p = store.playlists[ref];
             const bool smart = p.smart();
             const std::string count = std::to_string(tracks.size()) + (tracks.size() == 1 ? " track" : " tracks");
-            confirm(smart ? ICON_SPARKLE : ICON_LIST, "Delete", p.name, smart ? "Smart playlist · " + count : "Playlist · " + count,
+            confirm(playlistIcon(ref), "Delete", p.name, std::string(playlistKind(ref)) + " · " + count,
                     "Delete this playlist?",
                     smart ? "It leaves the sidebar. Your tracks, their play counts and Liked are not touched."
                           : "It leaves the sidebar, and its order is lost. The tracks stay on the SD card and in your library.",
@@ -195,9 +214,9 @@ void App::drawTrackList(float x, float y, float w, float h) {
 
     // the four views, right of the actions (.pl-modes)
     {
-        int m = store.viewPlaylist;
-        viewSwitch("pl.view", x + w - 28, by + 17, m);
-        store.viewPlaylist = m;
+        int m = int(mode);
+        viewSwitch("pl.view", x + w - 28, by + 17, m, mixable ? 1u << int(ListMode::Grid) : 0u);
+        if (m != int(mode)) store.viewPlaylist = m;
     }
 
     // the tracks (no panel behind them: the background shows through, as everywhere here)
@@ -259,8 +278,8 @@ void App::drawTrackList(float x, float y, float w, float h) {
 /** The first launch (the user, 2026-10-27: always asked): the card's Music folder offered, with the guided tour or without
  *  (the user, 2026-10-28), the picker under the card for another. No Cancel: Another folder, B or × leave the picker. */
 void App::welcomeCard(const std::string& found) {
-    confirm(ICON_FOLDER, "Welcome to Gatefold", "Where is your music?", "On this SD card: " + found, "Read your music from " + found + "?",
-            "Gatefold makes albums, artists and genres from the tags of the files in one folder and the folders inside it, "
+    confirm(ICON_FOLDER, "Welcome to Songate", "Where is your music?", "On this SD card: " + found, "Read your music from " + found + "?",
+            "Songate makes albums, artists and genres from the tags of the files in one folder and the folders inside it, "
             "whatever their layout. Settings › Library can change it later.",
             "Use it and take the tour", [this, found] {
                 tourAsk = false;
@@ -583,7 +602,7 @@ void App::drawPicker(float x, float y, float w, float h) {
         // Backups inside Gatefold's own settings folder would be copied into themselves, and cleared by a fresh start
         const std::string cfg = Store::Dir;
         if (clicked && folderFor == 4 && strncasecmp(path.c_str(), cfg.c_str(), cfg.size()) == 0 && (path.size() == cfg.size() || path[cfg.size()] == '/')) {
-            toast("Backups cannot go in Gatefold's own settings folder");
+            toast("Backups cannot go in Songate's own settings folder");
             clicked = false;
         }
         if (clicked) {

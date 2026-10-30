@@ -6,6 +6,7 @@
 #include "updater.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include "automix.hpp"
 #include "cores.hpp"
 
 #ifdef __SWITCH__
@@ -20,26 +22,33 @@
 #include "gfbg.h"
 #define GF_PROTOCOL GFBG_PROTOCOL
 #else
-#define GF_PROTOCOL 5   // gfbg.h's GFBG_PROTOCOL (the PC preview builds without it, as thumbs.cpp)
+#define GF_PROTOCOL 6   // gfbg.h's GFBG_PROTOCOL (the PC preview builds without it, as thumbs.cpp)
 #endif
 
 #ifndef GF_VERSION
-#define GF_VERSION "1.1.0"
+#define GF_VERSION "2.0.0 BETA"
 #endif
 
 namespace {
 
 constexpr const char* kApi = "https://api.github.com/repos/AndryTheBeast/GatefoldNX/releases?per_page=30";
-constexpr const char* kManifest = "gatefold-manifest.json";
-constexpr const char* kSysDir = "atmosphere/contents/4200000047464E58/";
-constexpr const char* kNro = "switch/Gatefold/Gatefold.nro";
-constexpr const char* kOverlay = "switch/.overlays/Gatefold.ovl";
+// Automix's models (the open-source model repository): its latest release's assets, by GitHub's own redirect (no API call)
+constexpr const char* kModels = "https://github.com/AndryTheBeast/songate-automix/releases/latest/download/";
+constexpr const char* kModelsManifest = "songate-automix-models.json";
+constexpr const char* kManifest = "songate-manifest.json";
+constexpr const char* kSysDir = "atmosphere/contents/4200000047464E58/";   // the background player's: the same ID as before
+constexpr const char* kNro = "switch/Songate/Songate.nro";
+constexpr const char* kOverlay = "switch/.overlays/Songate.ovl";
+// Before the rebranding (1.x, as Gatefold NX): where its files are, for going back to one, and cleared after (cleanLegacy)
+constexpr const char* kNroV1 = "switch/Gatefold/Gatefold.nro";
+constexpr const char* kOverlayV1 = "switch/.overlays/Gatefold.ovl";
+bool isNro(const std::string& p) { return p == kNro || p == kNroV1; }
 
 /** The only places an update may write, from the SD card's root (a manifest naming anything else is refused). */
 bool allowed(const std::string& p) {
     if (p.empty() || p[0] == '/' || p.find("..") != std::string::npos || p.find('\\') != std::string::npos || p.find(':') != std::string::npos)
         return false;
-    return p == kNro || p == kOverlay || p.rfind(kSysDir, 0) == 0;
+    return isNro(p) || p == kOverlay || p == kOverlayV1 || p.rfind(kSysDir, 0) == 0;
 }
 
 /** 1.0.0 and 1.1.0: no manifest. Their zips (GitHub's digests agree) and the background player's protocol. */
@@ -48,7 +57,7 @@ constexpr Legacy kLegacy[] = {
     { "1.0.0", "7f90fad29c0ceb2cdde061067a8d360b9f2a473d037a7a4fcef1e80f30fdebf0", 12843254, 3 },
     { "1.1.0", "13b2cb7efd70af0242350b85bd8de6ea9e0922a67dd471dd69d21dcad86aab3d", 12914951, 4 },
 };
-const char* kLegacyFiles[] = { "switch/Gatefold/Gatefold.nro", "switch/.overlays/Gatefold.ovl", "atmosphere/contents/4200000047464E58/exefs.nsp",
+const char* kLegacyFiles[] = { kNroV1, kOverlayV1, "atmosphere/contents/4200000047464E58/exefs.nsp",
                                "atmosphere/contents/4200000047464E58/toolbox.json", "atmosphere/contents/4200000047464E58/flags/boot2.flag" };
 
 // ------------------------------------------------------------------ files
@@ -564,7 +573,7 @@ bool zipRead(FILE* f, const ZipEntry& e, std::vector<uint8_t>& out, std::string&
         out.reserve(e.usize);
         Inflater inf{ comp.data(), comp.size(), 0, 0, 0, false, out };
         if (!inf.run()) { err = "Could not unpack " + e.name; return false; }
-    } else { err = "The zip packs " + e.name + " in a way Gatefold cannot read"; return false; }
+    } else { err = "The zip packs " + e.name + " in a way Songate cannot read"; return false; }
     if (out.size() != e.usize || crc32(out.data(), out.size()) != e.crc) { err = e.name + " did not unpack correctly"; return false; }
     return true;
 }
@@ -690,7 +699,7 @@ bool readManifest(const std::string& text, UpdRelease& r) {
     if (m.i("format") > 1) return false;   // a newer manifest than this Gatefold knows: treated as none
     r.manifest = true;
     r.protocol = int(m.i("protocol"));
-    if (!m.s("version").empty()) r.version = m.s("version");
+    if (!m.s("version").empty()) r.version = Updater::pretty(m.s("version"));
     const Json& zip = m["zip"];
     if (zip.kind == Json::Obj) {
         if (!zip.s("name").empty()) r.zipName = zip.s("name");
@@ -722,10 +731,12 @@ std::vector<UpdRelease> readReleases(const std::string& api) {
     Json list;
     if (!parseJson(api, list) || list.kind != Json::Arr) return out;
     for (const Json& j : list.arr) {
-        if (j["draft"].b || j["prerelease"].b) continue;
+        if (j["draft"].b) continue;
         UpdRelease r;
         r.tag = j.s("tag_name");
-        r.version = r.tag.size() > 1 && (r.tag[0] == 'v' || r.tag[0] == 'V') ? r.tag.substr(1) : r.tag;
+        // in the app's own spelling: the tag v2.0.0-beta.1 is "2.0.0 BETA 1", as a beta's GF_VERSION says it
+        r.version = Updater::pretty(r.tag.size() > 1 && (r.tag[0] == 'v' || r.tag[0] == 'V') ? r.tag.substr(1) : r.tag);
+        r.beta = j["prerelease"].b || Updater::isBeta(r.version);   // (listed apart: Settings › Updates › Beta versions)
         r.name = j.s("name");
         r.date = j.s("published_at").substr(0, 10);
         r.body = j.s("body");
@@ -748,6 +759,30 @@ std::vector<UpdRelease> readReleases(const std::string& api) {
         for (const char* f : kLegacyFiles) r.files.push_back({ f, 0, {} });
         r.log = logFromNotes(r.body);
         out.push_back(std::move(r));
+    }
+    return out;
+}
+
+/** songate-automix-models.json → the models it lists (a newer format than this Songate knows: none). */
+std::vector<UpdModel> readModels(const std::string& text) {
+    std::vector<UpdModel> out;
+    Json m;
+    if (!parseJson(text, m) || m.kind != Json::Obj || m.i("format") > 1) return out;
+    for (const Json& j : m["models"].arr) {
+        UpdModel x;
+        x.name = j.s("name");
+        x.file = j.s("file");
+        x.sha256 = j.s("sha256");
+        x.date = j.s("date");
+        if (!j.s("app").empty()) x.app = j.s("app");
+        x.size = j.i("size");
+        x.format = int(j.i("format"));
+        x.mixan = int(j.i("mixan"));
+        for (const Json& n : j["notes"].arr) if (n.kind == Json::Str) x.notes.push_back(n.str);
+        // a plain file name only: it is written into config/gatefold-nx/models/
+        const bool plain = !x.file.empty() && x.file.find_first_of("/\\:") == std::string::npos && x.file[0] != '.' &&
+                           x.file.size() > 6 && x.file.compare(x.file.size() - 6, 6, ".model") == 0;
+        if (!x.name.empty() && plain && x.sha256.size() == 64) out.push_back(std::move(x));
     }
     return out;
 }
@@ -781,6 +816,8 @@ std::string readKey(const std::string& text, const char* key) {
     return {};
 }
 
+/** Where a file of a release goes: the app's own .nro where this one runs (wherever the user keeps it); the .nro of a release
+ *  under the other name (going back to 1.x, Gatefold NX) in that one's own place: this one goes when the app closes. */
 std::string sdPath(const std::string& rel, const std::string& self) { return rel == kNro ? self : "sdmc:/" + rel; }
 
 /** When the console last started, in time() seconds: a different one means it restarted (the background player with it). */
@@ -800,18 +837,68 @@ long long bootStamp() {
 std::string Updater::thisVersion() { return GF_VERSION; }
 int Updater::thisProtocol() { return GF_PROTOCOL; }
 
-int Updater::compare(const std::string& a, const std::string& b) {
-    int x[3] = {}, y[3] = {};
-    sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
-    sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
-    for (int i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
-    return 0;
+namespace {
+
+/** A version taken apart: "2.0.0 BETA 10" and the tag's "2.0.0-beta.10" give the same parts. */
+struct VerParts {
+    int num[3] = {};
+    std::string label;   // after the numbers, in capitals ("BETA"); empty: the release itself
+    int n = 0;           // the label's number (BETA 10: 10; none: 0)
+    bool ok = false;     // nothing left over that these parts do not say
+};
+
+VerParts verParts(const std::string& v) {
+    VerParts p;
+    int used = 0;
+    if (sscanf(v.c_str(), "%d.%d.%d%n", &p.num[0], &p.num[1], &p.num[2], &used) != 3) return p;
+    size_t i = size_t(used);
+    const auto sep = [&] { while (i < v.size() && (v[i] == ' ' || v[i] == '-' || v[i] == '.' || v[i] == '_')) i++; };
+    sep();
+    while (i < v.size() && isalpha((unsigned char)v[i])) p.label += char(toupper((unsigned char)v[i++]));
+    sep();
+    if (i < v.size() && isdigit((unsigned char)v[i])) {
+        p.n = atoi(v.c_str() + i);
+        while (i < v.size() && isdigit((unsigned char)v[i])) i++;
+    }
+    p.ok = i == v.size() && (!p.label.empty() || p.n == 0);
+    return p;
 }
 
-int Updater::newer() const {
+int labelRank(const std::string& l) { return l == "ALPHA" ? 0 : l == "BETA" ? 1 : l == "RC" ? 2 : 3; }
+
+}  // namespace
+
+int Updater::compare(const std::string& a, const std::string& b) {
+    const VerParts x = verParts(a), y = verParts(b);
+    for (int i = 0; i < 3; i++) if (x.num[i] != y.num[i]) return x.num[i] < y.num[i] ? -1 : 1;
+    // the same numbers: one with something after them ("2.0.0 BETA 1") comes before the release itself ("2.0.0"), so a beta
+    // is offered the release when it is out; betas by their number as a number (BETA 10 after BETA 2)
+    if (x.label.empty() != y.label.empty()) return x.label.empty() ? 1 : -1;
+    if (x.label != y.label) {
+        const int rx = labelRank(x.label), ry = labelRank(y.label);
+        if (rx != ry) return rx < ry ? -1 : 1;
+        return x.label < y.label ? -1 : 1;
+    }
+    return x.n != y.n ? (x.n < y.n ? -1 : 1) : 0;
+}
+
+std::string Updater::pretty(const std::string& v) {
+    const VerParts p = verParts(v);
+    if (!p.ok || p.label.empty()) return v;
+    char b[48];
+    snprintf(b, sizeof b, "%d.%d.%d", p.num[0], p.num[1], p.num[2]);
+    return std::string(b) + " " + p.label + (p.n > 0 ? " " + std::to_string(p.n) : std::string());
+}
+
+bool Updater::isBeta(const std::string& v) {
+    int x[3] = {}, n = 0;
+    return sscanf(v.c_str(), "%d.%d.%d%n", &x[0], &x[1], &x[2], &n) == 3 && n > 0 && size_t(n) < v.size();
+}
+
+int Updater::newer(bool betas) const {
     int best = -1;
     for (int i = 0; i < int(releases.size()); i++)
-        if (compare(releases[size_t(i)].version, thisVersion()) > 0 && (best < 0 || compare(releases[size_t(i)].version, releases[size_t(best)].version) > 0))
+        if ((betas || !releases[size_t(i)].beta) && compare(releases[size_t(i)].version, thisVersion()) > 0 && (best < 0 || compare(releases[size_t(i)].version, releases[size_t(best)].version) > 0))
             best = i;
     return best;
 }
@@ -840,6 +927,8 @@ void Updater::readCache() {
     }
     std::string when;
     if (readAll(dir_ + "/updates/checked.txt", when)) checkedAt = atoll(when.c_str());
+    std::string mods;
+    if (readAll(dir_ + "/updates/models.json", mods)) models = readModels(mods);
 }
 
 void Updater::readInstalled() {
@@ -853,7 +942,8 @@ void Updater::readInstalled() {
     installed.bgChanged = readKey(t, "bgChanged") == "1" && readKey(t, "bgRestarted") != "1" &&
                           std::llabs(atoll(readKey(t, "boot").c_str()) - bootStamp()) < 120;
     installed.fresh = exists(dir_ + "/updates/fresh.txt");   // still to do when Gatefold closes
-    installed.appPending = exists(self_ + ".gfnew");
+    std::string pend;
+    installed.appPending = exists(self_ + ".gfnew") || (readAll(dir_ + "/updates/pending.txt", pend) && (pend[0] == '@' || pend.find("\n@") != std::string::npos));
     installed.overlayPending = exists(sdPath(kOverlay, self_) + ".gfnew");
     // Once this version is the one running and nothing waits, the note is history.
     if (installed.version == thisVersion() && !installed.appPending && !installed.overlayPending && !installed.bgChanged) installed = UpdInstalled{};
@@ -885,7 +975,7 @@ void Updater::install(int i, bool fresh, const std::string& backupRoot) {
 }
 
 bool Updater::poll() {
-    justChecked = justInstalled = false;
+    justChecked = justInstalled = justModel = false;
     {
         std::lock_guard<std::mutex> g(m_);
         if (!doneFlag_) return false;
@@ -894,11 +984,14 @@ bool Updater::poll() {
         if (checked_) {
             justChecked = true;
             if (err_.empty()) { releases = std::move(got_); checkedAt = int64_t(time(nullptr)); }
+            if (gotModelsSet_) models = std::move(gotModels_);   // (the model list can come even when the releases did not)
         }
         if (installedOk_) justInstalled = true;
-        checked_ = installedOk_ = false;
+        if (modelOk_) justModel = true;
+        checked_ = installedOk_ = modelOk_ = gotModelsSet_ = false;
         err_.clear();
         got_.clear();
+        gotModels_.clear();
     }
     if (worker_.joinable()) worker_.join();
     phase_ = Idle;
@@ -924,10 +1017,68 @@ void Updater::doCheck() {
             if (net::get(manifestUrl(r), m, e) && readManifest(m, r)) writeAll(dir_ + "/updates/manifest-" + r.tag + ".json", m);
         }
     }
+    // Automix's models: the model repository's list (a missing one, as before it has a release, is no error)
+    std::string mods, me;
+    std::vector<UpdModel> models;
+    const bool gotModels = !prog_.cancel && net::get(std::string(kModels) + kModelsManifest, mods, me);
+    if (gotModels) {
+        models = readModels(mods);
+        mkdirs(dir_ + "/updates");
+        writeAll(dir_ + "/updates/models.json", mods);
+    }
     std::lock_guard<std::mutex> g(m_);
     checked_ = true;
     err_ = err;
     got_ = std::move(list);
+    gotModels_ = std::move(models);
+    gotModelsSet_ = gotModels;
+}
+
+bool Updater::modelUsable(const UpdModel& m, std::string* why) {
+    auto no = [&](const char* w) { if (why) *why = w; return false; };
+    if (m.format > automix::ModelFile::Format) return no("It needs a newer Songate: it is planned by logic this version does not have");
+    if (m.mixan > mixan::Version) return no("It needs a newer Songate: it was trained on a newer analysis");
+    if (compare(m.app, thisVersion()) > 0) return no(("It needs Songate " + m.app + " or newer").c_str());
+    return true;
+}
+
+void Updater::installModel(int i, const std::string& modelsDir) {
+    if (busy() || i < 0 || i >= int(models.size())) return;
+    working_ = models[size_t(i)].name;
+    phase_ = Downloading;
+    run([this, m = models[size_t(i)], modelsDir] { doInstallModel(m, modelsDir); });
+}
+
+void Updater::doInstallModel(UpdModel m, std::string modelsDir) {
+    auto fail = [&](const std::string& why) {
+        std::lock_guard<std::mutex> g(m_);
+        err_ = why;
+    };
+    mkdirs(modelsDir);
+    const std::string dst = modelsDir + "/" + m.file, tmp = dst + ".gfnew";
+    phase_ = Downloading;
+    prog_.done = 0;
+    prog_.total = m.size;
+    std::string err;
+    if (!net::download(std::string(kModels) + m.file, tmp, err, &prog_)) { fail(err); return; }
+    phase_ = Verifying;
+    if ((m.size && fileSize(tmp) != m.size) || shaFile(tmp) != m.sha256) {
+        remove(tmp.c_str());
+        fail("The download does not match its checksum: try again");
+        return;
+    }
+    // it must be a model this Songate plans, as the list said
+    std::string text, why;
+    automix::ModelFile f;
+    if (!readAll(tmp, text) || !f.parse(text, &why) || f.name != m.name) {
+        remove(tmp.c_str());
+        fail(why.empty() ? "The download is not the model listed" : why);
+        return;
+    }
+    remove(dst.c_str());
+    if (rename(tmp.c_str(), dst.c_str()) != 0) { remove(tmp.c_str()); fail("Could not write to the SD card"); return; }
+    std::lock_guard<std::mutex> g(m_);
+    modelOk_ = true;
 }
 
 void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
@@ -941,7 +1092,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     const std::string zip = up + "/" + (r.zipName.empty() ? "release.zip" : r.zipName);
     if (r.zipSha.size() != 64) { fail("This release has no checksum to check the download against: it was not installed"); return; }
     for (const Legacy& l : kLegacy)   // GitHub's digest and Gatefold's own table must agree
-        if (r.version == l.version && r.zipSha != l.sha) { fail("The release's checksum is not the one Gatefold knows: it was not installed"); return; }
+        if (r.version == l.version && r.zipSha != l.sha) { fail("The release's checksum is not the one Songate knows: it was not installed"); return; }
 
     // ---- 1. the zip (kept from an earlier try when it is already whole and right)
     phase_ = Downloading;
@@ -970,17 +1121,18 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     FILE* f = fopen(zip.c_str(), "rb");
     if (!f) { fail("Could not open the download"); return; }
     std::vector<ZipEntry> entries;
-    if (!zipList(f, entries)) { fclose(f); fail("The download is not a zip Gatefold can read"); return; }
+    if (!zipList(f, entries)) { fclose(f); fail("The download is not a zip Songate can read"); return; }
     std::vector<std::string> placed;   // the .gfnew files written, to take back on failure
     auto undo = [&] { for (const auto& p : placed) remove((p + ".gfnew").c_str()); };
     prog_.done = 0;
     prog_.total = int64_t(r.files.size());
-    bool hasNro = false, bgChanged = false;
+    bool hasNro = false, bgChanged = false, overlayV1 = false;
+    std::string movedTo;   // the app's .nro in another place than this one's (a release under the other name)
     for (const UpdFile& uf : r.files) {
         if (prog_.cancel) { fclose(f); undo(); fail("Stopped"); return; }
         auto it = std::find_if(entries.begin(), entries.end(), [&](const ZipEntry& e) { return e.name == uf.path; });
         if (it == entries.end()) {
-            if (r.manifest || uf.path == kNro) { fclose(f); undo(); fail(uf.path + " is missing from the zip"); return; }
+            if (r.manifest || isNro(uf.path)) { fclose(f); undo(); fail(uf.path + " is missing from the zip"); return; }
             prog_.done++;
             continue;   // an old zip without that file: left as it is
         }
@@ -996,7 +1148,9 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
         if (slash != std::string::npos) mkdirs(target.substr(0, slash));
         if (!writeAll(target + ".gfnew", data.data(), data.size())) { fclose(f); undo(); fail("Could not write " + uf.path + " (is the SD card full?)"); return; }
         placed.push_back(target);
-        if (uf.path == kNro) hasNro = true;
+        if (isNro(uf.path)) hasNro = true;
+        if (uf.path == kNroV1 && target != self_) movedTo = target;   // going back to 1.x: the app moves home
+        if (uf.path == kOverlayV1) overlayV1 = true;
         if (uf.path.rfind(kSysDir, 0) == 0 && uf.path.find("exefs.nsp") != std::string::npos) {
             Sha256 s;
             s.add(data.data(), data.size());
@@ -1005,7 +1159,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
         prog_.done++;
     }
     fclose(f);
-    if (!hasNro) { undo(); fail("The zip has no Gatefold.nro"); return; }
+    if (!hasNro) { undo(); fail("The zip has no Songate.nro"); return; }
 
     // ---- 3. the settings, copied first (never moved: a fresh start clears them only when Gatefold closes)
     phase_ = BackingUp;
@@ -1023,6 +1177,10 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
         if (t == self_) { pending += t + "\n"; continue; }
         if (!swapIn(t)) pending += t + "\n";   // in use (an overlay Ultrahand holds): at the next close or launch
     }
+    // A release under the other name (1.x, Gatefold NX) is in its own places now: this app's .nro and overlay go when it
+    // closes ("-": removed), and the one it put in starts instead ("@"), so the HOME menu's homebrew and Ultrahand list one
+    if (!movedTo.empty()) pending += "-" + self_ + "\n@" + movedTo + "\n";
+    if (overlayV1) pending += "-sdmc:/" + std::string(kOverlay) + "\n";
     writeAll(up + "/pending.txt", pending);
     writeAll(up + "/installed.txt", "version=" + r.version + "\nfrom=" + thisVersion() + "\nbackup=" + backup + "\nbgChanged=" + (bgChanged ? "1" : "0") +
                                         "\nfresh=" + (fresh ? "1" : "0") + "\ndate=" + stamp() +
@@ -1086,9 +1244,10 @@ std::vector<UpdBackup> Updater::backups(const std::string& root) const {
     return out;
 }
 
-bool Updater::finishPending(const std::string& configDir, const std::string& self) {
+std::string Updater::finishPending(const std::string& configDir, const std::string& self) {
     const std::string up = configDir + "/updates";
     bool app = false;
+    std::string next;   // "@": the app's new home (going back to a release under the other name)
     std::string t;
     if (readAll(up + "/pending.txt", t)) {
         std::string left;
@@ -1098,6 +1257,14 @@ bool Updater::finishPending(const std::string& configDir, const std::string& sel
             const std::string p = t.substr(a, b - a);
             a = b + 1;
             if (p.empty()) continue;
+            if (p[0] == '@') { next = p.substr(1); continue; }
+            if (p[0] == '-') {   // a file of this name's, gone (and its folder, the app's own, when that is empty now)
+                const std::string f = p.substr(1);
+                if (exists(f) && remove(f.c_str()) != 0) { left += p + "\n"; continue; }
+                const size_t s = f.find_last_of('/');
+                if (f.size() > 4 && f.compare(f.size() - 4, 4, ".nro") == 0 && s != std::string::npos) rmdir(f.substr(0, s).c_str());
+                continue;
+            }
             if (!swapIn(p)) left += p + "\n";
             else if (p == self) app = true;
         }
@@ -1125,7 +1292,14 @@ bool Updater::finishPending(const std::string& configDir, const std::string& sel
         remove((up + "/fresh.txt").c_str());
         remove((up + "/restore.txt").c_str());
     }
-    return app;
+    return !next.empty() ? next : app ? self : std::string();
+}
+
+void Updater::cleanLegacy(const std::string& configDir, const std::string& self) {
+    if (exists(configDir + "/updates/pending.txt")) return;
+    const std::string nro = "sdmc:/" + std::string(kNroV1), ovl = "sdmc:/" + std::string(kOverlayV1);
+    if (self != nro && exists(nro) && remove(nro.c_str()) == 0) rmdir("sdmc:/switch/Gatefold");   // (only when empty)
+    if (exists("sdmc:/" + std::string(kOverlay)) && exists(ovl)) remove(ovl.c_str());   // (Ultrahand holding it: next launch)
 }
 
 bool Updater::restartBackground(std::string& err) {
@@ -1162,7 +1336,7 @@ const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
         { "eq-presets.txt" },                                                         // saved equalizer presets
         { "stats.tsv", "bg-plays.txt" },                                              // play counts and statistics
         { "session.txt", "bg-session.txt", "bg-places.txt", "overlay-playlist.txt" }, // the queue
-        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "gains.bin", "updates" },   // caches
+        { "art", "thumbs", "tags.tsv", "library.tsv", "loudness.tsv", "mix.tsv", "mood.tsv", "gains.bin", "updates" },   // caches
     };
     return files;
 }

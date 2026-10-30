@@ -39,7 +39,7 @@ std::vector<float> envelope(const std::vector<int16_t>& pcm, int rate) {
 automix::Plan App::joinPlan() const {
     const mixan::Info* a = je.infoA.seconds != 0 ? &je.infoA : nullptr;
     const mixan::Info* b = je.infoB.seconds != 0 ? &je.infoB : nullptr;
-    return automix::plan(a, je.durA, b, store.crossfade, &je.join, mixModel());
+    return planJoin(a, je.durA, b, store.crossfade, &je.join);
 }
 
 void App::openJoinEditor(const std::string& playlist, int a, int b) {
@@ -151,6 +151,7 @@ void App::drawJoinEditor() {
     const float titleW = iw - 54 - 300;
     g.text(ta.title + "  ›  " + tb.title, { css::Lg, Weight::Bold }, ix + 54, Y + pad + 16, pal.text, 1, Align::Left, int(titleW));
     bool c = false;
+    hint(uid("je.x"), "Close");
     if (iconButton(uid("je.x"), ICON_X, X + W - pad - 17, Y + pad + 20)) { closeJoinEditor(); return; }
     {   // Save, left of ×: kept for this playlist (Auto: forgotten, so its choices are made afresh)
         const Font bf{ css::Sm, Weight::SemiBold };
@@ -413,7 +414,6 @@ void App::drawJoinEditor() {
             what += " · " + mixan::camelot(je.infoA.key) + " → " + mixan::camelot(je.infoB.key);
             if (pl.keyClash) what += ": the keys clash, kept short";
         }
-        if (player.remote()) what += " · In the queue only with Keep playing outside Gatefold off, for now";
         g.textC(what, { css::Sm }, ix + 150, y + 17, pal.text2, 1, Align::Left, int(iw - 150));
     }
 

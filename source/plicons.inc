@@ -52,6 +52,33 @@ inline constexpr char PLI_FILE[] = PLI_SVG R"SVG(<path d="M14 3H7a2 2 0 0 0-2 2v
 inline constexpr char PLI_SDCARD[] = PLI_SVG R"SVG(<path d="M9 3h8.5A1.5 1.5 0 0 1 19 4.5v15a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5V7z"/><path d="M10 7v3M13 7v3M16 7v3"/></svg>)SVG";
 
 // Settings → Appearance → Sidebar: a tab one place up or down
+// Added 2026-10-29 (session 6): more to choose from; PLI_SMART is also the smart playlists' own icon (a list that
+// keeps itself up to date), as the two stars are the Automix playlists'.
+inline constexpr char PLI_SMART[] = PLI_SVG R"SVG(<path d="M4 5.5h14M4 10.5h9M4 15.5h5.5"/><path d="M20.26 18.8A4 4 0 1 1 18.8 13.34"/><path d="M18.18 11.02l.62 2.32-2.32.62"/></svg>)SVG";
+inline constexpr char PLI_METRONOME[] = PLI_SVG R"SVG(<path d="M9.2 3.5h5.6L19 20.5H5z"/><path d="M12 16.5l4.5-9"/><path d="M7.5 16.5h9"/></svg>)SVG";
+inline constexpr char PLI_TURNTABLE[] = PLI_SVG R"SVG(<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><circle cx="10" cy="12" r="5"/><circle cx="10" cy="12" r="1"/><path d="M18.5 7v6.5l-3 2.5"/></svg>)SVG";
+inline constexpr char PLI_BELL[] = PLI_SVG R"SVG(<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 21h4"/></svg>)SVG";
+inline constexpr char PLI_PARTY[] = PLI_SVG R"SVG(<path d="M4 20.5l3.6-11 7.4 7.4z"/><path d="M13 3.5c.4 1.6-.2 2.6-1.5 3M20.5 11c-1.6-.4-2.6.2-3 1.5M16 8l3.5-3.5"/>)SVG" PLI_DOT(9, 4) PLI_DOT(20, 15) PLI_DOT(17, 2.8) R"SVG(</svg>)SVG";
+inline constexpr char PLI_BALLOON[] = PLI_SVG R"SVG(<path d="M12 15.5c3.3 0 5.5-3 5.5-6.2a5.5 5.5 0 0 0-11 0c0 3.2 2.2 6.2 5.5 6.2z"/><path d="M11 17.5h2l-1-2zM12 17.5c-1 1.5 1 2.5 0 4"/></svg>)SVG";
+inline constexpr char PLI_TROPHY[] = PLI_SVG R"SVG(<path d="M7.5 4h9v5a4.5 4.5 0 0 1-9 0z"/><path d="M7.5 6H4.5a3 3 0 0 0 3 4.5M16.5 6h3a3 3 0 0 1-3 4.5"/><path d="M12 13.5v3.5M8.5 20.5h7M9.5 20.5c0-1.9 1-3.5 2.5-3.5s2.5 1.6 2.5 3.5"/></svg>)SVG";
+inline constexpr char PLI_MEGAPHONE[] = PLI_SVG R"SVG(<path d="M4 9.5v5h3l9 4.5v-14L7 9.5z"/><path d="M7 14.5l1.5 5h2.5l-1.3-4.5M19.5 10.2v3.6"/></svg>)SVG";
+inline constexpr char PLI_CAMERA[] = PLI_SVG R"SVG(<path d="M3.5 8.5a2 2 0 0 1 2-2h2.2L9.2 4h5.6l1.5 2.5h2.2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></svg>)SVG";
+inline constexpr char PLI_DICE[] = PLI_SVG R"SVG(<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/>)SVG" PLI_DOT(8.3, 8.3) PLI_DOT(15.7, 8.3) PLI_DOT(12, 12) PLI_DOT(8.3, 15.7) PLI_DOT(15.7, 15.7) R"SVG(</svg>)SVG";
+inline constexpr char PLI_CLOCK[] = PLI_SVG R"SVG(<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.2 2"/></svg>)SVG";
+inline constexpr char PLI_BRAIN[] = PLI_SVG R"SVG(<path d="M12 5.5a3 3 0 0 0-5.6-1.4A3 3 0 0 0 4 8.5a3.2 3.2 0 0 0 .6 5.4A3.2 3.2 0 0 0 8 19a3 3 0 0 0 4 .5"/><path d="M12 5.5a3 3 0 0 1 5.6-1.4A3 3 0 0 1 20 8.5a3.2 3.2 0 0 1-.6 5.4A3.2 3.2 0 0 1 16 19a3 3 0 0 1-4 .5z"/></svg>)SVG";
+inline constexpr char PLI_SKULL[] = PLI_SVG R"SVG(<path d="M8.5 20v-2.5a7.5 7.5 0 1 1 7 0V20z"/><circle cx="9.2" cy="11.5" r="1.7"/><circle cx="14.8" cy="11.5" r="1.7"/><path d="M11 20v-2M13 20v-2"/></svg>)SVG";
+inline constexpr char PLI_PAW[] = PLI_SVG R"SVG(<ellipse cx="12" cy="16" rx="4" ry="3.6"/><circle cx="6" cy="10.5" r="1.8"/><circle cx="9.6" cy="6.2" r="1.8"/><circle cx="14.4" cy="6.2" r="1.8"/><circle cx="18" cy="10.5" r="1.8"/></svg>)SVG";
+inline constexpr char PLI_PALM[] = PLI_SVG R"SVG(<path d="M12 21c.4-4 .2-8-1.2-11"/><path d="M10.8 10C9 7 5.6 6.4 3.5 8M10.8 10c.6-3.4 3.6-5.6 7-4.6M10.8 10c3.2-.6 6.2 1 7.2 4M10.8 10c-3 .4-5 2.6-5.2 5.4"/><path d="M7 21h10"/></svg>)SVG";
+inline constexpr char PLI_SUNSET[] = PLI_SVG R"SVG(<path d="M7 16a5 5 0 0 1 10 0"/><path d="M3 16h2M19 16h2M12 6.5v2M6.3 9.8l1.4 1.4M17.7 9.8l-1.4 1.4M3.5 20h17"/></svg>)SVG";
+inline constexpr char PLI_CAMPFIRE[] = PLI_SVG R"SVG(<path d="M12 14.5a3.5 3.5 0 0 0 3.5-3.5c0-2.4-1.8-3.8-2.6-6.5-.6 1.9-1.6 2.8-2.2 3.6-.4-.6-.7-1.2-.7-2-1 1-1.5 2.4-1.5 4.9a3.5 3.5 0 0 0 3.5 3.5z"/><path d="M4.5 20.5l15-3.5M19.5 20.5l-15-3.5"/></svg>)SVG";
+inline constexpr char PLI_UMBRELLA[] = PLI_SVG R"SVG(<path d="M3 12a9 9 0 0 1 18 0z"/><path d="M12 12v6.5a2 2 0 0 1-4 0M12 3v-.5"/></svg>)SVG";
+inline constexpr char PLI_ANCHOR[] = PLI_SVG R"SVG(<circle cx="12" cy="5" r="2"/><path d="M12 7v14M8 10.5h8M4.5 13.5a7.5 7.5 0 0 0 15 0"/></svg>)SVG";
+inline constexpr char PLI_COMPASS[] = PLI_SVG R"SVG(<circle cx="12" cy="12" r="8.5"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>)SVG";
+inline constexpr char PLI_PLANE[] = PLI_SVG R"SVG(<path d="M10.5 13.5 3 11.2l1.4-1.4 7.6.4 4.6-4.6a2 2 0 0 1 2.8 2.8L14.8 13l.4 7.6-1.4 1.4-2.3-7.5"/><path d="M7.5 16.5 5 19"/></svg>)SVG";
+// The Mood playlists' own icon (the user's choice, 2026-10-30; the heart was Liked's): the two theatre masks, comedy and
+// tragedy, the classic sign for moods: two equal masks apart, each face in the same place on its mask, a little above its
+// middle (a round chin makes a mask look top-heavy)
+inline constexpr char PLI_MOOD[] = PLI_SVG R"SVG(<path d="M1.5 2.5h9V9a4.5 4.5 0 0 1-9 0z"/><path d="M13.5 10.5h9V17a4.5 4.5 0 0 1-9 0z"/><path d="M4 8.6a2 2 0 0 0 4 0M16 18.6a2 2 0 0 1 4 0"/>)SVG" PLI_DOT(4, 5.4) PLI_DOT(8, 5.4) PLI_DOT(16, 13.4) PLI_DOT(20, 13.4) R"SVG(</svg>)SVG";
 inline constexpr char PLI_UP[] = PLI_SVG R"SVG(<path d="M12 19V5M6 11l6-6 6 6"/></svg>)SVG";
 inline constexpr char PLI_DOWN[] = PLI_SVG R"SVG(<path d="M12 5v14M6 13l6 6 6-6"/></svg>)SVG";
 
@@ -75,6 +102,12 @@ inline const PlaylistIcon kPlaylistIcons[] = {
     { "briefcase", PLI_BRIEFCASE }, { "code", PLI_CODE },           { "bulb", PLI_BULB },           { "bed", PLI_BED },
     { "history", ICON_HISTORY },    { "calendar", ICON_CALENDAR },  { "hourglass", ICON_HOURGLASS }, { "target", PLI_TARGET },
     { "flag", PLI_FLAG },           { "bookmark", PLI_BOOKMARK },   { "ghost", PLI_GHOST },         { "infinity", PLI_INFINITY },
+    { "smart", PLI_SMART },         { "mood", PLI_MOOD },         { "metronome", PLI_METRONOME }, { "turntable", PLI_TURNTABLE }, { "bell", PLI_BELL },
+    { "party", PLI_PARTY },         { "balloon", PLI_BALLOON },     { "trophy", PLI_TROPHY },       { "megaphone", PLI_MEGAPHONE },
+    { "camera", PLI_CAMERA },       { "dice", PLI_DICE },           { "clock", PLI_CLOCK },         { "brain", PLI_BRAIN },
+    { "skull", PLI_SKULL },         { "paw", PLI_PAW },             { "palm", PLI_PALM },           { "sunset", PLI_SUNSET },
+    { "campfire", PLI_CAMPFIRE },   { "umbrella", PLI_UMBRELLA },   { "anchor", PLI_ANCHOR },       { "compass", PLI_COMPASS },
+    { "plane", PLI_PLANE },
 };
 
 /** The icon saved under a key, or nullptr when there is none (a key from a later version). */

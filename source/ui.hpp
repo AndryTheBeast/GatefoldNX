@@ -69,6 +69,8 @@ public:
     std::function<void(const ScrollArea*)> onArea;
     /** Registers an interactive rectangle; true when it was activated. */
     bool item(Id id, SDL_FRect r, float radius = 8, uint8_t flags = 0);
+    // Quiet: items are neither registered nor pressable (a block drawn again, as an Automix wipe's blur: App::wiped)
+    void setQuiet(bool q) { quiet_ = q; }
     /** Where the D-pad goes from an item in one direction, when the layout would pick wrong (this frame; 0: nowhere). */
     void link(Id from, int dx, int dy, Id to) { linksCur_.push_back({ from, int8_t(dx), int8_t(dy), to }); }
     bool focused(Id id) const { return focus_ == id; }
@@ -129,6 +131,9 @@ public:
     void touchMove(float x, float y);
     void touchUp(float x, float y);
     void scrollFocusedArea(float dy);
+    /** Scrolls the list under a point (the pointer, a mouse) rather than the focused one: the topmost scroll area there that
+     *  takes input (an open sheet's, not the page's behind it). False when there is none. */
+    bool scrollAreaAt(float x, float y, float dy);
     void setPadMode(bool on) { padMode_ = on; }
 
 private:
@@ -181,4 +186,5 @@ private:
     Id touchHold_ = 0;              // touchHeld(): this frame's long touch
     float pressT_ = 0;              // how long the finger has been still on press_
     bool pressFired_ = false;       // ... and its long touch came: the release taps nothing
+    bool quiet_ = false;
 };

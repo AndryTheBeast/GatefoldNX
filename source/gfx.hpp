@@ -8,6 +8,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,37 @@ public:
     /** Every alpha drawn is multiplied by f (0..1) until set back to 1: a whole block faded at once (Now playing's info while
      *  Automix glides the cover over it). */
     void setFade(float f);
+    /** A wipe (Automix's Simple joins: the user, 2026-10-29): while set, what is drawn fades through a soft edge `soft` wide
+     *  centred on x = `edge`, kept to its left (keepLeft: the new song's) or to its right (the old one's). Text exactly,
+     *  across its letters; shapes, images and icons by their middle. */
+    void setWipe(float edge, float soft, bool keepLeft) { wipeOn_ = true; wipeBump_ = false; wipeEdge_ = edge; wipeSoft_ = std::max(1.f, soft); wipeLeft_ = keepLeft; }
+    /** … or only round the edge: 1 on it, nothing `soft` away on either side (the wipe's blur) */
+    void setWipeBump(float edge, float soft) { wipeOn_ = true; wipeBump_ = true; wipeEdge_ = edge; wipeSoft_ = std::max(1.f, soft); }
+    void clearWipe() { wipeOn_ = false; }
+    float wipeAt(float x) const {
+        if (!wipeOn_) return 1;
+        if (wipeBump_) return std::clamp(1 - std::fabs(x - wipeEdge_) / wipeSoft_, 0.f, 1.f);
+        const float v = std::clamp((wipeEdge_ - x) / wipeSoft_ + 0.5f, 0.f, 1.f);   // 1 left of the edge
+        return wipeLeft_ ? v : 1 - v;
+    }
+    // where wipeAt bends (for text drawn in columns): up to 3
+    int wipeBends(float* out) const {
+        if (!wipeOn_) return 0;
+        if (wipeBump_) { out[0] = wipeEdge_ - wipeSoft_; out[1] = wipeEdge_; out[2] = wipeEdge_ + wipeSoft_; return 3; }
+        out[0] = wipeEdge_ - wipeSoft_ / 2; out[1] = wipeEdge_ + wipeSoft_ / 2; return 2;
+    }
+    // The wipe's blur: text moved sideways by dx, and text alone (shapes, images and icons not drawn)
+    void setTextNudge(float dx, float dy, bool textOnly) { nudgeX_ = dx; nudgeY_ = dy; textOnly_ = textOnly; }
+    /** Text drawn from its blurred copy (blurTexture: made once and cached, as the text is; a few a frame), text alone (the
+     *  Automix wipe's blur, between the two songs' letters: App::wiped) */
+    void setTextBlur(bool on) { blurText_ = on; textOnly_ = on; }
+    /** Shapes, images and icons alone, no text (App::wiped: a block's shapes cross the edge as one, its letters apart) */
+    void setShapesOnly(bool on) { shapesOnly_ = on; }
+    // the blurred copy's box blur radius for a font size (a title's blur as soft for its size as small text's), and its
+    // margin round the text (three passes reach 3 radii)
+    static int blurRadius(int size) { return std::clamp(int(std::lround(size * 0.11f)), 3, 7); }
+    static int blurPad(int size) { return 3 * blurRadius(size); }
+    float fade() const;
     void fill(const Rgb& c, float alpha = 1);
     void rect(float x, float y, float w, float h, const Rgb& c, float alpha = 1);
     void rectV(float x, float y, float w, float h, const Rgb& top, float aTop, const Rgb& bottom, float aBottom);
@@ -71,6 +103,16 @@ public:
                    float alpha = 1);
     /** Letter-spaced text (the uppercase kickers), spacing in em. Centred on cy. */
     int textSpaced(const std::string& s, Font f, float x, float cy, float spacingEm, const Rgb& c, float alpha = 1, Align a = Align::Left);
+    /** Songate's wordmark (wordmark.inc: Fraunces Black, made once by tools/brand/wordmark.py): its letters in a gradient
+     *  across, a → b → c, over their own blurred glow (glowC, glowA), with a shimmer of white crossing them while shine is in
+     *  0..1 (where the light is, across the word). x is its left, cy the letters' middle. Its width and height as made. */
+    void wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha = 1);
+    static int wordmarkW();
+    static int wordmarkH();
+    static float wordmarkMid();
+    /** Over a textSpaced (left-aligned, drawn first): the same letters again in `c`, lit through a soft band bw wide at
+     *  bx (its profile as band()'s), so a light passes through the letters only (the Automix playlist's kicker). */
+    int textSpacedShine(const std::string& s, Font f, float x, float cy, float spacingEm, float bx, float bw, const Rgb& c, float alpha = 1);
     /**
      * Ghost mode: nothing is drawn, but text() and icon() render and keep what they would draw, at
      * most a couple of new textures a frame. The Canvas runs its hidden layouts and faded controls
@@ -137,6 +179,9 @@ private:
     int faceFor(const std::string& s);
     std::string ellipsize(const std::string& s, Font f, int maxW);
     Cached* textTexture(const std::string& s, Font f);
+    Cached* blurTexture(const std::string& s, Font f);   // the text's blurred copy (blurPad margin), or nullptr not made yet
+    bool blurText_ = false;
+    int blurBudget_ = 0;
 
     void outline(float x, float y, float w, float h, float rad, std::vector<Pt>& pts);
     void outline(float x, float y, float w, float h, const float* rads, std::vector<Pt>& pts);
@@ -158,10 +203,16 @@ private:
     int newBudget_ = 0;
     int wrapBudget_ = 0;  // new wraps a ghost may do this frame   // new visible text textures left this frame: a page or a track change spreads over a few frames
     float shiftX_ = 0, shiftY_ = 0;
+    bool wipeOn_ = false, wipeLeft_ = true, wipeBump_ = false, textOnly_ = false;
+    bool pixelWipe_ = false, shapesOnly_ = false;   // shape(): through the wipe per pixel, not at its centre (images)
+    float nudgeX_ = 0, nudgeY_ = 0;
+    float wipeEdge_ = 0, wipeSoft_ = 1;
     std::vector<std::string> stale_[2];   // text and icon keys found unused, destroyed a few a frame
     std::unordered_map<std::string, Cached> iconCache_;
     SDL_Texture* glowTex_ = nullptr;
     SDL_Texture* bandTex_ = nullptr;
+    SDL_Texture* wordTex_ = nullptr;       // the wordmark's letters, white (alpha from wordmark.inc)
+    SDL_Texture* wordGlowTex_ = nullptr;   // … and their blur
     bool holdCache_ = false;
     SDL_Texture* veilTex_ = nullptr;
     SDL_Texture* vignetteTex_ = nullptr;

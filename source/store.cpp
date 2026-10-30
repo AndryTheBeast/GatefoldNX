@@ -156,6 +156,9 @@ void Store::load() {
         else if (k == "order") order = Order(std::clamp(atoi(v.c_str()), 0, 3));
         else if (k == "sidebarCollapsed") sidebarCollapsed = v == "1";
         else if (k == "motion") motion = v == "1";
+        else if (k == "mixAnimNow") mixAnimNow = std::clamp(atoi(v.c_str()), 0, 2);
+        else if (k == "mixAnimCanvas") mixAnimCanvas = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "mixHint") mixHint = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "spectrum") showSpectrum = v == "1";
         else if (k == "canvasLayout") canvasLayout = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "canvasLyrics") canvasLyrics = v == "1";
@@ -195,6 +198,8 @@ void Store::load() {
         else if (k == "pointerAccel") pointerAccel = v == "1";
         else if (k == "frameTimes") frameTimes = v == "1";
         else if (k == "automixModel") automixModel = v;
+        else if (k == "modelToasted") modelToasted = v;
+        else if (k == "heldOrder") heldOrder = std::clamp(atoi(v.c_str()), -1, 3);
         else if (k == "keepAwake") keepAwake = v == "1";
         else if (k == "levelMode") levelMode = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "levelTarget") levelTarget = std::clamp(atoi(v.c_str()), -23, -6);
@@ -242,6 +247,8 @@ void Store::load() {
         else if (k == "updates") updates = std::clamp(atoi(v.c_str()), 0, 1);
         else if (k == "updateAtStart") updateAtStart = v == "1";
         else if (k == "updateToasted") updateToasted = v;
+        else if (k == "betas") betas = v == "1";
+        else if (k == "reports") reports = v == "1";
     }
     if (!filesTabKnown) hiddenTabs |= 64u;   // Files stays hidden until Settings → Appearance shows it
     if (!linesKnown && std::none_of(tabOrder.begin(), tabOrder.end(), isLine)) {   // the line Files had, now one of yours
@@ -398,6 +405,9 @@ void Store::save() const {
     appendf(f, "pointerSpeed=%.2f\npointerAccel=%d\nframeTimes=%d\nviewGenre=%d\n", double(pointerSpeed), pointerAccel, frameTimes, viewGenre);
     appendf(f, "keepAwake=%d\ndimAfter=%d\nsleepConsole=%d\n", keepAwake, dimAfter, sleepConsole);
     if (!automixModel.empty()) appendf(f, "automixModel=%s\n", automixModel.c_str());
+    if (!modelToasted.empty()) appendf(f, "modelToasted=%s\n", modelToasted.c_str());
+    if (heldOrder >= 0) appendf(f, "heldOrder=%d\n", heldOrder);
+    appendf(f, "mixAnimNow=%d\nmixAnimCanvas=%d\nmixHint=%d\n", mixAnimNow, mixAnimCanvas, mixHint);
     appendf(f, "batteryPercent=%d\nbatteryEstimate=%d\n", batteryPercent, batteryEstimate);
     appendf(f, "stopCovers=%d\nstopThumbs=%d\nstopLevels=%d\n", stopCovers, stopThumbs, stopLevels);
     appendf(f, "lyricTiming=%d\nlyricTimingFor=%d\n", lyricTiming, lyricTimingFor);
@@ -422,7 +432,7 @@ void Store::save() const {
     for (const auto& [k, v] : { std::pair<const char*, const std::string*>{ "filesDir", &filesDir }, { "importDir", &importDir },
                                 { "exportDir", &exportDir }, { "coverDir", &coverDir }, { "backupDir", &backupDir } })
         if (!v->empty()) appendf(f, "%s=%s\n", k, v->c_str());
-    appendf(f, "updates=%d\nupdateAtStart=%d\n", updates, updateAtStart);
+    appendf(f, "updates=%d\nupdateAtStart=%d\nbetas=%d\nreports=%d\n", updates, updateAtStart, betas ? 1 : 0, reports ? 1 : 0);
     if (!updateToasted.empty()) appendf(f, "updateToasted=%s\n", updateToasted.c_str());
     writer().put(path("settings.txt"), std::move(f), true);
 

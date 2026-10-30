@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <cstdlib>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,14 +34,31 @@ struct UpdItem { std::string icon, text; };                                    /
 struct UpdLog { std::string icon, title; std::vector<UpdItem> items; };       // a changelog section
 struct UpdFile { std::string path; int64_t size = 0; std::string sha256; };     // path from the SD card's root
 
+// Where bugs are reported (Settings › Updates: the betas' warning). The repository's name until its rename to Songate
+#define ISSUES_URL "github.com/AndryTheBeast/GatefoldNX/issues"
+
 struct UpdRelease {
     std::string tag, version, name, date, body;   // date: "2026-10-27"; body: the GitHub notes (Markdown)
     std::string zipName, zipUrl, zipSha;          // zipSha: the manifest's, else GitHub's digest, else the table's
     int64_t zipSize = 0;
     bool manifest = false;                        // from 1.2.0 on: it can update itself (and roll back) from inside Gatefold
+    bool beta = false;                            // a beta (GitHub's pre-release, or "2.0.0 BETA"): listed apart, only with Beta versions on
     int protocol = 0;                             // the background player's protocol (GFBG_PROTOCOL), 0 unknown
     std::vector<UpdFile> files;                   // the manifest's, else the known layout
     std::vector<UpdLog> log;                      // the app changelog, else sections read from the notes
+};
+
+/**
+ * An Automix model sent over the air (the user, 2026-10-30): the model repository's latest release carries
+ * songate-automix-models.json (each model's name, file, size, SHA-256, format, the lowest Songate that reads it, the analysis
+ * it was trained on, notes) and the model files themselves (automix::ModelFile's text). Downloaded under the same permission
+ * as releases, checked by size and checksum, kept in config/gatefold-nx/models/.
+ */
+struct UpdModel {
+    std::string name, file, sha256, date, app = "2.0.0-beta";
+    int64_t size = 0;
+    int format = 1, mixan = 0;
+    std::vector<std::string> notes;
 };
 
 /** What Settings → Updates shows about the last install (updates/installed.txt), and what is waiting for a restart. */
@@ -66,6 +84,10 @@ public:
     void check();                                                     // the release list and their manifests
     /** Downloads and installs releases[i]; fresh: the settings are cleared when Gatefold closes (after the backup). */
     void install(int i, bool fresh, const std::string& backupRoot);
+    /** Downloads models[i] into modelsDir (its checksum checked); justModel says so when it is in. */
+    void installModel(int i, const std::string& modelsDir);
+    /** Whether this Songate can play a listed model; why not, when it cannot (a newer one is needed). */
+    static bool modelUsable(const UpdModel& m, std::string* why = nullptr);
     void cancel() { prog_.cancel = true; }
     /** Copies a backup back over config/gatefold-nx when Gatefold closes. */
     void restoreAtExit(const std::string& backup);
@@ -83,6 +105,8 @@ public:
     const std::string& working() const { return working_; }   // the version being installed
 
     std::vector<UpdRelease> releases;   // newest first, as GitHub lists them
+    std::vector<UpdModel> models;       // the Automix models listed by the model repository's latest release
+    bool justModel = false;             // poll(): a model download finished well (working() names it)
     std::string error;                  // the last task's failure, "" when it went well
     int64_t checkedAt = 0;              // time() of the last good check, 0 never
     bool justChecked = false;           // poll(): a check finished (with or without error)
@@ -91,14 +115,24 @@ public:
     std::vector<UpdBackup> backups(const std::string& backupRoot) const;
 
     /** The newest release above this version, or −1. */
-    int newer() const;
+    int newer(bool betas) const;   // the newest release above this one (betas too only when they are on), or -1
     static int compare(const std::string& a, const std::string& b);   // versions "1.2.0": <0, 0, >0
+    static bool isBeta(const std::string& v);   // something after its numbers ("2.0.0 BETA")
+    static std::string pretty(const std::string& v);   // the app's spelling: "2.0.0-beta.1" → "2.0.0 BETA 1"
+    /** A release as it was named: "Gatefold NX 1.1.0" before the rebranding, "Songate 2.0.0" from it on (the releases
+     *  before stay as they are: the user, 2026-10-29). */
+    static std::string releaseName(const std::string& v) { return (atoi(v.c_str()) < 2 ? "Gatefold NX " : "Songate ") + v; }   // (by its first number: 2.0.0 BETA is Songate's)
     static std::string thisVersion();
     static int thisProtocol();   // GFBG_PROTOCOL: the background player this app talks to
 
     /** Before anything reads the .nro (main) and at the very end of Gatefold (shutdown): the files waiting as .gfnew are
-     *  swapped in, a fresh start or a restore is done. Returns true when the app's own .nro was replaced. */
-    static bool finishPending(const std::string& configDir, const std::string& self);
+     *  swapped in, a fresh start or a restore is done. Returns the .nro to start next: this one, replaced; the one a release
+     *  under the other name put in its own place (going back to 1.x, Gatefold NX: this one was removed); or empty. */
+    static std::string finishPending(const std::string& configDir, const std::string& self);
+    /** The first launch after the rebranding (1.x was Gatefold NX): its .nro, and its overlay once Songate's is in, removed
+     *  (the HOME menu's homebrew and Ultrahand would list both); the settings folder stays config/gatefold-nx. Not while an
+     *  update waits (going back to 1.x puts them there on purpose). */
+    static void cleanLegacy(const std::string& configDir, const std::string& self);
     /** The background player again, from its (new) files: pm:shell ends it and starts it. False (why in err) when not allowed. */
     static bool restartBackground(std::string& err);
     void markBgRestarted();   // after restartBackground: the new background player runs
@@ -115,6 +149,7 @@ private:
     void run(std::function<void()> work);
     void doCheck();
     void doInstall(UpdRelease r, bool fresh, std::string backupRoot);
+    void doInstallModel(UpdModel m, std::string modelsDir);
     void readCache();
     void readInstalled();
 
@@ -126,7 +161,9 @@ private:
     std::string working_;
     std::mutex m_;
     // handed over by the worker (under m_)
-    bool doneFlag_ = false, checked_ = false, installedOk_ = false;
+    bool doneFlag_ = false, checked_ = false, installedOk_ = false, modelOk_ = false;
     std::string err_;
     std::vector<UpdRelease> got_;
+    std::vector<UpdModel> gotModels_;
+    bool gotModelsSet_ = false;
 };

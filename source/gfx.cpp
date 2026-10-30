@@ -2,6 +2,7 @@
  * Gatefold NX · gfx.cpp
  */
 #include "gfx.hpp"
+#include "wordmark.inc"
 
 #include <SDL2/SDL_image.h>
 #include <switch.h>
@@ -74,6 +75,20 @@ bool Gfx::init(SDL_Renderer* r) {
         }
     SDL_UpdateTexture(vignetteTex_, nullptr, px.data(), N * 4);
 
+    // The wordmark: white, its alpha as tools/brand/wordmark.py drew it (two textures made once; coloured as drawn)
+    auto mask = [&](const unsigned char* a, int w, int h) {
+        std::vector<Uint32> m(size_t(w) * h);
+        for (size_t i = 0; i < m.size(); i++) m[i] = (Uint32(a[i]) << 24) | 0xffffff;
+        SDL_Texture* t = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, w, h);
+        if (t) {
+            SDL_UpdateTexture(t, nullptr, m.data(), w * 4);
+            SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+        }
+        return t;
+    };
+    wordTex_ = mask(kWord, kWordW, kWordH);
+    wordGlowTex_ = mask(kWordGlow, kWordW + 2 * kWordGlowPad, kWordH + 2 * kWordGlowPad);
+
     // Band: across, a Gaussian falling to nothing at both sides (band())
     bandTex_ = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, N, 1);
     for (int x = 0; x < N; x++) {
@@ -95,8 +110,8 @@ void Gfx::shutdown() {
     iconCache_.clear();
     for (auto& [k, f] : fonts_) if (f) TTF_CloseFont(f);
     fonts_.clear();
-    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_ }) if (t) SDL_DestroyTexture(t);
-    glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = nullptr;
+    for (SDL_Texture* t : { glowTex_, veilTex_, vignetteTex_, bandTex_, wordTex_, wordGlowTex_ }) if (t) SDL_DestroyTexture(t);
+    glowTex_ = veilTex_ = vignetteTex_ = bandTex_ = wordTex_ = wordGlowTex_ = nullptr;
     TTF_Quit();
 }
 
@@ -105,6 +120,7 @@ void Gfx::endFrame() {
     ghostBudget_ = 2;
     newBudget_ = 40;
     wrapBudget_ = 3;
+    blurBudget_ = 6;   // blurred texts made a frame (a wipe's new lines: the rest the next frames)
     // Eviction is spread out: destroying a hundred textures in one frame was a hitch of its own, and it
     // could land right as an animation began. Only a big cache is trimmed, and only what has been
     // unused for 10 s (the Canvas controls fade for longer than 3 s and come back).
@@ -190,6 +206,53 @@ void Gfx::shape(const std::vector<Pt>& pts, float cx, float cy, ColorFn col, SDL
     };
     verts_.clear();
     idx_.clear();
+    if (pixelWipe_ && wipeOn_) {
+        // through the wipe per pixel (an image: a cover the page's wipe crosses, App::wiped): the inset outline cut into
+        // slabs at the wipe's bends, where it is linear, so each slab's vertices carry it exactly; then the feather
+        float bends[3], cuts[5];
+        const int nb = wipeBends(bends);
+        float x0 = pts[0].x, x1 = pts[0].x;
+        for (const Pt& p : pts) { x0 = std::min(x0, p.x); x1 = std::max(x1, p.x); }
+        int nc = 0;
+        cuts[nc++] = x0 - 1;
+        for (int i = 0; i < nb; i++) if (bends[i] > x0 && bends[i] < x1) cuts[nc++] = bends[i];
+        cuts[nc++] = x1 + 1;
+        std::sort(cuts, cuts + nc);
+        auto wv = [&](float px, float py, float alphaMul) {
+            SDL_Color c = col(px, py);
+            c.a = Uint8(c.a * alphaMul * wipeAt(px));
+            verts_.push_back({ { px, py }, c, uv(px, py) });
+        };
+        auto clipX = [](const std::vector<SDL_FPoint>& in, float c, bool keepRight, std::vector<SDL_FPoint>& out) {
+            out.clear();
+            const size_t m = in.size();
+            for (size_t i = 0; i < m; i++) {
+                const SDL_FPoint A = in[i], B = in[(i + 1) % m];
+                const bool ia = keepRight ? A.x >= c : A.x <= c, ib = keepRight ? B.x >= c : B.x <= c;
+                if (ia) out.push_back(A);
+                if (ia != ib) out.push_back({ c, A.y + (c - A.x) / (B.x - A.x) * (B.y - A.y) });
+            }
+        };
+        std::vector<SDL_FPoint> inner, a, b;
+        for (const Pt& p : pts) inner.push_back({ p.x - p.nx * 0.5f, p.y - p.ny * 0.5f });
+        for (int s = 0; s + 1 < nc; s++) {
+            clipX(inner, cuts[s], true, a);
+            clipX(a, cuts[s + 1], false, b);
+            if (b.size() < 3) continue;
+            const int base = int(verts_.size());
+            for (const SDL_FPoint& q : b) wv(q.x, q.y, 1);
+            for (int k = 1; k + 1 < int(b.size()); k++) idx_.insert(idx_.end(), { base, base + k, base + k + 1 });
+        }
+        const int base = int(verts_.size());
+        for (const Pt& p : pts) wv(p.x - p.nx * 0.5f, p.y - p.ny * 0.5f, 1);
+        for (const Pt& p : pts) wv(p.x + p.nx * 0.5f, p.y + p.ny * 0.5f, 0);
+        for (int i = 0; i < n; i++) {
+            const int a0 = base + i, b0 = base + (i + 1) % n, oa = base + n + i, ob = base + n + (i + 1) % n;
+            idx_.insert(idx_.end(), { a0, oa, ob, a0, ob, b0 });
+        }
+        SDL_RenderGeometry(r_, tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+        return;
+    }
     vert(cx, cy, 1);
     for (const Pt& p : pts) vert(p.x - p.nx * 0.5f, p.y - p.ny * 0.5f, 1);
     for (const Pt& p : pts) vert(p.x + p.nx * 0.5f, p.y + p.ny * 0.5f, 0);
@@ -246,8 +309,11 @@ void Gfx::fill(const Rgb& c, float alpha) {
     SDL_RenderFillRect(r_, nullptr);
 }
 
+float Gfx::fade() const { return gFade; }
+
 void Gfx::rect(float x, float y, float w, float h, const Rgb& c, float alpha) {
-    if (ghost_) return;
+    if (ghost_ || textOnly_) return;
+    alpha *= wipeAt(x + w / 2);
     const SDL_Color s = sdl(c, alpha);
     SDL_SetRenderDrawColor(r_, s.r, s.g, s.b, s.a);
     const SDL_FRect rc{ x, y, w, h };
@@ -263,23 +329,27 @@ void Gfx::rectV(float x, float y, float w, float h, const Rgb& top, float aTop, 
 }
 
 void Gfx::roundRect(float x, float y, float w, float h, float rad, const Rgb& c, float alpha) {
-    if (ghost_) return;
+    if (ghost_ || textOnly_) return;
     if (w <= 0 || h <= 0 || alpha <= 0) return;
     std::vector<Pt> pts;
     outline(x, y, w, h, rad, pts);
     const SDL_Color s = sdl(c, alpha);
+    pixelWipe_ = true;   // through a wipe per pixel (a chip the edge crosses: by its middle it changed at once)
     shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; });
+    pixelWipe_ = false;
 }
 
 void Gfx::roundRectH(float x, float y, float w, float h, float rad, const Rgb& l, const Rgb& r, float alpha) {
-    if (ghost_) return;
+    if (ghost_ || textOnly_) return;
     if (w <= 0 || h <= 0) return;
     std::vector<Pt> pts;
     outline(x, y, w, h, rad, pts);
+    pixelWipe_ = true;
     shape(pts, x + w / 2, y + h / 2, [&](float px, float) {
         const float t = std::clamp((px - x) / w, 0.f, 1.f);
         return sdl({ l.r + (r.r - l.r) * t, l.g + (r.g - l.g) * t, l.b + (r.b - l.b) * t }, alpha);
     });
+    pixelWipe_ = false;
 }
 
 void Gfx::roundRectV(float x, float y, float w, float h, float rad, const Rgb& top, const Rgb& bot, float alpha) {
@@ -294,10 +364,32 @@ void Gfx::roundRectV(float x, float y, float w, float h, float rad, const Rgb& t
 }
 
 void Gfx::roundStroke(float x, float y, float w, float h, float rad, float th, const Rgb& c, float alpha) {
-    if (ghost_) return;
+    if (ghost_ || textOnly_) return;
     if (w <= 0 || h <= 0 || alpha <= 0) return;
     std::vector<Pt> outer;
     outline(x, y, w, h, rad, outer);
+    if (wipeOn_) {   // through a wipe per pixel: points where it bends along the sides too, the alpha at each point
+        float bends[3];
+        const int nb = wipeBends(bends);
+        std::vector<Pt> fine;
+        for (size_t i = 0; i < outer.size(); i++) {
+            const Pt A = outer[i], B = outer[(i + 1) % outer.size()];
+            fine.push_back(A);
+            float ts[3];
+            int nt = 0;
+            for (int k = 0; k < nb; k++)
+                if ((bends[k] - A.x) * (bends[k] - B.x) < 0) ts[nt++] = (bends[k] - A.x) / (B.x - A.x);
+            std::sort(ts, ts + nt);
+            for (int k = 0; k < nt; k++) {
+                const float t = ts[k];
+                float nx = A.nx + (B.nx - A.nx) * t, ny = A.ny + (B.ny - A.ny) * t;
+                const float l = std::sqrt(nx * nx + ny * ny);
+                if (l > 1e-4f) { nx /= l; ny /= l; }
+                fine.push_back({ A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t, nx, ny });
+            }
+        }
+        outer.swap(fine);
+    }
     const int n = int(outer.size());
     const SDL_Color full = sdl(c, alpha), none = sdl(c, 0);
     verts_.clear();
@@ -305,7 +397,11 @@ void Gfx::roundStroke(float x, float y, float w, float h, float rad, float th, c
     // Four loops from outside in: feather, solid outer edge, solid inner edge, feather.
     const float off[4] = { 0.5f, -0.5f, -th + 0.5f, -th - 0.5f };
     for (int k = 0; k < 4; k++)
-        for (const Pt& p : outer) verts_.push_back({ { p.x + p.nx * off[k], p.y + p.ny * off[k] }, (k == 0 || k == 3) ? none : full, {} });
+        for (const Pt& p : outer) {
+            SDL_Color col = (k == 0 || k == 3) ? none : full;
+            col.a = Uint8(col.a * wipeAt(p.x));
+            verts_.push_back({ { p.x + p.nx * off[k], p.y + p.ny * off[k] }, col, {} });
+        }
     for (int k = 0; k < 3; k++)
         for (int i = 0; i < n; i++) {
             const int a = k * n + i, b = k * n + (i + 1) % n, c2 = (k + 1) * n + i, d = (k + 1) * n + (i + 1) % n;
@@ -317,7 +413,7 @@ void Gfx::roundStroke(float x, float y, float w, float h, float rad, float th, c
 void Gfx::circle(float cx, float cy, float rad, const Rgb& c, float alpha) { roundRect(cx - rad, cy - rad, rad * 2, rad * 2, rad, c, alpha); }
 
 void Gfx::image(SDL_Texture* t, float x, float y, float w, float h, float rad, float alpha, float zoom, float panX, float panY) {
-    if (ghost_) return;
+    if (ghost_ || textOnly_) return;
     if (!t || w <= 0 || h <= 0) return;
     int tw = 1, th = 1;
     SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
@@ -337,7 +433,9 @@ void Gfx::image(SDL_Texture* t, float x, float y, float w, float h, float rad, f
     outline(x, y, w, h, rad, pts);
     const SDL_FRect box{ x, y, w, h };
     const SDL_Color s = sdl({ 1, 1, 1 }, alpha);
+    pixelWipe_ = true;   // through a wipe per pixel
     shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; }, t, &box, &src);
+    pixelWipe_ = false;
 }
 
 void Gfx::imageStretched(SDL_Texture* t, float x, float y, float w, float h, float rad, float alpha) {
@@ -347,7 +445,9 @@ void Gfx::imageStretched(SDL_Texture* t, float x, float y, float w, float h, flo
     outline(x, y, w, h, rad, pts);
     const SDL_FRect box{ x, y, w, h }, src{ 0, 0, 1, 1 };
     const SDL_Color s = sdl({ 1, 1, 1 }, alpha);
+    pixelWipe_ = true;
     shape(pts, x + w / 2, y + h / 2, [&](float, float) { return s; }, t, &box, &src);
+    pixelWipe_ = false;
 }
 
 void Gfx::imageCorners(SDL_Texture* t, float x, float y, float w, float h, const float* rads, float alpha) {
@@ -593,6 +693,66 @@ Gfx::Cached* Gfx::textTexture(const std::string& s, Font f) {
     return &it->second;
 }
 
+/**
+ * A text's blurred copy, white (coloured by modulation, as the text): its glyphs rendered once more, the alpha box-blurred
+ * three times each way (radius 3-7 by the font's size, blurRadius: about a Gaussian of σ 1.15 radii) into a margin of
+ * blurPad px. Cached with the texts (the
+ * same eviction), under its own key; at most blurBudget_ made a frame.
+ */
+Gfx::Cached* Gfx::blurTexture(const std::string& s, Font f) {
+    const std::string key = "~blur:" + std::to_string(int(f.weight) * 512 + f.size) + ":" + s;
+    if (auto it = textCache_.find(key); it != textCache_.end()) { it->second.lastFrame = frame_; return &it->second; }
+    if (blurBudget_ <= 0) return nullptr;
+    blurBudget_--;
+    TTF_Font* t = font(f, faceFor(s));
+    if (!t) return nullptr;
+    SDL_Surface* src = TTF_RenderUTF8_Blended(t, s.c_str(), { 255, 255, 255, 255 });
+    if (!src) return nullptr;
+    SDL_Surface* conv = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_ARGB8888, 0);
+    SDL_FreeSurface(src);
+    if (!conv) return nullptr;
+    const int P = blurPad(f.size), W = conv->w + 2 * P, H = conv->h + 2 * P;
+    std::vector<float> a(size_t(W) * H, 0.f), tmp(a.size());
+    SDL_LockSurface(conv);
+    for (int y = 0; y < conv->h; y++) {
+        const Uint32* row = reinterpret_cast<const Uint32*>(static_cast<const Uint8*>(conv->pixels) + y * conv->pitch);
+        for (int x = 0; x < conv->w; x++) a[size_t(y + P) * W + size_t(x + P)] = float(row[x] >> 24);
+    }
+    SDL_UnlockSurface(conv);
+    SDL_FreeSurface(conv);
+    const int R = blurRadius(f.size);
+    auto pass = [&](bool horiz) {   // a box of 2R+1 by a running sum
+        const int n = horiz ? W : H, lines = horiz ? H : W;
+        for (int l = 0; l < lines; l++) {
+            auto at = [&](int i) -> float& { return horiz ? a[size_t(l) * W + size_t(i)] : a[size_t(i) * W + size_t(l)]; };
+            float sum = 0;
+            for (int i = -R; i <= R; i++) sum += i >= 0 && i < n ? at(i) : 0.f;
+            for (int i = 0; i < n; i++) {
+                (horiz ? tmp[size_t(l) * W + size_t(i)] : tmp[size_t(i) * W + size_t(l)]) = sum / (2 * R + 1);
+                const int out = i - R, in = i + R + 1;
+                if (out >= 0) sum -= at(out);
+                if (in < n) sum += at(in);
+            }
+        }
+        a.swap(tmp);
+    };
+    for (int k = 0; k < 3; k++) { pass(true); pass(false); }
+    SDL_Surface* dst = SDL_CreateRGBSurfaceWithFormat(0, W, H, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!dst) return nullptr;
+    SDL_LockSurface(dst);
+    for (int y = 0; y < H; y++) {
+        Uint32* row = reinterpret_cast<Uint32*>(static_cast<Uint8*>(dst->pixels) + y * dst->pitch);
+        for (int x = 0; x < W; x++) row[x] = (Uint32(std::min(255.f, a[size_t(y) * W + size_t(x)] * 1.6f)) << 24) | 0xffffff;
+    }
+    SDL_UnlockSurface(dst);
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(r_, dst);
+    SDL_FreeSurface(dst);
+    if (!tex) return nullptr;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+    return &textCache_.emplace(key, Cached{ tex, W, H, frame_ }).first->second;
+}
+
 int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, float alpha, Align a, int maxW) {
     if (ghost_) {
         if (raw.empty()) return 0;
@@ -612,19 +772,55 @@ int Gfx::text(const std::string& raw, Font f, float x, float y, const Rgb& c, fl
     if (newBudget_ <= 0 && !textCache_.count(std::to_string(int(f.weight) * 512 + f.size) + ":" + str)) return measure(str, f);
     Cached* ct = textTexture(str, f);
     if (!ct) return 0;
+    if (shapesOnly_) return ct->w;   // (a pass of shapes alone)
+    const int adv = ct->w;   // its width, whichever copy is drawn (the blurred one's margins advanced spaced letters apart)
     float dx = x;
     if (a == Align::Center) dx -= ct->w / 2.f;
     else if (a == Align::Right) dx -= ct->w;
+    SDL_FRect dst{ std::round(dx - shiftX_) + shiftX_ + nudgeX_, std::round(y - shiftY_) + shiftY_ + nudgeY_, float(ct->w), float(ct->h) };
+    if (blurText_) {   // its blurred copy, the margin round it
+        ct = blurTexture(str, f);
+        if (!ct) return adv;
+        const float pad = float(blurPad(f.size));
+        dst = { dst.x - pad, dst.y - pad, float(ct->w), float(ct->h) };
+    }
+    if (wipeOn_) {   // a wipe: the letters fade across its edge
+        const float x0 = dst.x, x1 = dst.x + dst.w;
+        float xs[5] = { x0, x1, x0, x0, x0 };
+        wipeBends(xs + 2);
+        std::sort(std::begin(xs), std::end(xs));
+        bool any = false;
+        for (float p : xs) if (p >= x0 && p <= x1 && wipeAt(p) > 0.002f) any = true;
+        if (!any) return adv;   // wholly hidden
+        int n = 0;
+        float pts[5];
+        for (float p : xs) if (p >= x0 && p <= x1 && (n == 0 || p > pts[n - 1] + 0.01f)) pts[n++] = p;
+        SDL_SetTextureColorMod(ct->tex, 255, 255, 255);
+        SDL_SetTextureAlphaMod(ct->tex, 255);
+        verts_.clear();
+        idx_.clear();
+        for (int i = 0; i < n; i++) {
+            const SDL_Color col = sdl(c, alpha * wipeAt(pts[i]));
+            const float u = std::clamp((pts[i] - x0) / dst.w, 0.f, 1.f);
+            verts_.push_back({ { pts[i], dst.y }, col, { u, 0 } });
+            verts_.push_back({ { pts[i], dst.y + dst.h }, col, { u, 1 } });
+            if (i > 0) {
+                const int b = (i - 1) * 2;
+                for (int k : { b, b + 1, b + 2, b + 1, b + 3, b + 2 }) idx_.push_back(k);
+            }
+        }
+        if (!idx_.empty()) SDL_RenderGeometry(r_, ct->tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+        return adv;
+    }
     const SDL_Color s = sdl(c, alpha);
     SDL_SetTextureColorMod(ct->tex, s.r, s.g, s.b);
     SDL_SetTextureAlphaMod(ct->tex, s.a);
-    const SDL_FRect dst{ std::round(dx - shiftX_) + shiftX_, std::round(y - shiftY_) + shiftY_, float(ct->w), float(ct->h) };
     SDL_RenderCopyF(r_, ct->tex, nullptr, &dst);
-    return ct->w;
+    return adv;
 }
 
 int Gfx::textScroll(const std::string& s, Font f, float x, float y, float boxW, float offset, float fadeL, float fadeR, const Rgb& c, float alpha) {
-    if (s.empty() || alpha <= 0 || ghost_) return 0;
+    if (s.empty() || alpha <= 0 || ghost_ || blurText_ || shapesOnly_) return 0;
     if (newBudget_ <= 0 && !textCache_.count(std::to_string(int(f.weight) * 512 + f.size) + ":" + s)) return measure(s, f);
     Cached* ct = textTexture(s, f);
     if (!ct || ct->w <= 0) return 0;
@@ -636,15 +832,17 @@ int Gfx::textScroll(const std::string& s, Font f, float x, float y, float boxW, 
     const float v0 = std::max(x, tx0), v1 = std::min(x + boxW, tx0 + tw);
     if (v1 <= v0) return ct->w;
     // Where the alpha changes: the ends of what shows, and where each edge's ramp begins (mask-image: linear-gradient)
-    float xs[4] = { v0, x + fadeL, x + boxW - fadeR, v1 };
+    float xs[7] = { v0, x + fadeL, x + boxW - fadeR, v1, v0, v0, v0 };
+    wipeBends(xs + 4);
+    std::sort(std::begin(xs), std::end(xs));
     int n = 0;
-    float pts[4];
+    float pts[7];
     for (float p : xs) if (p >= v0 && p <= v1 && (n == 0 || p > pts[n - 1] + 0.01f)) pts[n++] = p;
     auto alphaAt = [&](float px) {
         float a = alpha;
         if (fadeL > 0) a *= std::clamp((px - x) / fadeL, 0.f, 1.f);
         if (fadeR > 0) a *= std::clamp((x + boxW - px) / fadeR, 0.f, 1.f);
-        return a;
+        return a * wipeAt(px);
     };
     SDL_SetTextureColorMod(ct->tex, 255, 255, 255);
     SDL_SetTextureAlphaMod(ct->tex, 255);
@@ -729,6 +927,93 @@ int Gfx::textSpaced(const std::string& s, Font f, float x, float cy, float em, c
     return total;
 }
 
+int Gfx::wordmarkW() { return kWordW; }
+int Gfx::wordmarkH() { return kWordH; }
+float Gfx::wordmarkMid() { return kWordMid; }
+
+void Gfx::wordmark(float x, float cy, const Rgb& a, const Rgb& b, const Rgb& c, const Rgb& glowC, float glowA, float shine, float alpha) {
+    if (ghost_ || shapesOnly_ || alpha <= 0 || !wordTex_) return;
+    const float left = std::round(x - shiftX_) + shiftX_, top = std::round(cy - kWordMid - shiftY_) + shiftY_;
+    if (wordGlowTex_ && glowA > 0) {
+        const SDL_Color s = sdl(glowC, glowA * alpha);
+        SDL_SetTextureColorMod(wordGlowTex_, s.r, s.g, s.b);
+        SDL_SetTextureAlphaMod(wordGlowTex_, s.a);
+        const SDL_FRect dst{ left - kWordGlowPad, top - kWordGlowPad, float(kWordW + 2 * kWordGlowPad), float(kWordH + 2 * kWordGlowPad) };
+        SDL_RenderCopyF(r_, wordGlowTex_, nullptr, &dst);
+    }
+    SDL_SetTextureColorMod(wordTex_, 255, 255, 255);
+    SDL_SetTextureAlphaMod(wordTex_, 255);
+    // the letters in columns, each edge's colour on the gradient (its middle stop a little left of centre: the name's
+    // "Song" in the accents, "gate" turning light); then the shimmer over them, its columns' alpha the band's
+    auto columns = [&](int n, auto colour) {
+        verts_.clear();
+        idx_.clear();
+        for (int k = 0; k <= n; k++) {
+            const float t = float(k) / n;
+            verts_.push_back({ { left + kWordW * t, top }, colour(t), { t, 0 } });
+            verts_.push_back({ { left + kWordW * t, top + kWordH }, colour(t), { t, 1 } });
+            if (k > 0) {
+                const int v = (k - 1) * 2;
+                for (int i : { v, v + 1, v + 2, v + 1, v + 3, v + 2 }) idx_.push_back(i);
+            }
+        }
+        SDL_RenderGeometry(r_, wordTex_, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+    };
+    auto lerp = [](const Rgb& p, const Rgb& q, float t) { return Rgb{ p.r + (q.r - p.r) * t, p.g + (q.g - p.g) * t, p.b + (q.b - p.b) * t }; };
+    columns(10, [&](float t) { return sdl(t < 0.45f ? lerp(a, b, t / 0.45f) : lerp(b, c, (t - 0.45f) / 0.55f), alpha); });
+    if (shine > -0.5f && shine < 1.5f) {
+        constexpr float half = 0.16f;   // the band's half width, of the word's
+        columns(24, [&](float t) {
+            const float d = (t - shine) / half;
+            return sdl({ 1, 1, 1 }, std::fabs(d) >= 1 ? 0.f : alpha * 0.85f * std::exp(-4.5f * d * d) * (1 - d * d));
+        });
+    }
+}
+
+int Gfx::textSpacedShine(const std::string& s, Font f, float x, float cy, float em, float bx, float bw, const Rgb& c, float alpha) {
+    const int total = measureSpaced(s, f, em);
+    if (ghost_ || shapesOnly_ || alpha <= 0 || bw <= 0) return total;
+    // the band's profile, as bandTex_'s: white in its middle, nothing at its sides
+    auto at = [&](float px) {
+        const float d = (px - (bx + bw / 2)) / (bw / 2);
+        return std::fabs(d) >= 1 ? 0.f : std::exp(-4.5f * d * d) * (1 - d * d);
+    };
+    float px = x;
+    for (size_t i = 0; i < s.size();) {
+        const size_t st = i;
+        nextCodepoint(s, i);
+        const std::string ch = s.substr(st, i - st);
+        const int w = measure(ch, f);
+        // a letter the band touches: its own texture again, in columns whose alpha follows the band (as textScroll's fades)
+        if (px + w > bx && px < bx + bw && ch != " ") {
+            const std::string key = std::to_string(int(f.weight) * 512 + f.size) + ":" + ch;
+            if (textCache_.count(key)) {   // drawn by textSpaced first: never made here
+                Cached* ct = textTexture(ch, f);
+                const float top = std::round(cy - lineHeight(f) / 2.f - shiftY_) + shiftY_, bottom = top + ct->h;
+                const float left = std::round(px - shiftX_) + shiftX_;
+                SDL_SetTextureColorMod(ct->tex, 255, 255, 255);
+                SDL_SetTextureAlphaMod(ct->tex, 255);
+                verts_.clear();
+                idx_.clear();
+                constexpr int N = 6;
+                for (int k = 0; k <= N; k++) {
+                    const float cx = left + ct->w * float(k) / N;
+                    const SDL_Color col = sdl(c, alpha * at(cx));
+                    verts_.push_back({ { cx, top }, col, { float(k) / N, 0 } });
+                    verts_.push_back({ { cx, bottom }, col, { float(k) / N, 1 } });
+                    if (k > 0) {
+                        const int b = (k - 1) * 2;
+                        for (int v : { b, b + 1, b + 2, b + 1, b + 3, b + 2 }) idx_.push_back(v);
+                    }
+                }
+                SDL_RenderGeometry(r_, ct->tex, verts_.data(), int(verts_.size()), idx_.data(), int(idx_.size()));
+            }
+        }
+        px += w + em * f.size;
+    }
+    return total;
+}
+
 std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int maxLines) {
     // Remembered: the Canvas wraps every lyric line every frame, and measuring is not free on the console.
     const std::string key = std::to_string(int(f.weight) * 512 + f.size) + ":" + std::to_string(maxW) + ":" + std::to_string(maxLines) + ":" + s;
@@ -787,6 +1072,8 @@ std::vector<std::string> Gfx::wrap(const std::string& s, Font f, int maxW, int m
 // ------------------------------------------------------------------ icons
 
 void Gfx::icon(const char* svg, float cx, float cy, float size, const Rgb& c, float alpha, float scale) {
+    if (textOnly_) return;
+    alpha *= wipeAt(cx);
     const int px = int(std::lround(size));
     const std::string key = std::to_string(reinterpret_cast<uintptr_t>(svg)) + ":" + std::to_string(px);
     auto it = iconCache_.find(key);

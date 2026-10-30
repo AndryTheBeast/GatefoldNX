@@ -9,10 +9,13 @@
  *                press A|B|X|Y|L|R|ZL|ZR|UP|DOWN|LEFT|RIGHT|PLUS|MINUS
  *                hold <button> <frames>   tap <x> <y>   shot <file.bmp>   quit
  *                touch <x> <y> … release <x> <y>   (a finger held down: a long touch); move <x> <y> drags it
+ *                wheel <x> <y> <notches>   (a mouse moved there, its wheel turned: + away from you, scrolls up)
  *                audit <label>   (the D-pad audit of that frame, appended to dpad-audit.txt: App, Ui::audit)
  *                stick <x> <y> <frames>   (the left stick, −1..1, y up)
  *   GF_JOBS    show the three background jobs (app covers, overlay covers, levelling) as running (shell.cpp)
  *   GF_BGCFG   show the background player's settings (Settings → Playback, a playlist's Games) as if it were connected
+ *   GF_STREAM  <host:port> of tools/preview/live/server.py: frames, sound and input over the network (streamshim.cpp)
+ *   GF_PROTECT an sdmc:/ folder nothing may write, rename or delete in (the live environment: the user's own music)
  *   GF_SHOW    show the window (keyboard: arrows, Enter=A, Backspace=B, Space=X,
  *              F=Y, Q/E=L/R, 1/2=ZL/ZR, Tab=Minus, Esc=Plus)
  */
@@ -24,6 +27,7 @@
 #include <direct.h>
 #include <sys/stat.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +39,16 @@
 
 #include "include/dirent.h"
 #include "include/switch.h"
+
+// streamshim.cpp: the live test environment
+bool streamStart();
+void streamFrame(SDL_Renderer* r, long frame);
+void streamPace();
+void streamAudio(const Uint8* data, int len);
+uint64_t streamButtons();
+void streamStick(float& x, float& y);
+bool streamQuit();
+bool streamKeyboard(const char* header, const char* guide, const char* initial, char* out, size_t size);
 
 namespace {
 
@@ -49,6 +63,20 @@ std::string mapPath(const char* p) {
     if (s.rfind("sdmc:/", 0) == 0) return env("GF_ROOT", ".") + "/sdmc/" + s.substr(6);
     if (s.rfind("romfs:/", 0) == 0) return env("GF_ROMFS", "../../romfs") + "/" + s.substr(7);
     return s;
+}
+
+// GF_PROTECT: a write, rename, removal or new folder in that folder fails (EACCES), as a read-only card would
+bool isProtected(const char* p) {
+    const char* g = getenv("GF_PROTECT");
+    if (!g || !*g || !p) return false;
+    std::string s = p, w = g;
+    if (s.rfind("file:", 0) == 0) s.erase(0, 5);
+    for (auto& c : s) if (c == '\\') c = '/';
+    if (s.size() < w.size() || _strnicmp(s.c_str(), w.c_str(), w.size()) != 0) return false;
+    if (s.size() > w.size() && s[w.size()] != '/') return false;
+    errno = EACCES;
+    fprintf(stderr, "protected: refused %s\n", p);
+    return true;
 }
 
 struct Step {
@@ -107,12 +135,15 @@ const char* hostPath(const char* p) {
     return s.c_str();
 }
 
-FILE* hostFopen(const char* p, const char* m) { return fopen(mapPath(p).c_str(), m); }
+FILE* hostFopen(const char* p, const char* m) {
+    if (m && (strchr(m, 'w') || strchr(m, 'a') || strchr(m, '+')) && isProtected(p)) return nullptr;
+    return fopen(mapPath(p).c_str(), m);
+}
 int hostStat(const char* p, struct stat* s) { return stat(mapPath(p).c_str(), s); }
-int hostMkdir(const char* p, int) { return _mkdir(mapPath(p).c_str()); }
-int hostRemove(const char* p) { return remove(mapPath(p).c_str()); }
-int hostRename(const char* a, const char* b) { return rename(mapPath(a).c_str(), mapPath(b).c_str()); }
-int hostRmdir(const char* p) { return _rmdir(mapPath(p).c_str()); }
+int hostMkdir(const char* p, int) { return isProtected(p) ? -1 : _mkdir(mapPath(p).c_str()); }
+int hostRemove(const char* p) { return isProtected(p) ? -1 : remove(mapPath(p).c_str()); }
+int hostRename(const char* a, const char* b) { return isProtected(a) || isProtected(b) ? -1 : rename(mapPath(a).c_str(), mapPath(b).c_str()); }
+int hostRmdir(const char* p) { return isProtected(p) ? -1 : _rmdir(mapPath(p).c_str()); }
 TTF_Font* hostOpenFont(const char* p, int size) { return TTF_OpenFont(mapPath(p).c_str(), size); }
 Mix_Music* hostLoadMUS(const char* p) { return Mix_LoadMUS(mapPath(p).c_str()); }
 
@@ -162,6 +193,7 @@ void padUpdate(PadState* p) {
         };
         for (auto& [sc, bit] : keys) if (k[sc]) b |= bit;
     }
+    if (streamStart()) b |= streamButtons();
     std::vector<Step> later;
     auto range = script.equal_range(frame);
     for (auto it = range.first; it != range.second; ++it) {
@@ -181,6 +213,17 @@ void padUpdate(PadState* p) {
             pushFinger(SDL_FINGERMOTION, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
         } else if (s.action == "release" && s.args.size() >= 2) {
             pushFinger(SDL_FINGERUP, float(atof(s.args[0].c_str())), float(atof(s.args[1].c_str())));
+        } else if (s.action == "wheel" && s.args.size() >= 3) {   // a mouse there, its wheel turned n notches (+ away from you)
+            SDL_Event e{};
+            e.type = SDL_MOUSEMOTION;
+            e.motion.x = atoi(s.args[0].c_str());
+            e.motion.y = atoi(s.args[1].c_str());
+            SDL_PushEvent(&e);
+            SDL_Event w{};
+            w.type = SDL_MOUSEWHEEL;
+            w.wheel.preciseY = float(atof(s.args[2].c_str()));
+            w.wheel.y = int(std::lround(w.wheel.preciseY));
+            SDL_PushEvent(&w);
         } else if (s.action == "stick" && s.args.size() >= 3) {
             stickX = float(atof(s.args[0].c_str()));
             stickY = float(atof(s.args[1].c_str()));
@@ -204,14 +247,17 @@ HidAnalogStickState padGetStickPos(const PadState*, u32 i) {
         if (k[SDL_SCANCODE_I]) y = 1;
         if (k[SDL_SCANCODE_K]) y = -1;
     }
+    streamStick(x, y);
     return { s32(x * 32767), s32(y * 32767) };
 }
-bool appletMainLoop() { return !quitting; }
+bool appletMainLoop() { return !quitting && !streamQuit(); }
 
-Result swkbdShow(SwkbdConfig*, char* out, size_t size) {
+Result swkbdShow(SwkbdConfig* c, char* out, size_t size) {
     // "a|b|c": the first time the keyboard opens it answers a, then b, then c (and c again after that)
     static int asked = 0;
     const std::string all = env("GF_SEARCH", "");
+    if (all.empty() && streamStart())   // the live page asks the user, as the console's keyboard would
+        return streamKeyboard(c->header, c->guide, c->initial, out, size) ? 0 : 1;
     if (all.empty()) return 1;
     std::string q = all;
     size_t at = 0;
@@ -238,8 +284,30 @@ void hostPresent(SDL_Renderer* r) {
         if (s && SDL_RenderReadPixels(r, nullptr, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0) SDL_SaveBMP(s, it->second.args[0].c_str());
         if (s) SDL_FreeSurface(s);
     }
+    if (streamStart()) streamFrame(r, frame);
     SDL_RenderPresent(r);
+    streamPace();
     frame++;
+}
+
+// ---- sound: the app's post-mix, then a copy of the final mix for the stream (the PC itself stays silent then)
+namespace {
+void (*appPostMix)(void*, Uint8*, int) = nullptr;
+void* appPostArg = nullptr;
+void postMixTap(void*, Uint8* s, int len) {
+    if (appPostMix) appPostMix(appPostArg, s, len);
+    if (streamStart()) {
+        streamAudio(s, len);
+        memset(s, 0, size_t(len));
+    }
+}
+}  // namespace
+void hostSetPostMix(void (*f)(void*, Uint8*, int), void* arg) {
+    SDL_LockAudio();
+    appPostMix = f;
+    appPostArg = arg;
+    SDL_UnlockAudio();
+    Mix_SetPostMix(postMixTap, nullptr);
 }
 
 // ---- battery, dock, sleep and backlight (switch.h)

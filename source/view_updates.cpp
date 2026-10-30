@@ -96,16 +96,32 @@ std::string App::updateStatus() const {
 
 /** Updates are off until allowed here: what going online means, said before anything does. */
 void App::allowUpdates() {
-    confirm(UPD_SHIELD, "Updates", "Connect to the internet?", "GitHub · AndryTheBeast/GatefoldNX", "Allow Gatefold to go online?",
-            "Gatefold connects to GitHub only when you check for updates or install one, and at launch if you turn that on. "
-            "GitHub sees your console's IP address and Gatefold's version, nothing else. You can turn this off at any time.",
+    confirm(UPD_SHIELD, "Updates", "Connect to the internet?", "GitHub · AndryTheBeast/GatefoldNX", "Allow Songate to go online?",
+            "Songate connects to GitHub only when you check for updates or install one, and at launch if you turn that on. "
+            "GitHub sees your console's IP address and Songate's version, nothing else. You can turn this off at any time.",
             "Allow", [this] {
                 store.updates = 1;
                 persistSoon(0.3f);
-                toast("Updates allowed: Gatefold goes online only when you ask");
+                toast("Updates allowed: Songate goes online only when you ask");
             });
     sheet.askSafe = true;
     sheet.askYesIcon = ICON_CHECK;
+}
+
+/** Beta versions are asked for first: what a beta is, its risks, and to report bugs (the user, 2026-10-29). */
+void App::allowBetas() {
+    confirm(ICON_BOLT, "Updates", "Beta versions", "New features, before they are released", "Try beta versions?",
+            "Betas let you try new features early. They can be unstable and have bugs: something may not work, or may stop "
+            "working, until the release. Please report the bugs you find: " ISSUES_URL ". Your settings are backed up before "
+            "every install, and you can go back to a release from here.",
+            "Turn on", [this] {
+                store.betas = true;
+                persistSoon(0.3f);
+                toast("Beta versions on: listed apart in Settings › Updates");
+            });
+    sheet.askSafe = true;
+    sheet.askYesIcon = ICON_BOLT;
+    sheet.askWarn = "Beta versions can be unstable and have bugs. Please report them.";
 }
 
 void App::checkUpdates(bool quiet) {
@@ -118,19 +134,37 @@ void App::checkUpdates(bool quiet) {
 void App::updateTick() {
     if (!updater.poll()) return;
     if (updater.justChecked) {
-        const int n = updater.newer();
+        const int n = updater.newer(store.betas);
+        // a model this Songate can play, not downloaded yet: announced once (the user: "Automix V1.2.0 available")
+        std::string newModel;
+        for (const ModelRow& r : modelList())
+            if (r.offer >= 0 && !r.downloaded && Updater::modelUsable(updater.models[size_t(r.offer)]) && r.name != store.modelToasted) newModel = r.name;
         if (updateQuiet) {   // the check at launch: a toast only for a newer version, once each
             if (updater.error.empty() && n >= 0 && updater.releases[size_t(n)].version != store.updateToasted) {
                 store.updateToasted = updater.releases[size_t(n)].version;
                 persistSoon(0.3f);
-                toast("Gatefold " + store.updateToasted + " is out: Settings › Updates");
+                toast(Updater::releaseName(store.updateToasted) + " is out: Settings › Updates");
+            } else if (!newModel.empty()) {
+                store.modelToasted = newModel;
+                persistSoon(0.3f);
+                toast(newModel + " is available: Settings › Updates");
             }
         } else if (!updater.error.empty()) {
             toast("Could not check: " + updater.error);
         } else {
-            toast(n >= 0 ? "Gatefold " + updater.releases[size_t(n)].version + " is out" : "Gatefold is up to date");
+            toast(n >= 0 ? Updater::releaseName(updater.releases[size_t(n)].version) + " is out" : "Songate is up to date");
+            if (!newModel.empty()) {
+                store.modelToasted = newModel;
+                persistSoon(0.3f);
+                toast(newModel + " is available");
+            }
         }
         updateQuiet = false;
+        return;
+    }
+    if (updater.justModel) {   // in: it plays from the next join (Download and use)
+        loadModelFiles();
+        useModel(updater.working());
         return;
     }
     backupsAt = -100;
@@ -160,8 +194,8 @@ void App::updateSheetHeader(const char*& icon, std::string& kick, std::string& t
     const UpdRelease& r = updater.releases[size_t(sheet.recipe)];
     const int cmp = Updater::compare(r.version, Updater::thisVersion());
     icon = cmp > 0 ? ICON_DOWNLOAD : cmp < 0 ? ICON_HISTORY : ICON_CHECK;
-    kick = cmp > 0 ? "Newer" : cmp < 0 ? "Earlier version" : "This version";
-    title = "Gatefold NX " + r.version;
+    kick = std::string(r.beta ? "Beta · " : "") + (cmp > 0 ? "Newer" : cmp < 0 ? "Earlier version" : "This version");
+    title = Updater::releaseName(r.version);
     sub = longDate(r.date) + " · " + megabytes(r.zipSize) + (r.manifest ? "" : " · without in-app updates");
 }
 
@@ -194,6 +228,8 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
                          [this, i] { installRelease(i); } });
     }
     rows.back().h = 62;
+    if (r.beta)
+        text(ICON_BOLT, "A beta: it can be unstable and have bugs. Please report what you find: " ISSUES_URL, true);
     if (!r.manifest)
         text(ICON_INFO, r.version + " cannot update itself (it has no Updates page). To come back later, copy a newer release from "
                             "github.com/AndryTheBeast/GatefoldNX/releases to the SD card by hand; your settings are backed up first.", true);
@@ -210,6 +246,106 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
     }
 }
 
+// ============================================================ Automix models (over the air)
+
+std::vector<App::ModelRow> App::modelList() const {
+    std::vector<ModelRow> out;
+    ModelRow b;
+    b.name = automix::name(automix::Latest);   // the built-in one a release plays
+    b.builtin = true;
+    out.push_back(b);
+    for (const ModelEntry& e : modelFiles) {
+        ModelRow r;
+        r.name = e.m.name;
+        r.downloaded = true;
+        out.push_back(r);
+    }
+    for (int i = 0; i < int(updater.models.size()); i++) {
+        const std::string& n = updater.models[size_t(i)].name;
+        bool had = false;
+        for (ModelRow& r : out) if (r.name == n) { r.offer = i; had = true; }
+        if (!had) {
+            ModelRow r;
+            r.name = n;
+            r.offer = i;
+            out.push_back(r);
+        }
+    }
+    return out;
+}
+
+void App::openModel(const std::string& name) {
+    if (sheet.preview) SDL_DestroyTexture(sheet.preview);
+    sheet = Sheet{};
+    sheet.page = Sheet::Model;
+    sheet.name = name;
+    sheet.returnFocus = ui.focusedId();
+    ui.focusDefault();
+}
+
+void App::useModel(const std::string& name) {
+    store.automixModel = name;
+    store.save();
+    toast(name + " plans the next join");
+}
+
+void App::downloadModel(int offer) {
+    if (!store.updates) { allowUpdates(); return; }
+    if (updater.busy()) { toast("Wait for " + updater.working() + " first"); return; }
+    updater.installModel(offer, store.path("models"));
+}
+
+void App::modelSheetHeader(const char*& icon, std::string& kick, std::string& title, std::string& sub) {
+    ModelRow row;
+    for (const ModelRow& r : modelList()) if (r.name == sheet.name) row = r;
+    const UpdModel* m = row.offer >= 0 ? &updater.models[size_t(row.offer)] : nullptr;
+    icon = ICON_SPARKLE;
+    kick = std::string("Automix model · ") + (row.name == mixName() ? "In use" : row.builtin ? "Built in" : row.downloaded ? "Downloaded" : "Available");
+    title = row.name;
+    sub = row.builtin ? "Comes with Songate" : m ? longDate(m->date) + " · " + std::to_string(std::max<int64_t>(1, m->size / 1024)) + " KB" : "Downloaded";
+}
+
+void App::modelSheetRows(std::vector<SheetRow>& rows) {
+    using Row = SheetRow;
+    ModelRow row;
+    bool found = false;
+    for (const ModelRow& r : modelList()) if (r.name == sheet.name) { row = r; found = true; }
+    if (!found) { closeSheet(); return; }
+    const UpdModel* m = row.offer >= 0 ? &updater.models[size_t(row.offer)] : nullptr;
+    const float textW = 600 - 48 - 48;
+    auto text = [&](const char* icon, const std::string& s, bool strong = false) {
+        Row t{ Row::Text, icon, "", s };
+        t.on = strong;
+        t.h = g.wrap(s, { css::Sm }, int(textW), 12).size() * 19.f + 14;
+        rows.push_back(t);
+    };
+    const std::string name = row.name;
+    std::string why;
+    if (row.name == mixName()) {
+        rows.push_back({ Row::Action, ICON_CHECK, "In use", "It plans every join, and the order of Automix playlists ordered again", "", nullptr });
+    } else if (row.builtin || row.downloaded) {
+        rows.push_back({ Row::Action, row.builtin ? ICON_HISTORY : ICON_SPARKLE, (row.builtin ? "Go back to " : "Use ") + name,
+                         row.builtin ? "Songate's own model: back to it at any time" : "From the next join", "", [this, name] { useModel(name); } });
+    } else if (updater.busy()) {
+        rows.push_back({ Row::Action, ICON_HOURGLASS, updater.working() == name ? updateStatus() : "Busy with " + updater.working(),
+                         "Settings › Updates shows how far", "", nullptr });
+    } else if (m && Updater::modelUsable(*m, &why)) {
+        const int offer = row.offer;
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Download and use", "Checked by its checksum, kept in config/gatefold-nx/models",
+                         std::to_string(std::max<int64_t>(1, m->size / 1024)) + " KB", [this, offer] { downloadModel(offer); } });
+    } else {
+        text(ICON_INFO, why.empty() ? "It needs a newer Songate" : why, true);
+    }
+    if (!rows.empty() && rows.back().kind == Row::Action) rows.back().h = 62;
+    rows.push_back({ Row::Group, nullptr, "What's new" });
+    rows.back().h = 38;
+    if (row.builtin) text(nullptr, "The first trained model: four rounds of rated demos from a real library, frozen on 29 October 2026.");
+    else if (m && !m->notes.empty()) for (const std::string& n : m->notes) text(nullptr, n);
+    else text(nullptr, "This model has no notes.");
+    text(ICON_INFO, "A model comes over the air when only its numbers change. One that needs new logic (a new kind of join) or a new "
+                    "analysis comes with a Songate update.");
+}
+
 void App::installRelease(int i) {
     if (!store.updates) { allowUpdates(); return; }
     if (updater.busy()) { toast("Wait for " + updater.working() + " first"); return; }
@@ -220,16 +356,17 @@ void App::installRelease(int i) {
     std::string text = "Your settings are backed up first. Then the app, the background player and the overlay are replaced; "
                        "Restart now finishes it (the music stops for a moment).";
     if (cmp < 0) {
-        text += " Your playlists, Liked and edits stay. Start fresh clears the settings when Gatefold closes; the backup keeps them.";
+        text += " Your playlists, Liked and edits stay. Start fresh clears the settings when Songate closes; the backup keeps them.";
     }
 
     confirm(cmp > 0 ? ICON_DOWNLOAD : cmp < 0 ? ICON_HISTORY : ICON_REFRESH, cmp > 0 ? "Update" : cmp < 0 ? "Go back" : "Install again",
-            "Gatefold NX " + r.version, longDate(r.date) + " · " + megabytes(r.zipSize),
+            Updater::releaseName(r.version), longDate(r.date) + " · " + megabytes(r.zipSize),
             cmp > 0 ? "Install " + r.version + "?" : cmp < 0 ? "Go back to " + r.version + "?" : "Install " + r.version + " again?", text,
             cmp < 0 ? "Keep my settings" : "Install", [this, i] { updater.install(i, false, backupRoot()); });
     sheet.askSafe = true;
     sheet.askYesIcon = cmp < 0 ? ICON_HISTORY : ICON_DOWNLOAD;
     if (!r.manifest) sheet.askWarn = r.version + " cannot update itself. Coming back to a newer version is by hand.";
+    else if (r.beta) sheet.askWarn = "A beta can be unstable and have bugs. Please report them.";
     if (cmp < 0) {
         sheet.askAlt = "Start fresh";
         sheet.askAltYes = [this, i] { updater.install(i, true, backupRoot()); };
@@ -238,7 +375,7 @@ void App::installRelease(int i) {
 
 void App::restoreBackup(const UpdBackup& b) {
     confirm(ICON_HISTORY, "Backups", b.name, b.note, "Put these settings back?",
-            "Your settings now are backed up first. Then Gatefold restarts with these: settings, playlists, Liked, edits and statistics "
+            "Your settings now are backed up first. Then Songate restarts with these: settings, playlists, Liked, edits and statistics "
             "as they were then.",
             "Restore and restart", [this, path = b.path] {
                 persistNow();
@@ -270,7 +407,7 @@ void App::restoreBackup(const UpdBackup& b) {
  * the next launch (dropped in memory, not on the card).
  */
 void App::resetSettings() {
-    confirm(ICON_REFRESH, "Reset", "Reset settings", "Every setting, as Gatefold came", "Reset every setting?",
+    confirm(ICON_REFRESH, "Reset", "Reset settings", "Every setting, as Songate came", "Reset every setting?",
             "Colours, the sidebar, playback, the equalizer, lyrics, the Canvas, the visualizer, controls, where browsers open, "
             "updates, and the background player's game actions and fades go back to how they came. Only settings: your music "
             "folder, playlists, Liked, tag edits, covers, statistics and saved presets stay (Factory reset, below, erases those).",
@@ -295,6 +432,7 @@ void App::defaultSettings() {
     if (store.updates) updater.cancel();
     store = std::move(fresh);
     sideW = store.sidebarCollapsed ? css::SideWCollapsed : css::SideW;
+    sideP_ = store.sidebarCollapsed ? 0.f : 1.f;
     volumeShown = store.volume;
     player.setVolume(volumeShown);
     setEq(store.eq);   // Gatefold's player, and the background player's copy (sent within 0.1 s)
@@ -313,7 +451,7 @@ struct FactoryPartInfo { const char* label; const char* sub; };
 // In App::FactoryPart's order (and Updater::factoryFiles')
 const FactoryPartInfo kFactoryParts[] = {
     { "Settings", "Every setting, the background player's game actions and fades too" },
-    { "Music folder", "Gatefold asks where your music is again, as at its first start" },
+    { "Music folder", "Songate asks where your music is again, as at its first start" },
     { "Playlists", "Your playlists, smart and folder ones, and their icons" },
     { "Liked", "Every track you liked" },
     { "Tag edits and covers", "Tags you edited and covers you chose (your music files were never changed)" },
@@ -349,11 +487,11 @@ void App::factoryRows(std::vector<SheetRow>& rows) {
     int n = 0;
     for (int k = 0; k < FacParts; k++) n += (factoryPick >> k) & 1;
     rows.push_back({ SheetRow::Action, ICON_X, "Erase what is ticked",
-                     n ? std::to_string(n) + " of " + std::to_string(int(FacParts)) + " ticked: they go when Gatefold closes and starts again"
+                     n ? std::to_string(n) + " of " + std::to_string(int(FacParts)) + " ticked: they go when Songate closes and starts again"
                        : "Tick what to erase above first",
                      "", n ? std::function<void()>([this] { factoryErase(factoryPick); }) : nullptr });
     rows.back().h = 60;
-    rows.push_back({ SheetRow::Action, ICON_X, "Erase everything", "As if Gatefold were newly installed: every part above, and the rest", "",
+    rows.push_back({ SheetRow::Action, ICON_X, "Erase everything", "As if Songate were newly installed: every part above, and the rest", "",
                      [this] { factoryErase(~0u); } });
     rows.back().h = 60;
 }
@@ -376,16 +514,16 @@ void App::factoryErase(unsigned mask) {
         for (int k = 0; k < FacParts; k++)
             if (mask & (1u << k)) list += (list.empty() ? "" : ", ") + std::string(kFactoryParts[k].label);
         confirm(ICON_X, "Factory reset", "Erase what is ticked", list, "Erase these for good?",
-                "Erased: " + list + ". Gatefold closes now and starts again without them. Only a backup made before can bring them back; "
+                "Erased: " + list + ". Songate closes now and starts again without them. Only a backup made before can bring them back; "
                 "your music files and backups in " + backupRoot() + " stay.",
                 "Erase", go);
         sheet.askWarn = "THIS CANNOT BE UNDONE";
         return;
     }
-    confirm(ICON_X, "Factory reset", "Erase everything", "Gatefold as if it were newly installed", "Erase everything Gatefold keeps?",
+    confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
             "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings and saved equalizer presets; play "
             "counts and statistics; the queue and the music folder; the background player's queue and game actions; every cache. "
-            "Gatefold then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
+            "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {
                 confirm(ICON_X, "Factory reset", "Are you absolutely sure?", "There is no way back", "Erase everything now?",
                         "Only a backup made before can bring any of it back. If you might want your playlists, Liked or settings "

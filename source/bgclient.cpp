@@ -71,6 +71,12 @@ bool BgClient::poll(double) {
     st_.sleepLeft = s.sleepLeft;
     st_.sleepGen = s.sleepGen;
     st_.eqGen = s.eqGen;
+    st_.joinGen = s.joinGen;
+    st_.joining = int(s.joining);
+    st_.joinAt = s.joinAt;
+    st_.joinLength = s.joinLength;
+    st_.joinBpm = s.joinBpm;
+    st_.joinFlags = s.joinFlags;
     if (now < expectUntil_) {
         if (expectStatus_ >= 0) st_.status = expectStatus_;
         if (expectPos_ >= 0) st_.position = expectPos_;
@@ -98,7 +104,7 @@ bool BgClient::setQueue(const BgQueue& q) {
     h.count = u32(q.paths.size());
     h.pos = q.pos;
     h.mode = u32(q.mode);
-    h.flags = GfbgQueue_KeepCurrent;
+    h.flags = GfbgQueue_KeepCurrent | (q.automix ? GfbgQueue_Automix : 0);
     h.pathBytes = u32(pathBytes);
     memcpy(h.name, q.name.c_str(), std::min(q.name.size(), sizeof h.name - 1));
     memcpy(buf.data(), &h, sizeof h);
@@ -219,6 +225,16 @@ void BgClient::setCrossfade(float seconds, bool notInAlbum) {
     gfbgSetConfig(&srv, &c);
 }
 
+void BgClient::setAutomixModel(int model, const std::string& file) {
+    if (!connected_) return;
+    GfbgConfig c = {};
+    if (R_FAILED(gfbgGetConfig(&srv, &c))) return;
+    if (c.automixModel == u32(model) && file == c.automixFile) return;
+    c.automixModel = u32(model);
+    snprintf(c.automixFile, sizeof c.automixFile, "%s", file.c_str());
+    gfbgSetConfig(&srv, &c);
+}
+
 bool BgClient::eq(GfbgEq& out) { return connected_ && R_SUCCEEDED(gfbgGetEq(&srv, &out)); }
 
 void BgClient::setEq(const GfbgEq& e) {
@@ -270,6 +286,7 @@ void BgClient::disconnect() {}
 bool BgClient::poll(double) { return false; }
 double BgClient::position(double) const { return 0; }
 bool BgClient::setQueue(const BgQueue&) { return false; }
+void BgClient::setAutomixModel(int, const std::string&) {}
 bool BgClient::getQueue(BgQueue&) { return false; }
 void BgClient::playAt(int, bool, double) {}
 void BgClient::toggle(double) {}

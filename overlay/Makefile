@@ -37,14 +37,14 @@ include $(DEVKITPRO)/libnx/switch_rules
 #   of a homebrew executable (.nro). This is intended to be used for sysmodules.
 #   NACP building is skipped as well.
 #---------------------------------------------------------------------------------
-# Gatefold NX overlay: Gatefold.ovl for Ultrahand (switch/.overlays/). Built on sys-tune 2.1's
+# Songate overlay: Songate.ovl for Ultrahand (Gatefold.ovl before 2.0.0) (switch/.overlays/). Built on sys-tune 2.1's
 # overlay (GPL-2, see LICENSE-sys-tune) and libultrahand, talking to Gatefold's background player.
-VERSION		?=	1.1.0
+VERSION		?=	2.0.0 BETA
 API_VERSION	?=	4
-APP_TITLE	:=	Gatefold
-APP_AUTHOR	:=	AndryTheBeast & DEVIROYrus
+APP_TITLE	:=	Songate
+APP_AUTHOR	:=	AndryTheBeast
 
-TARGET		:=	Gatefold
+TARGET		:=	Songate
 BUILD		:=	build
 SOURCES		:=	source common/minIni common/sdmc common/config common/pm
 DATA		:=	data
@@ -98,7 +98,7 @@ LDFLAGS += -Wl,-wrap,__cxa_throw \
            -Wl,-wrap,_Unwind_Resume \
            -Wl,-wrap,__gxx_personality_v0
 
-CFLAGS	+=	$(INCLUDE) -DVERSION=\"$(APP_VERSION)\" -DTUNE_API_VERSION=$(API_VERSION) -DNDEBUG=1 \
+CFLAGS	+=	$(INCLUDE) -DVERSION='"$(APP_VERSION)"' -DTUNE_API_VERSION=$(API_VERSION) -DNDEBUG=1 \
 			$(WANT_FLAGS)
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=c++26

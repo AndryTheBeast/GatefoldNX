@@ -7,6 +7,8 @@
  * then offers Order again. A track can be pinned to play first. Over every page, as the join editor.
  */
 #include <algorithm>
+#include <cstdio>
+#include <dirent.h>
 
 #include "app.hpp"
 #include "icons.inc"
@@ -18,6 +20,43 @@ automix::Model App::mixModel() const {
     if (automix::modelFromName(store.automixModel, m)) return m;   // Settings › Debug: models compared on the console
 #endif
     return automix::Latest;   // a release: the newest (a choice saved by a dev build is ignored)
+}
+
+/** The downloaded models: each .model file in config/gatefold-nx/models this Songate can plan (a few small files: at launch and
+ *  after a download). */
+void App::loadModelFiles() {
+    modelFiles.clear();
+    const std::string dir = store.path("models");
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    while (const dirent* ent = readdir(d)) {
+        const std::string f = ent->d_name;
+        if (f.size() < 7 || f[0] == '.' || f.compare(f.size() - 6, 6, ".model") != 0) continue;
+        std::string text;
+        if (FILE* in = fopen((dir + "/" + f).c_str(), "rb")) {
+            char buf[4096];
+            for (size_t n; (n = fread(buf, 1, sizeof buf, in)) > 0 && text.size() < 65536;) text.append(buf, n);
+            fclose(in);
+        }
+        ModelEntry e;
+        if (!e.m.parse(text)) continue;
+        e.file = f;
+        modelFiles.push_back(std::move(e));
+    }
+    closedir(d);
+    std::sort(modelFiles.begin(), modelFiles.end(), [](const ModelEntry& a, const ModelEntry& b) { return a.m.name < b.m.name; });
+}
+
+const App::ModelEntry* App::mixFile() const {
+    for (const ModelEntry& e : modelFiles) if (e.m.name == store.automixModel) return &e;
+    return nullptr;
+}
+
+std::string App::mixName() const { return mixFile() ? mixFile()->m.name : automix::name(mixModel()); }
+
+automix::Plan App::planJoin(const mixan::Info* a, double dur, const mixan::Info* b, double fallback, const automix::Join* want) const {
+    if (const ModelEntry* f = mixFile()) return automix::plan(a, dur, b, fallback, want, f->m);
+    return automix::plan(a, dur, b, fallback, want, mixModel());
 }
 
 void App::orderAutomixList(int ref, bool announce) {
@@ -134,6 +173,20 @@ bool App::automixQueue() const {
     return false;
 }
 
+/** The playlist the queue came from, for the queue page's kicker and icon: own playlists first (an Automix one
+ *  and a folder of the same name: the one that plays Automix), then smart and folder ones. -1: none. */
+int App::queuePlaylist() const {
+    if (q.name.empty()) return -1;
+    int other = -1;
+    for (size_t i = 0; i < store.playlists.size(); ++i) {
+        const FolderPlaylist& p = store.playlists[i];
+        if (p.name != q.name) continue;
+        if (p.own()) return int(i);
+        if (other < 0) other = int(i);
+    }
+    return other;
+}
+
 void App::automixProgress(int& done, int& total) const {
     done = total = 0;
     for (const auto& p : store.playlists) {
@@ -167,10 +220,11 @@ void App::drawAutomixPicker() {
 
     // ---- header
     g.roundRect(ix, Y + pad, 40, 40, 10, pal.accent, 0.14f);
-    g.icon(ICON_LINK, ix + 20, Y + pad + 20, 20, pal.accentInk);
+    g.icon(ICON_SPARKLE, ix + 20, Y + pad + 20, 20, pal.accentInk);   // the Automix playlists' icon
     kicker("New Automix playlist", ix + 54, Y + pad + 7, pal.accentInk);
-    g.text("Pick the songs; Gatefold orders them for the best joins", { css::Lg, Weight::Bold }, ix + 54, Y + pad + 16, pal.text, 1, Align::Left,
+    g.text("Pick the songs; Songate orders them for the best joins", { css::Lg, Weight::Bold }, ix + 54, Y + pad + 16, pal.text, 1, Align::Left,
            int(iw - 54 - 260));
+    hint(uid("ap.x"), "Close");
     if (iconButton(uid("ap.x"), ICON_X, X + W - pad - 17, Y + pad + 20)) { closeAutomixPicker(); return; }
     int count = 0;
     for (char s : ap.sel) count += s;
@@ -193,7 +247,6 @@ void App::drawAutomixPicker() {
             const int ref = int(store.playlists.size()) - 1;
             closeAutomixPicker();
             orderAutomixList(ref, true);
-            mixView = true;   // its joins shown (Mix)
             navigate(View::List, ref);
             return;
         }

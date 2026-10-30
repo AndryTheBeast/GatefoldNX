@@ -98,6 +98,7 @@ void Ui::beginFrame(float dt) {
 }
 
 bool Ui::item(Id id, SDL_FRect r, float radius, uint8_t flags) {
+    if (quiet_) return false;
     if (modal_ && region_ != Region::Modal) {
         // Under a modal: not focusable nor pressable, but where it is stays known (the tour lights it up, rectAny)
         shadowCur_.push_back({ id, r, area_ ? area_->view : SDL_FRect{ -1e5f, -1e5f, 2e5f, 2e5f }, 0, 0, region_, area_ });
@@ -376,6 +377,18 @@ void Ui::scrollFocusedArea(float dy) {
     a->target += dy;
     a->clamp();
     a->manual = clock_;
+}
+
+bool Ui::scrollAreaAt(float x, float y, float dy) {
+    for (auto it = areasPrev_.rbegin(); it != areasPrev_.rend(); ++it) {   // the last drawn is on top (a sheet over the page)
+        ScrollArea* a = *it;
+        if (!contains(a->view, x, y) || a->max() <= 0) continue;   // (one that cannot scroll lets the one under it)
+        a->target += dy;
+        a->clamp();
+        a->manual = clock_;
+        return true;
+    }
+    return false;
 }
 
 void Ui::touchDown(float x, float y) {

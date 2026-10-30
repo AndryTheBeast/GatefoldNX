@@ -76,11 +76,12 @@ Result lblGetCurrentBrightnessSetting(float* out);
 Result lblSetCurrentBrightnessSetting(float brightness);
 inline Result lblApplyCurrentBrightnessSettingToBacklight() { return 0; }
 
-struct SwkbdConfig { int unused; };
-inline Result swkbdCreate(SwkbdConfig*, s32) { return 0; }
+// The keyboard's texts are kept: the live test environment shows them on its page
+struct SwkbdConfig { char header[128]; char guide[128]; char initial[512]; };
+inline Result swkbdCreate(SwkbdConfig* c, s32) { c->header[0] = c->guide[0] = c->initial[0] = 0; return 0; }
 inline void swkbdConfigMakePresetDefault(SwkbdConfig*) {}
-inline void swkbdConfigSetGuideText(SwkbdConfig*, const char*) {}
-inline void swkbdConfigSetHeaderText(SwkbdConfig*, const char*) {}
-inline void swkbdConfigSetInitialText(SwkbdConfig*, const char*) {}
+inline void swkbdConfigSetGuideText(SwkbdConfig* c, const char* t) { snprintf(c->guide, sizeof c->guide, "%s", t ? t : ""); }
+inline void swkbdConfigSetHeaderText(SwkbdConfig* c, const char* t) { snprintf(c->header, sizeof c->header, "%s", t ? t : ""); }
+inline void swkbdConfigSetInitialText(SwkbdConfig* c, const char* t) { snprintf(c->initial, sizeof c->initial, "%s", t ? t : ""); }
 Result swkbdShow(SwkbdConfig*, char* out, size_t size);
 inline void swkbdClose(SwkbdConfig*) {}

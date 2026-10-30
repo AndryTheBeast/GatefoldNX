@@ -729,7 +729,7 @@ tsl::elm::Element* ActionListGui::createUI() {
     list->addItem(new tsl::elm::CategoryHeader(std::string("Playlist for ") + titles[std::clamp(m_event, 0, 3)]));
     const std::vector<std::string> names = gfPlaylistNames();
     if (names.empty()) {
-        auto* none = new tsl::elm::ListItem("Open Gatefold once to list its playlists");
+        auto* none = new tsl::elm::ListItem("Open Songate once to list its playlists");
         list->addItem(none);
     }
     GfbgConfig c{};
@@ -783,7 +783,7 @@ tsl::elm::Element* EqPresetGui::createUI() {
     };
     const int own = int(s_user.size());
     const bool onUser = s_eq.preset >= GFEQ_PRESETS && s_eq.preset < GFEQ_PRESETS + own;
-    list->addItem(new tsl::elm::CategoryHeader("Gatefold's Presets"));
+    list->addItem(new tsl::elm::CategoryHeader("Songate's Presets"));
     for (int i = 0; i < GFEQ_PRESETS; i++) add(kGfEqPresets[i].name, 0, i, s_eq.preset == i);
     if (own > 0) {
         list->addItem(new tsl::elm::CategoryHeader("Yours"));

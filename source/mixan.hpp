@@ -21,6 +21,31 @@ namespace mixan {
 
 constexpr int Version = 4;   // mix.tsv: results of another version are made again (2: downbeats, bars, phrases; 3: keys; 4: bass per bar)
 
+/** How a track sounds, for Mood playlists (mood.hpp sorts the library by these): measured in the same pass as the rest,
+ *  kept apart (mood.tsv, its own version) so Automix's analysis never changes for it. After Gatefold's vibe.js (PC), whose
+ *  features it follows, plus the key's mode and the beat. */
+struct Mood {
+    static constexpr int Version = 1;   // mood.tsv: another version's are measured again
+    bool valid = false;
+    float loud = -99;     // the body's level, dB (Info::level)
+    float dyn = 0;        // how much the loudness moves: the 1-s level's spread (90th minus 10th percentile), dB
+    float calm = 0;       // the share of the music 6 dB or more under the body
+    float bright = 0;     // the spectral centroid, loudness-weighted, Hz (to 5.5 kHz): dark and warm, or bright and harsh
+    float hf = 0;         // the share of energy above 3 kHz (cymbals, distortion, air)
+    float onsets = 0;     // onsets a second (the spectral flux's peaks): how busy it is
+    float perc = 0;       // the kick's and the snare's share of the onsets: drums against pads and voices
+    float flux = 0;       // how much the spectrum changes, on average (log magnitudes)
+    float minor = 0;      // the whole track's chroma: its best minor key's correlation over its best major key's (-1..1)
+    float bass = 0;       // the share of energy below 150 Hz
+    float bpm = 0, beat = 0;   // the tempo and how steady the beat is (Info::bpm, confidence; 0 without a steady one)
+    // how strongly the music pulses: the onsets' autocorrelation at its best period between 60 and 240 BPM, against its
+    // power (0..1); of all onsets, and of the kick alone (a four-on-the-floor's is high). Danceability, without the grid
+    // Automix needs to join on the beat (its confidence is low for much danceable pop)
+    float pulse = 0, kickPulse = 0;
+    std::string pack() const;
+    static bool unpack(const std::string& s, Mood& out);
+};
+
 struct Info {
     float bpm = 0;          // 0: no steady beat found (ambient, classical, speech): Automix fades without matching
     float confidence = 0;   // 0..1: how sure the beat grid is
@@ -51,6 +76,7 @@ struct Info {
     // last minute (songs change key); how sure (0..1: the best key's lead over the next)
     int key = -1, keyIn = -1, keyOut = -1;
     float keySure = 0;
+    Mood mood;              // (not in pack(): mood.tsv)
 
     /** "v,bpm,conf,…" for mix.tsv, and back (false: another version or damaged). */
     std::string pack() const;
@@ -69,10 +95,12 @@ public:
     void begin(int rate, int channels);
     /** Interleaved float samples, as decoded. Nothing is allocated per push but the per-frame results. */
     void push(const float* x, int frames);
-    Info finish();
+    Info finish();   // Automix's analysis (finishMix, unchanged for Mood) and the mood's features (finishMood)
 
 private:
     void frame();
+    Info finishMix();
+    Mood finishMood(const Info& mix) const;
 
     int rate_ = 44100, ch_ = 2, decim_ = 4;
     double ar_ = 11025;     // the analysis rate
@@ -83,6 +111,7 @@ private:
     std::vector<float> win_, re_, im_, prevLog_;
     std::vector<int> rev_;
     std::vector<float> flux_, db_, bass_, low_, snare_;   // per hop (low_: onsets below 150 Hz, the kick; snare_: 1.5-5 kHz)
+    std::vector<float> centroid_, hf_;                    // per hop, for Mood: the spectral centroid (Hz), the share above 3 kHz
     std::vector<float> chroma_;                  // 12 per 4 hops (~46 ms): the pitch classes' energy, G#3-G#6
     float chromaAcc_[12] = {};
     int chromaN_ = 0;

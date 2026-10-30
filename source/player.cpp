@@ -218,15 +218,18 @@ void Player::prepare(const std::string& path, double offset) {
     prepDec_.reset();
     prepPath_ = path;
     prepOffset_ = offset;
+    prepRunning_ = true;
     prepThread_ = std::thread([this, path, offset] {
         cores::moveHere(cores::Loader);
         auto d = std::make_unique<FfDecoder>();
-        if (!d->open(path, rate_, channels_)) return;
-        double used = 0;
-        if (offset > 0.001 && d->skip(offset)) used = offset;
-        d->prefetch(rate_ * 3, rate_ / 2);
-        prepOffsetUsed_ = used;
-        prepDec_ = std::move(d);   // read by load() only after joining this thread
+        if (d->open(path, rate_, channels_)) {
+            double used = 0;
+            if (offset > 0.001 && d->skip(offset)) used = offset;
+            d->prefetch(rate_ * 3, rate_ / 2);
+            prepOffsetUsed_ = used;
+            prepDec_ = std::move(d);   // read by load() only after joining this thread
+        }
+        prepRunning_ = false;
     });
 }
 
@@ -255,6 +258,7 @@ void Player::togglePause() {
 
 void Player::seek(double seconds) {
     if (seconds < 0) seconds = 0;
+    seeks_++;
     if (remote()) { bg_->seek(seconds, clockNow()); return; }
     if (ffActive_) {
         std::unique_ptr<FfDecoder> old;
