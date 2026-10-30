@@ -5,7 +5,7 @@
  */
 #pragma once
 #include <SDL2/SDL.h>
-#include <switch.h>
+#include "platform.hpp"
 
 #include <functional>
 #include <map>
@@ -35,9 +35,14 @@
 #include "ui.hpp"
 #include "updater.hpp"
 #include "waveform.hpp"
+#include "words.hpp"
 
 namespace css {
+#ifdef GF_WINDOWED
+inline int W = 1280, H = 720;   // follows the window: the shorter way 1280×720, the other way more room (App::fitWindow)
+#else
 constexpr int W = 1280, H = 720;
+#endif
 constexpr float TbH = 46, BarH = 92, SideW = 236, SideWCollapsed = 68;
 // --fs-* scale, one pixel up from the desktop values for a handheld screen
 constexpr int Xs = 12, Sm = 13, Base = 15, Md = 16, Lg = 19, Xl = 25, Xxl = 34, Hero = 52;
@@ -149,7 +154,6 @@ private:
     Waveform wave;
     Spectrum spec;
     Store store;
-    PadState pad_;
 
     // ---------------- palette
     Palette pal = paletteDefault();
@@ -592,7 +596,6 @@ private:
     double sessionAt = 0;    // last time the session (queue, position) was written
     int savedTrack = -1;
     bool savedPlaying = false;
-    AppletHookCookie appletCookie_{};
     bool ready_ = false;     // init finished: before that there is nothing worth saving over the files
     std::vector<float> pcm_;
     // Settings → About → Frame times: the last 120 frames, interval and the work before the present
@@ -681,7 +684,7 @@ private:
     void persistSoon(float delay);
     void persistNow(bool sessionOnly = false);
     void restoreSession();
-    static void appletEvent(AppletHookType type, void* self);
+    static void onLeave(bool exiting, void* self);
     void next(bool natural);
     void prev();
     void togglePlay();
@@ -1021,7 +1024,57 @@ private:
 
     // ================= view_updates.cpp: Settings → Updates (updater.hpp): releases, changelogs, install, roll back, backups
 public:
-    std::string selfPath = "sdmc:/switch/Songate/Songate.nro";   // the running .nro (main's argv[0])
+    std::string selfPath;   // the running program (plat::selfPath)
+    void frame();
+#ifdef GF_WINDOWED
+    static constexpr int kNarrowW = 1170;   // under this the pages need the sidebar's room: it folds by itself, and comes back
+    bool sideOpenedNarrow_ = false;
+    bool sidebarFolded() const { return css::W < kNarrowW ? !sideOpenedNarrow_ : store.sidebarCollapsed; }
+#else
+    bool sidebarFolded() const { return store.sidebarCollapsed; }
+#endif
+    Uint64 lastTick_ = 0;
+    int hz_ = 60;   // the screen's refreshes a second
+#ifdef GF_WINDOWED
+    void fitWindow();
+    float scale_ = 1;                       // real pixels to an app pixel
+    SDL_Texture* frameTex_[2] = {};         // frames are drawn here, then shown: the last whole one is what the text card sits on
+    int frameCur_ = 0;
+    plat::TextResult textCard(const char* header, const char* guide, const char* initial, char* out, size_t size);
+    void textCardOwner();
+    static plat::TextResult textCardHook(const char* header, const char* guide, const char* initial, char* out, size_t size);
+    bool pointerIsMouse_ = false;           // the system's own arrow shows: the app's round pointer is for the stick
+    void closeWindow();
+    void showWindow();
+    void keepWindowPlace();
+    void systemCommands();
+    bool mediaHas_ = false, mediaPlaying_ = false;
+    double titleAt_ = 0;
+    Uint32 titleBg_ = 0xFFFFFFFF, titleFg_ = 0xFFFFFFFF;
+    bool pumping_ = false, resizing_ = false;
+    static constexpr float kLightsW = 72;   // the title bar's room for the three lights
+    int lightAt(float px, float py) const;
+    void pressLight(int i);
+    void drawWindowLights();
+    void updateLights();
+    float lightsShown() const;
+    float lightsP_ = 0, lightsHold_ = 0;
+    bool cameFromInside_ = false;
+    int lightDown_ = -1;
+    SDL_FRect titleKeep_[2] = {};           // what is pressed in the title bar, not dragged: the rest of it moves the window
+    static SDL_HitTestResult hitTest(SDL_Window* w, const SDL_Point* p, void* self);
+    bool typingByTouch_ = false;            // the last input was a finger or a pad: the text card brings the on-screen keyboard
+    bool closePending_ = false;             // × during the text card: done when it has closed
+    bool fitPending_ = false;               // the window changed under the text card
+    bool fullApp_ = false, fullCanvas_ = false, fullNow_ = false;   // full screen: asked for (F11), by the Canvas, as it is
+    void applyFullscreen();
+    int framePw_ = 0, framePh_ = 0, frameTexW_ = 0, frameTexH_ = 0;
+    static int resizeWatch(void* self, SDL_Event* e);
+#ifdef GF_DEV
+    long statFrames_ = 0, statLate_ = 0;    // what a test run prints at the end
+    double statSum_ = 0, statWorst_ = 0, statWork_ = 0;
+#endif
+#endif
 private:
     Updater updater;
     bool relaunch = false;              // Gatefold closes and starts again (the new .nro, swapped in at shutdown)

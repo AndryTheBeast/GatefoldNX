@@ -12,6 +12,7 @@
  * output gains nothing from them). The sound-analysis recipe is Mood ("smart:mood:<mood>", mood.hpp: our own analysis):
  * a kind of its own in the sidebar, the New playlist sheet and every page, hidden from the recipes here.
  */
+#include "words.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -674,7 +675,7 @@ void App::drawSmartSheet() {
                                  grab = Grab{};
                                  grab.kind = Grab::Playlists;
                                  grab.pos = ref;
-                                 toast("Move it with the D-pad, then press A");
+                                 toast(GF_MOVE_WORDS);
                              } });
         rows.push_back({ Row::Action, playlistIcon(ref), "Icon…", "Shown in the sidebar, also when it is folded", "", [this] {
                              sheet.page = Sheet::PlIcon;
@@ -690,7 +691,7 @@ void App::drawSmartSheet() {
         rows.push_back({ Row::Grid });
         rows.back().h = ((n + IconCols - 1) / IconCols) * IconRowH + 4;
     } else if (page == Sheet::NewList) {
-        rows.push_back({ Row::Action, ICON_LIST, "A playlist of your own", "Add tracks to it from the track menu (+)", "", [this] {
+        rows.push_back({ Row::Action, ICON_LIST, "A playlist of your own", "Add tracks to it from the track menu (" GF_MENU_KEY ")", "", [this] {
                              closeSheet();
                              newPlaylist(-1);
                          } });
@@ -712,7 +713,7 @@ void App::drawSmartSheet() {
                                      ui.focusDefault();
                                  }
                          } });
-        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Import a playlist file…", "An .m3u or .m3u8 file anywhere on the SD card", "",
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Import a playlist file…", "An .m3u or .m3u8 file anywhere " GF_ON_CARD, "",
                          [this] { openPlaylistPicker(); } });
     } else if (page == Sheet::PlFile) {
         // One playlist file: play it as it is, or keep it as a playlist of your own

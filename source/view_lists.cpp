@@ -3,6 +3,7 @@
  * Track lists: #view-playlist (play queue, Liked, folder playlists, search),
  * #view-album, and the Folders browser that Gatefold NX adds.
  */
+#include "words.hpp"
 #include <algorithm>
 #include <cmath>
 #include <strings.h>
@@ -203,7 +204,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
             confirm(playlistIcon(ref), "Delete", p.name, std::string(playlistKind(ref)) + " · " + count,
                     "Delete this playlist?",
                     smart ? "It leaves the sidebar. Your tracks, their play counts and Liked are not touched."
-                          : "It leaves the sidebar, and its order is lost. The tracks stay on the SD card and in your library.",
+                          : "It leaves the sidebar, and its order is lost. The tracks stay " GF_ON_CARD " and in your library.",
                     "Delete", [this, ref, name = p.name] {
                         if (ref < 0 || ref >= int(store.playlists.size()) || store.playlists[ref].name != name) return;
                         erasePlaylist(ref);
@@ -278,7 +279,7 @@ void App::drawTrackList(float x, float y, float w, float h) {
 /** The first launch (the user, 2026-10-27: always asked): the card's Music folder offered, with the guided tour or without
  *  (the user, 2026-10-28), the picker under the card for another. No Cancel: Another folder, B or × leave the picker. */
 void App::welcomeCard(const std::string& found) {
-    confirm(ICON_FOLDER, "Welcome to Songate", "Where is your music?", "On this SD card: " + found, "Read your music from " + found + "?",
+    confirm(ICON_FOLDER, "Welcome to Songate", "Where is your music?", "On " GF_THIS_CARD ": " + found, "Read your music from " + found + "?",
             "Songate makes albums, artists and genres from the tags of the files in one folder and the folders inside it, "
             "whatever their layout. Settings › Library can change it later.",
             "Use it and take the tour", [this, found] {
@@ -299,7 +300,7 @@ void App::confirmRemoveFolderPlaylist(int ref, int count) {
     if (ref < 0 || ref >= int(store.playlists.size())) return;
     const FolderPlaylist& p = store.playlists[ref];
     confirm(ICON_FOLDER, "Delete", p.name, "Folder playlist · " + std::to_string(count) + (count == 1 ? " track" : " tracks"),
-            "Delete this playlist?", "It leaves the sidebar. The folder and its tracks stay on the SD card; Folders can add it again.",
+            "Delete this playlist?", "It leaves the sidebar. The folder and its tracks stay " GF_ON_CARD "; Folders can add it again.",
             "Delete", [this, ref, name = p.name, path = p.path] {
                 if (ref >= int(store.playlists.size()) || store.playlists[ref].name != name || store.playlists[ref].path != path) return;
                 erasePlaylist(ref);
@@ -374,7 +375,7 @@ void App::drawAlbum(float x, float y, float w, float h) {
 
 void App::drawFolders(float x, float y, float w, float h) {
     if (lib.folders.empty()) {
-        viewHead("Folders", "No music folder", "Put your music in sdmc:/music and choose Rescan in Settings.", x, y, w);
+        viewHead("Folders", "No music folder", GF_NO_MUSIC, x, y, w);
         return;
     }
     int f = route.ref;
@@ -552,13 +553,10 @@ void App::drawPicker(float x, float y, float w, float h) {
     const bool exporting = route.view == View::PickExport;
     const bool files = route.view == View::PickPlaylist || exporting;
     const View self = route.view;
-    std::string path = route.query.empty() ? "sdmc:/" : route.query;
-    const bool isRoot = path == "sdmc:/" || path == "sdmc:";
-    auto join = [](const std::string& a, const std::string& b) { return a.back() == '/' ? a + b : a + "/" + b; };
-    auto parent = [&](const std::string& p) {
-        const size_t s = p.find_last_of('/');
-        return s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s);
-    };
+    std::string path = route.query.empty() ? std::string(plat::root()) : route.query;
+    const bool isRoot = plat::isRoot(path);
+    auto join = [](const std::string& a, const std::string& b) { return plat::join(a, b); };
+    auto parent = [&](const std::string& p) { return plat::parentDir(p); };
     // Listing the card is cheap but not free: keep the last listing.
     static std::string listedPath;
     static bool listedFiles = false;
@@ -585,9 +583,9 @@ void App::drawPicker(float x, float y, float w, float h) {
     const bool choosing = !files && folderFor >= 0;   // Settings → Storage and reset: a browser's start folder
     kicker(exporting ? "Export “" + exportName + "” to" : files ? "Import a playlist file" : choosing ? folderPickName() : "Music folder", x + 28, cy, pal.text3);
     cy += 10;
-    g.text(isRoot ? "SD card" : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
+    g.text(isRoot ? GF_CARD_NAME : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
     cy += 38;
-    std::string sub = path + "  ·  " + std::to_string(dirs.size()) + (dirs.size() == 1 ? " folder" : " folders");
+    std::string sub = (path == "/" ? std::string(GF_CARD_NAME) : path) + "  ·  " + std::to_string(dirs.size()) + (dirs.size() == 1 ? " folder" : " folders");
     if (files) sub += lists.empty() ? std::string("  ·  no playlist files")
                                     : "  ·  " + std::to_string(lists.size()) + (lists.size() == 1 ? " playlist file" : " playlist files");
     else if (choosing) sub += folderPickField().empty() ? std::string("  ·  now its own default") : "  ·  now " + folderPickField();
@@ -612,7 +610,7 @@ void App::drawPicker(float x, float y, float w, float h) {
             folderFor = -1;
             persistSoon(0.3f);
             back();
-            toast(what + ": " + (path == "sdmc:/" ? std::string("the SD card") : path));
+            toast(what + ": " + (isRoot ? std::string(plat::rootName()) : path));
             return;
         }
     } else if (!files) {

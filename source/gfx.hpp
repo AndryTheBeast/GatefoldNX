@@ -28,6 +28,9 @@ public:
     bool init(SDL_Renderer* r);
     void shutdown();
     void endFrame();   // evicts text and icons that were not drawn recently
+    /** The screen: real pixels per app pixel, and its refreshes a second. Text and icons are made at the real pixels (a change
+     *  of scale drops them, so never in the middle of a frame); on the console it stays 1 and 60. */
+    void setDisplay(float scale, int hz);
 
     SDL_Renderer* renderer() const { return r_; }
 
@@ -130,7 +133,13 @@ public:
      */
     void setShift(float dx, float dy) { shiftX_ = dx; shiftY_ = dy; }
     float shiftY() const { return shiftY_; }
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+    /** Tests: the words of this frame and where they are. */
+    struct Said { std::string text; float x, y, w, h; };
+    std::vector<Said> said;
+#endif
     int measure(const std::string& s, Font f);
+    float measureF(const std::string& s, Font f);   // … not rounded to app pixels
     /**
      * A count that changes: every character placed by its own advance, digits in equal cells (the widest
      * digit's), so nothing moves as it rises and the spacing is the font's. Inter has tabular figures, but
@@ -139,6 +148,7 @@ public:
     int textNum(const std::string& s, Font f, float x, float y, const Rgb& c, float alpha = 1, Align a = Align::Left);
     int measureNum(const std::string& s, Font f);
     int advance(Uint32 codepoint, Font f);
+    float advanceF(Uint32 codepoint, Font f);
     /** A space's advance: FreeType leaves a trailing space out of a measured width, so " " measures nothing. */
     int spaceWidth(Font f) { return measure("x x", f) - measure("xx", f); }
     int measureSpaced(const std::string& s, Font f, float spacingEm);
@@ -172,10 +182,13 @@ public:
     static SDL_Surface* shrink(SDL_Surface* src, int maxSide);
 
 private:
-    struct Cached { SDL_Texture* tex; int w, h; unsigned lastFrame; };
+    struct Cached { SDL_Texture* tex; int w, h; unsigned lastFrame; float dw, dh; };   // w, h: in app pixels, as measured; dw, dh: drawn exactly
     struct Pt { float x, y, nx, ny; };
 
     TTF_Font* font(Font f, int face);
+    float snap(float v) const { return std::round(v * scale_) / scale_; }   // to a real pixel
+    int realPx(float v) const { return int(std::lround(v * scale_)); }
+    int realWidth(const std::string& s, Font f);
     int faceFor(const std::string& s);
     std::string ellipsize(const std::string& s, Font f, int maxW);
     Cached* textTexture(const std::string& s, Font f);
@@ -218,6 +231,8 @@ private:
     SDL_Texture* vignetteTex_ = nullptr;
     void edgeBands(const SDL_FRect& dst, SDL_Color c);
     unsigned frame_ = 0;
+    float scale_ = 1;
+    unsigned hz_ = 60;
     std::vector<SDL_Vertex> verts_;
     std::vector<int> idx_;
 };

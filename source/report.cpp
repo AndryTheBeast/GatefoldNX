@@ -24,9 +24,7 @@
 #define REPORT_HAS_KEY 0
 #endif
 
-#ifdef __SWITCH__
-#include <switch.h>
-#endif
+#include "platform.hpp"
 
 namespace report {
 
@@ -89,23 +87,7 @@ std::string field(const std::string& text, const char* key) {
 
 System system() {
     System s;
-#ifdef __SWITCH__
-    if (R_SUCCEEDED(setsysInitialize())) {
-        SetSysFirmwareVersion fw;
-        if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw))) s.firmware = fw.display_version;
-        setsysExit();
-    }
-    if (R_SUCCEEDED(splInitialize())) {
-        u64 v = 0;
-        if (R_SUCCEEDED(splGetConfig(SplConfigItem(65000), &v)))   // Exosphère's API version: Atmosphère's own
-            s.atmosphere = std::to_string((v >> 56) & 0xFF) + "." + std::to_string((v >> 48) & 0xFF) + "." + std::to_string((v >> 40) & 0xFF);
-        splExit();
-    }
-    s.docked = appletGetOperationMode() == AppletOperationMode_Console;
-#else
-    s.firmware = "PC preview";
-    s.atmosphere = "-";
-#endif
+    plat::sysInfo(s.firmware, s.atmosphere, s.docked);
     if (s.firmware.empty()) s.firmware = "unknown";
     if (s.atmosphere.empty()) s.atmosphere = "unknown";
     return s;
@@ -150,8 +132,12 @@ std::vector<Crash> crashes(size_t max) {
         }
         closedir(d);
     };
+#ifndef GF_WINDOWED
     scan("sdmc:/atmosphere/crash_reports", false);
     scan("sdmc:/atmosphere/fatal_errors", true);
+#else
+    (void)scan;
+#endif
     std::sort(out.begin(), out.end(), [](const Crash& a, const Crash& b) { return a.at > b.at; });
     if (out.size() > max) out.resize(max);
     return out;

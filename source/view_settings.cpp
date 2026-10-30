@@ -6,6 +6,7 @@
  * Rows put the label (and a hint, wrapped, never cut) on the left and the
  * control on the right: segmented choices, toggles, sliders, buttons.
  */
+#include "words.hpp"
 #include <algorithm>
 #include <cmath>
 #include <ctime>
@@ -152,19 +153,10 @@ void App::openEqualizer() {
 }
 
 void App::openFindSetting() {
-    SwkbdConfig kbd;
-    if (R_FAILED(swkbdCreate(&kbd, 0))) {
-        toast("The keyboard is not available in applet mode");
-        return;
-    }
-    swkbdConfigMakePresetDefault(&kbd);
-    swkbdConfigSetGuideText(&kbd, "Find a setting");
-    swkbdConfigSetHeaderText(&kbd, "Settings");
-    swkbdConfigSetInitialText(&kbd, settingsQuery.c_str());
     char out[128] = {};
-    const Result rc = swkbdShow(&kbd, out, sizeof out);
-    swkbdClose(&kbd);
-    if (R_FAILED(rc)) return;
+    const plat::TextResult r = plat::askText("Settings", "Find a setting", settingsQuery.c_str(), out, sizeof out);
+    if (r == plat::TextResult::Unavailable) toast("The keyboard is not available in applet mode");
+    if (r != plat::TextResult::Done) return;
     settingsQuery = out;   // an empty answer clears the search
     area("settings.pane").target = area("settings.pane").y = 0;
 }
@@ -266,7 +258,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             if (Store::isLine(tab)) {   // one of your lines: Move it, or Remove it
                 lines++;
                 // The same columns as the tabs' rows: Move where their Move is, the cross centred where their switch is
-                Row r{ "Line", "", held ? "The D-pad moves it, A puts it down" : "A thin line in the sidebar between the tabs around it",
+                Row r{ "Line", "", held ? GF_MOVING_WORDS : "A thin line in the sidebar between the tabs around it",
                        40 + 16 + mw, [this, tab, i, mw, rw](float rx, float cy) {
                            bool c = false;
                            {   // Remove: round, the red cross only (as the playlist page's compact Delete)
@@ -288,7 +280,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                grab = Grab{};
                                grab.kind = Grab::Tabs;
                                grab.pos = i;
-                               toast("Move it with the D-pad, then press A");
+                               toast(GF_MOVE_WORDS);
                            }
                        } };
                 r.lifted = held;
@@ -296,9 +288,9 @@ void App::drawSettings(float x, float y, float w, float h) {
                 sidebarRows.push_back(r);
                 continue;
             }
-            const char* hint = held                    ? "The D-pad moves it, A puts it down"
+            const char* hint = held                    ? GF_MOVING_WORDS
                              : tab == Store::TabNow    ? "Always shown. Settings stays at the bottom"
-                             : tab == Store::TabFiles  ? "The whole SD card: open, rename, copy, move and delete, and what fits each file"
+                             : tab == Store::TabFiles  ? "The whole " GF_CARD_NAME ": open, rename, copy, move and delete, and what fits each file"
                                                        : "";
             Row r{ Store::tabName(tab), "", hint, 40 + 16 + mw, [this, tab, bit, i, mw](float rx, float cy) {
                       if (bit) {
@@ -314,7 +306,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                           grab = Grab{};
                           grab.kind = Grab::Tabs;
                           grab.pos = i;
-                          toast("Move it with the D-pad, then press A");
+                          toast(GF_MOVE_WORDS);
                       }
                   } };
             r.lifted = held;
@@ -330,7 +322,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                 grab = Grab{};
                 grab.kind = Grab::Tabs;
                 grab.pos = int(store.tabOrder.size()) - 1;
-                toast("Move it with the D-pad, then press A");
+                toast(GF_MOVE_WORDS);
             });
             sidebarRows.push_back(add);
         } else {
@@ -480,6 +472,10 @@ void App::drawSettings(float x, float y, float w, float h) {
                                      "set.mixhint", { "Automatic", "On the cover", "Above" }, store.mixHint, [this](int i) { store.mixHint = i; store.save(); }));
         cards.push_back({ "Automix", mixRows });
         cards.push_back({ "Sidebar", sidebarRows });
+#ifdef GF_WINDOWED
+        unsigned batteryNow = 0;
+        if (plat::batteryLevel(batteryNow))   // a desktop has none
+#endif
         cards.push_back({ "Title bar",
                           { toggleRow("Battery percentage", "Beside the battery, top right", "set.batpct", store.batteryPercent),
                             toggleRow("Battery time", "How long to empty, or to full while charging; shown after a minute, steadier as it goes",
@@ -491,10 +487,14 @@ void App::drawSettings(float x, float y, float w, float h) {
     {
         // The background player (sysmodule): music on the HOME menu and in games, and its pause-for-apps.
         std::vector<Row> bgRows;
+#ifdef GF_WINDOWED
+        bgRows.push_back(toggleRow("Keep playing when the window closes", "Songate stays by the clock, playing; its icon brings it back. Off: closing the window quits",
+                                   "set.bg", store.background));
+#else
         const bool on = player.remote();
         bgRows.push_back(Row{ "Keep playing outside Songate", "",
                               on ? "Connected. The music carries on on the HOME menu, in games and after Songate closes"
-                              : store.background ? "Not installed: copy atmosphere/contents/4200000047464E58 to the SD card and restart"
+                              : store.background ? "Not installed: copy atmosphere/contents/4200000047464E58 to " GF_THE_CARD " and restart"
                                                  : "Off: the music stops when you leave Songate",
                               40, [this](float rx, float cy) {
                                   if (toggle(uid("set.bg"), rx - 40, cy, store.background && player.remote())) setBackground(!player.remote());
@@ -568,6 +568,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             }
             bgRows.push_back(infoRow("Controls outside Gatefold", "The Songate overlay in Ultrahand's menu (L + D-pad down + R3 unless you changed it)"));
         }
+#endif
         // Measured: the count beside the label; Stop / Resume while the library is not all measured.
         const size_t measured = std::min(levels.count(), lib.tracks.size());
         const std::string measuredHint =
@@ -633,7 +634,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                static const int mins[] = { 0, 15, 30, 45, 60, 90 };
                                setSleep(mins[i] * 60.0, i);
                            }),
-                    segRow("Then sleep the console", "When the timer ends with Songate open, a card counts down; Stay awake keeps it on",
+                    segRow("Then sleep " GF_THE_CONSOLE, "When the timer ends with Songate open, a card counts down; Stay awake keeps it on",
                            "set.sleepcon", { "Off", "10 s", "30 s", "1 min" },
                            store.sleepConsole <= 0 ? 0 : store.sleepConsole <= 10 ? 1 : store.sleepConsole <= 30 ? 2 : 3,
                            [this](int i) {
@@ -641,11 +642,11 @@ void App::drawSettings(float x, float y, float w, float h) {
                                store.sleepConsole = secs[i];
                                persistSoon(0.3f);
                            }),
-                    toggleRow("Keep the console awake", "While Songate is open the screen does not dim and the console does not sleep by "
+                    toggleRow("Keep " GF_THE_CONSOLE " awake", "While Songate is open the screen does not dim and " GF_THE_CONSOLE " does not sleep by "
                                                         "itself. After a sleep timer ends, it may again.",
                               "set.awake", store.keepAwake),
                     segRow("Dim the screen", store.keepAwake ? "After this long without input; any button brings it back"
-                                                             : "With Keep the console awake on; otherwise the console dims by itself",
+                                                             : "With Keep " GF_THE_CONSOLE " awake on; otherwise " GF_THE_CONSOLE " dims by itself",
                            "set.dim", { "Off", "1", "2", "5", "10 min" },
                            store.dimAfter <= 0 ? 0 : store.dimAfter <= 1 ? 1 : store.dimAfter <= 2 ? 2 : store.dimAfter <= 5 ? 3 : 4,
                            [this](int i) {
@@ -654,7 +655,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                persistSoon(0.3f);
                            },
                            store.keepAwake ? 0u : 0x1Fu) } },
-                { "Background player", bgRows } } });
+                { GF_BG_CARD, bgRows } } });
     }
 
     // Equalizer (gfeq.hpp: the same sound in Gatefold's own player and the background player)
@@ -683,7 +684,7 @@ void App::drawSettings(float x, float y, float w, float h) {
         const int own = store.eq.preset - GFEQ_PRESETS;   // ≥ 0: one of your saved presets
         const bool edited = own >= 0 && store.eq.edited;  // ... changed since it was saved
         const std::string preset = eqPresetName(store.eq.preset) + (edited ? " (edited)" : "");
-        Row onRow{ "Equalizer", "", "Shapes everything Songate and the background player play. A strong boost lowers the level a little so it "
+        Row onRow{ "Equalizer", "", GF_EQ_WHAT " A strong boost lowers the level a little so it "
                                    "does not distort: the preamp brings it back up. Also the equalizer button in the player bar and the Canvas: a press turns it on or off, a long press opens this page",
                    40, [this](float rx, float cy) {
                        if (toggle(uid("set.eqon"), rx - 40, cy, store.eq.on != 0)) {
@@ -796,13 +797,11 @@ void App::drawSettings(float x, float y, float w, float h) {
               { { "", { buttonRow("Music folder", roots.empty() ? "Not chosen yet" : roots, "set.folder", ICON_FOLDER, "Change",
                                   [this] {
                                       folderFor = -1;
-                                      const size_t s = store.musicRoot.find_last_of('/');
-                                      navigate(View::PickFolder, -1,
-                                               store.musicRoot.empty() || s <= 5 ? std::string("sdmc:/") : store.musicRoot.substr(0, s));
+                                      navigate(View::PickFolder, -1, plat::parentDir(store.musicRoot));
                                   }),
                         infoRow("Tracks", "Albums and artists come from the tags, however the folders are organised",
                                 std::to_string(lib.tracks.size()) + " · " + std::to_string(lib.albums.size()) + " albums"),
-                        infoRow("Tags read", "Kept on the SD card for next time", std::to_string(done) + "%"),
+                        infoRow("Tags read", "Kept " GF_ON_CARD " for next time", std::to_string(done) + "%"),
                         coversRow,
                         buttonRow("Rescan", "After adding or removing music", "set.rescan", ICON_REFRESH, "Rescan",
                                   [this] { rescan(); toast("Library rescanned: " + std::to_string(lib.tracks.size()) + " tracks"); }),
@@ -820,7 +819,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                           store.lyricTimingFor, [this](int i) { store.lyricTimingFor = i; }, store.lyricTiming ? 0u : 0x7u),
                                    infoRow("Where lyrics come from",
                                            "An .lrc file with the track's name next to it, or the LYRICS / USLT tag. Synced lines follow "
-                                           "the music; tap one to jump there.") } } } });
+                                           "the music; " GF_TAP " one to jump there.") } } } });
 
     // Canvas
     {
@@ -887,12 +886,25 @@ void App::drawSettings(float x, float y, float w, float h) {
     // Controls
     {
         std::vector<Row> keys;
+#ifdef GF_WINDOWED
+        const std::pair<const char*, const char*> map[] = { { "Enter  ·  pad A", "Select" },           { "Esc  ·  pad B", "Back" },
+                                                            { "Space  ·  pad X", "Play / pause" },    { "Ctrl F  ·  pad Y", "Search" },
+                                                            { "Ctrl ← →  ·  LB RB", "Previous / next track" },
+                                                            { "Shift ← →  ·  LT RT", "Seek 10 seconds" },
+                                                            { "C  ·  View", "Canvas (full screen)" },
+                                                            { "F11  ·  Alt Enter", "Full screen" },
+                                                            { "Mouse to the top left corner", "The window's close, minimise and full screen buttons" },
+                                                            { "Right-click  ·  Menu", "Track menu: tags, cover, queue, delete" },
+                                                            { "Arrows  ·  D-pad", "Move around" },
+                                                            { "Wheel  ·  right stick", "Scroll" } };
+#else
         const std::pair<const char*, const char*> map[] = { { "A", "Select" },           { "B", "Back" },        { "X", "Play / pause" },
                                                             { "Y", "Search" },           { "L  R", "Previous / next track" },
                                                             { "ZL  ZR", "Seek 10 seconds" }, { "−", "Canvas (full screen)" },
                                                             { "+", "Track menu: tags, cover, queue, delete" },
                                                             { "HOME", "Leave Songate (close it from the HOME menu)" },
                                                             { "Right stick", "Scroll" } };
+#endif
         for (auto& [k, l] : map) {
             const Font f{ css::Sm, Weight::SemiBold };
             const float kw = g.measure(k, f) + 18;
@@ -905,7 +917,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             keys.push_back(r);
         }
         const Row speedRow = sliderRow("Pointer speed", pct(store.pointerSpeed * 2),
-                                       "The left stick moves a pointer; A taps under it", "set.ptrspeed", store.pointerSpeed);
+                                       GF_POINTER_WORDS, "set.ptrspeed", store.pointerSpeed);
         const Row accelRow = toggleRow("Pointer acceleration", "Slow for small moves, fast when the stick is pushed all the way",
                                        "set.ptraccel", store.pointerAccel);
         sections.push_back({ "Controls", ICON_SLIDERS,
@@ -918,13 +930,14 @@ void App::drawSettings(float x, float y, float w, float h) {
     std::vector<Row> folderRows, keptRows;
     {
         struct F { const char* label; const char* dflt; std::string* field; };
-        const F fs[5] = { { "Files opens in", "The top of the SD card", &store.filesDir },
-                          { "Importing playlists opens in", "The top of the SD card; then, while Songate is open, where you last picked one",
+        static const std::string backupsDflt = std::string(plat::backupDir()) + " (Settings › Updates makes one before each install)";
+        const F fs[5] = { { "Files opens in", "The top of " GF_THE_CARD, &store.filesDir },
+                          { "Importing playlists opens in", "The top of " GF_THE_CARD "; then, while Songate is open, where you last picked one",
                             &store.importDir },
                           { "Exporting playlists opens in", "The music folder's Playlists folder (or the music folder); then where you last exported",
                             &store.exportDir },
                           { "The cover picker opens in", "The track's own folder (Change the cover… in the track menu)", &store.coverDir },
-                          { "Backups go to", "sdmc:/config/gatefold-nx-backups (Settings › Updates makes one before each install)", &store.backupDir } };
+                          { "Backups go to", backupsDflt.c_str(), &store.backupDir } };
         static const char* chooseKeys[5] = { "set.dir0", "set.dir1", "set.dir2", "set.dir3", "set.dir4" };
         static const char* defaultKeys[5] = { "set.dirdef0", "set.dirdef1", "set.dirdef2", "set.dirdef3", "set.dirdef4" };
         for (int i = 0; i < 5; i++) {
@@ -939,14 +952,17 @@ void App::drawSettings(float x, float y, float w, float h) {
             folderRows.push_back(buttonsRow(fs[i].label, field->empty() ? std::string(fs[i].dflt) : *field, btns));
         }
         struct K { const char* label; const char* hint; };
-        const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (config/gatefold-nx/art)" },
+        const K ks[6] = { { "Covers cache", "Small copies of every cover, so lists open with their covers (" GF_CONFIG_NAME "/art)" },
                           { "Covers for the overlay", "What the overlay shows for each track (thumbs)" },
                           { "Loudness measurements", "Volume levelling's, Automix's and the moods' measurements of each track (loudness.tsv, mix.tsv, mood.tsv, gains.bin)" },
                           { "Tag cache", "The tags read from your files, so launch does not read them again (tags.tsv)" },
                           { "Backups", "Your settings as they were before each install or restore (Backups go to, above)" },
-                          { "Downloads", "Release zips kept from an install that did not finish (updates)" } };
+                          { "Downloads", GF_DOWNLOADS_WORDS } };
         static const char* clearKeys[6] = { "set.clr0", "set.clr1", "set.clr2", "set.clr3", "set.clr4", "set.clr5" };
         for (int i = 0; i < 6; i++) {
+#ifdef GF_WINDOWED
+            if (i == 1) continue;   // the overlay's: none on a PC
+#endif
             Row r = buttonRow(ks[i].label, ks[i].hint, clearKeys[i], ICON_X, "Clear", [this, i] { clearStorage(i); }, true);
             r.value = storageValue(i);
             keptRows.push_back(r);
@@ -956,13 +972,13 @@ void App::drawSettings(float x, float y, float w, float h) {
     sections.push_back({ "Storage", ICON_FOLDER,
                          { { "Where browsers open", folderRows },
                            { "Files", { toggleRow("Show hidden files", "Names that start with a dot, in Files", "set.hidden", store.showHidden) } },
-                           { "Kept on the SD card", keptRows } } });
+                           { "Kept " GF_ON_CARD, keptRows } } });
     // Reset's buttons are one column, one width (the user, 2026-10-28: Reset sat narrower than Back up, Restore and Choose)
     float resetW = 0;
     for (const char* t : { "Back up", "Restore", "Reset", "Choose" }) resetW = std::max(resetW, float(g.measure(t, { css::Sm, Weight::SemiBold })) + 32 + 24);
     Section resetSection{ "Reset", ICON_REFRESH,
           { { "", { infoRow("Saved in", std::string(Store::Dir) + ": settings, playlists, Liked, where you left off and the tag cache. "
-                                                                  "Saved as you change things, so closing from the HOME menu loses nothing."),
+                                                                  "Saved as you change things, " GF_CLOSE_SAFE),
                     buttonRow("Back up the settings now", "A copy of all of it in " + backupRoot() + ", to put back below",
                               "set.backupnow", ICON_HISTORY, "Back up", [this] {
                                   persistNow();
@@ -978,7 +994,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                       return;
                                   fileWork.cat = SetReset;
                               }, false, resetW),
-                    buttonRow("Reset settings", "Every setting as it came, the background player's too. Your music folder, playlists, Liked, "
+                    buttonRow("Reset settings", GF_RESET_WORDS " Your music folder, playlists, Liked, "
                                                 "tag edits, covers and saved presets stay",
                               "set.reset", ICON_REFRESH, "Reset", [this] { resetSettings(); }, true, resetW),
                     buttonRow("Factory reset", "Erase what you choose, your playlists, Liked and statistics among them, or everything, as if Songate were newly installed. Your music files and backups stay",
@@ -1042,9 +1058,13 @@ void App::drawSettings(float x, float y, float w, float h) {
                 else checkUpdates(false);
             }));
         }
+#ifdef GF_WINDOWED
+        top.push_back(infoRow("This version", "", me));
+#else
         top.push_back(infoRow("This version", "The app, the background player and the overlay come from one release and are updated together. "
                                               "Background player: " + std::string(player.remote() ? "connected" : "not connected (off, missing, or of another version)"),
                               me + " · protocol " + std::to_string(Updater::thisProtocol())));
+#endif
         cards.push_back({ "", top });
         // Installed, waiting for a restart: the background player (if its file changed), then Gatefold
         const UpdInstalled& ins = updater.installed;
@@ -1180,9 +1200,10 @@ void App::drawSettings(float x, float y, float w, float h) {
         cards.push_back({ "Report", rep });
         // read on a worker the first time this page shows (supportScan): never the card on the main thread
         const bool read = supportAsked_ && !supportThread_.joinable();
+#ifndef GF_WINDOWED
         std::vector<Row> cr;
         if (!read) cr.push_back(infoRow("Atmosphère's crash reports", "Reading them…"));
-        else if (supportCrashes_.empty()) cr.push_back(infoRow("Atmosphère's crash reports", "None on this console"));
+        else if (supportCrashes_.empty()) cr.push_back(infoRow("Atmosphère's crash reports", "None on " GF_THIS_CONSOLE));
         else
             cr.push_back(buttonRow("Atmosphère's crash reports", std::to_string(supportCrashes_.size()) + (supportCrashes_.size() == 1 ? " report" : " reports") +
                                        ", the latest " + supportCrashes_.front().when, "set.crashes", ICON_BUG, "See them", [this] {
@@ -1194,6 +1215,7 @@ void App::drawSettings(float x, float y, float w, float h) {
                                            ui.focusDefault();
                                        }));
         cards.push_back({ "Crash reports", cr });
+#endif
         // what a report says of this console, each as it is now (never the files' names: the switch's prompt says so)
         std::string playing = "Nothing";
         if (now.track >= 0 && !now.info.codec.empty()) {
@@ -1202,9 +1224,13 @@ void App::drawSettings(float x, float y, float w, float h) {
         }
         cards.push_back({ "Sent with a report",
                           { infoRow("Songate", "", Updater::thisVersion()),
+#ifdef GF_WINDOWED
+                            infoRow("System", "", read ? supportSys_.firmware : std::string("…")),
+#else
                             infoRow("Firmware", "", read ? supportSys_.firmware : std::string("…")),
                             infoRow("Atmosphère", "", read ? supportSys_.atmosphere : std::string("…")),
                             infoRow("Background player", "", player.remote() ? "Connected" : "Not connected"),
+#endif
                             infoRow("Playing", "Its format only, never its name", playing),
                             infoRow("Library", "", std::to_string(lib.tracks.size()) + " tracks") } });
         sections.push_back({ "Support", ICON_HELP, cards });
@@ -1254,7 +1280,7 @@ void App::drawSettings(float x, float y, float w, float h) {
             g.glow(bx + 30, by + 38, 30, pal.glow, 0.5f);
             g.icon(ICON_BRAND_ARCH, bx + 30, by + 38, 34, pal.accent);
             g.icon(ICON_BRAND_NOTE, bx + 30, by + 38, 34, note);
-            g.text("Songate for Nintendo Switch", { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
+            g.text("Songate for " GF_PLATFORM, { css::Xl, Weight::Bold }, bx + 76, by + 12, pal.text);
             g.text("Version " GF_VERSION " · by AndryTheBeast", { css::Base }, bx + 76, by + 46, pal.text2);
         };
         sections.push_back(
@@ -1271,10 +1297,13 @@ void App::drawSettings(float x, float y, float w, float h) {
                     infoRow("FFmpeg", "Decoding in Songate's own player: AAC, ALAC, FLAC, MP3, Ogg Vorbis, Opus and WAV. LGPL 2.1"),
                     infoRow("SDL 2", "Graphics, sound, fonts and images: SDL, SDL_mixer, SDL_ttf, SDL_image. zlib licence"),
                     infoRow("libFLAC, mpg123, Opus, Tremor", "SDL_mixer's decoders, for a file FFmpeg cannot open. BSD and LGPL licences"),
-                    infoRow("libcurl and zlib", "Updates: the connection to GitHub, over the console's own secure connection. curl and zlib licences"),
-                    infoRow("libnx and devkitPro", "The Nintendo Switch homebrew toolchain. ISC licence"),
+                    infoRow("libcurl and zlib", "Updates: the connection to GitHub, over " GF_THE_CONSOLE "'s own secure connection. curl and zlib licences")
+#ifndef GF_WINDOWED
+                    , infoRow("libnx and devkitPro", "The Nintendo Switch homebrew toolchain. ISC licence"),
                     infoRow("Background player", "Helix AAC decoder (RealNetworks RPSL), minimp3 (CC0), dr_flac (public domain), and "
-                                                 "the overlay is built on sys-tune's, with libultrahand (GPL 2)") } } } });
+                                                 "the overlay is built on sys-tune's, with libultrahand (GPL 2)")
+#endif
+                  } } } });
     }
     // Storage goes with Library (your music, then where it and Gatefold's own files are): built later, placed after it
     {

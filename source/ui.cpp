@@ -7,19 +7,19 @@
 #include <cmath>
 #include <cstring>
 
-#ifndef __SWITCH__
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))
 // The preview's D-pad audit (Ui::audit) names items by the strings they were made from
 static std::unordered_map<Id, std::string>& idNames() { static std::unordered_map<Id, std::string> m; return m; }
 #endif
 
 Id uid(const char* s, int64_t i) {
-#ifndef __SWITCH__
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))
     const char* s0 = s;
 #endif
     uint64_t h = 1469598103934665603ull;
     for (; *s; s++) { h ^= uint8_t(*s); h *= 1099511628211ull; }
     h ^= uint64_t(i) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-#ifndef __SWITCH__
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))
     if (idNames().size() < 200000) idNames().emplace(h ? h : 1, i ? std::string(s0) + "#" + std::to_string(i) : std::string(s0));
 #endif
     return h ? h : 1;
@@ -286,7 +286,7 @@ const Ui::Item* Ui::pick(const std::vector<Item>& items, const std::vector<Link>
     return best;
 }
 
-#ifndef __SWITCH__
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))
 /** The preview's D-pad audit (GF_SCRIPT "audit <label>"): every item of this frame, where each direction goes from
  *  it, and what cannot be reached from the focus by the D-pad. Region memory is left out (it changes with history). */
 void Ui::audit(const char* label, FILE* out) const {

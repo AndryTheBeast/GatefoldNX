@@ -5,6 +5,7 @@
  * does, finishing it (the background player and Gatefold start again), and the settings backups. The work itself is
  * the Updater's (updater.hpp), on a worker.
  */
+#include "words.hpp"
 #include <algorithm>
 #include <cmath>
 #include <ctime>
@@ -14,10 +15,6 @@
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
-
-#ifdef __SWITCH__
-#include <switch.h>
-#endif
 
 namespace {
 
@@ -47,7 +44,7 @@ std::string App::backupRoot() const {
     const std::string cfg = Store::Dir;
     const bool inside = strncasecmp(store.backupDir.c_str(), cfg.c_str(), cfg.size()) == 0 &&
                         (store.backupDir.size() == cfg.size() || store.backupDir[cfg.size()] == '/');
-    return store.backupDir.empty() || inside ? std::string("sdmc:/config/gatefold-nx-backups") : store.backupDir;
+    return store.backupDir.empty() || inside ? std::string(plat::backupDir()) : store.backupDir;
 }
 
 const std::vector<UpdBackup>& App::updateBackups() {
@@ -98,7 +95,7 @@ std::string App::updateStatus() const {
 void App::allowUpdates() {
     confirm(UPD_SHIELD, "Updates", "Connect to the internet?", "GitHub · AndryTheBeast/Songate", "Allow Songate to go online?",
             "Songate connects to GitHub only when you check for updates or install one, and at launch if you turn that on. "
-            "GitHub sees your console's IP address and Songate's version, nothing else. You can turn this off at any time.",
+            "GitHub sees " GF_YOUR_CONSOLE "'s IP address and Songate's version, nothing else. You can turn this off at any time.",
             "Allow", [this] {
                 store.updates = 1;
                 persistSoon(0.3f);
@@ -221,7 +218,7 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
                          "Settings › Updates shows how far", "", nullptr });
     } else {
         const std::string label = cmp > 0 ? "Install " + r.version : cmp < 0 ? "Go back to " + r.version : "Install " + r.version + " again";
-        const std::string sub = cmp > 0   ? "The app, the background player and the overlay, together"
+        const std::string sub = cmp > 0   ? GF_UPDATE_WHAT
                               : cmp < 0   ? (r.manifest ? "Your settings are backed up first" : "Your settings are backed up first; back from it by hand")
                                           : "Puts this version's files back as they were released";
         rows.push_back({ Row::Action, cmp > 0 ? ICON_DOWNLOAD : cmp < 0 ? ICON_HISTORY : ICON_REFRESH, label, sub, megabytes(r.zipSize),
@@ -232,7 +229,7 @@ void App::updateSheetRows(std::vector<SheetRow>& rows) {
         text(ICON_BOLT, "A beta: it can be unstable and have bugs. Please report what you find: " ISSUES_URL, true);
     if (!r.manifest)
         text(ICON_INFO, r.version + " cannot update itself (it has no Updates page). To come back later, copy a newer release from "
-                            "github.com/AndryTheBeast/Songate/releases to the SD card by hand; your settings are backed up first.", true);
+                            "github.com/AndryTheBeast/Songate/releases to " GF_THE_CARD " by hand; your settings are backed up first.", true);
     // ---- the changelog
     if (r.log.empty()) {
         rows.push_back({ Row::Group, nullptr, "What's new" });
@@ -331,7 +328,7 @@ void App::modelSheetRows(std::vector<SheetRow>& rows) {
                          "Settings › Updates shows how far", "", nullptr });
     } else if (m && Updater::modelUsable(*m, &why)) {
         const int offer = row.offer;
-        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Download and use", "Checked by its checksum, kept in config/gatefold-nx/models",
+        rows.push_back({ Row::Action, ICON_DOWNLOAD, "Download and use", "Checked by its checksum, kept in " GF_CONFIG_NAME "/models",
                          std::to_string(std::max<int64_t>(1, m->size / 1024)) + " KB", [this, offer] { downloadModel(offer); } });
     } else {
         text(ICON_INFO, why.empty() ? "It needs a newer Songate" : why, true);
@@ -353,7 +350,7 @@ void App::installRelease(int i) {
     const UpdRelease& r = updater.releases[size_t(i)];
     const std::string me = Updater::thisVersion();
     const int cmp = Updater::compare(r.version, me);
-    std::string text = "Your settings are backed up first. Then the app, the background player and the overlay are replaced; "
+    std::string text = "Your settings are backed up first. Then " GF_UPDATE_PARTS "; "
                        "Restart now finishes it (the music stops for a moment).";
     if (cmp < 0) {
         text += " Your playlists, Liked and edits stay. Start fresh clears the settings when Songate closes; the backup keeps them.";
@@ -409,7 +406,7 @@ void App::restoreBackup(const UpdBackup& b) {
 void App::resetSettings() {
     confirm(ICON_REFRESH, "Reset", "Reset settings", "Every setting, as Songate came", "Reset every setting?",
             "Colours, the sidebar, playback, the equalizer, lyrics, the Canvas, the visualizer, controls, where browsers open, "
-            "updates, and the background player's game actions and fades go back to how they came. Only settings: your music "
+            GF_RESET_LIST " Only settings: your music "
             "folder, playlists, Liked, tag edits, covers, statistics and saved presets stay (Factory reset, below, erases those).",
             "Reset", [this] {
                 defaultSettings();
@@ -450,7 +447,7 @@ namespace {
 struct FactoryPartInfo { const char* label; const char* sub; };
 // In App::FactoryPart's order (and Updater::factoryFiles')
 const FactoryPartInfo kFactoryParts[] = {
-    { "Settings", "Every setting, the background player's game actions and fades too" },
+    { "Settings", GF_FACTORY_SET },
     { "Music folder", "Songate asks where your music is again, as at its first start" },
     { "Playlists", "Your playlists, smart and folder ones, and their icons" },
     { "Liked", "Every track you liked" },
@@ -458,8 +455,8 @@ const FactoryPartInfo kFactoryParts[] = {
     { "Lyric timings", "How far you moved each track's synced lyrics" },
     { "Saved equalizer presets", "The presets you saved under your own names" },
     { "Play counts and statistics", "Plays, last played and dates added (smart playlists use them)" },
-    { "The queue", "What was playing and where you left off, the background player's too" },
-    { "Caches", "Covers, overlay covers, tags and loudness: made again from your music" },
+    { "The queue", GF_FACTORY_QUEUE },
+    { "Caches", GF_CACHE_WORDS ": made again from your music" },
 };
 }  // namespace
 
@@ -522,7 +519,7 @@ void App::factoryErase(unsigned mask) {
     }
     confirm(ICON_X, "Factory reset", "Erase everything", "Songate as if it were newly installed", "Erase everything Songate keeps?",
             "Every setting, playlist and Liked track; your tag edits, chosen covers, lyric timings and saved equalizer presets; play "
-            "counts and statistics; the queue and the music folder; the background player's queue and game actions; every cache. "
+            "counts and statistics; " GF_FACTORY_LIST " "
             "Songate then closes and starts again as new. Your music files are not touched, and backups in " + backupRoot() + " stay.",
             "Erase everything", [this, go] {
                 confirm(ICON_X, "Factory reset", "Are you absolutely sure?", "There is no way back", "Erase everything now?",

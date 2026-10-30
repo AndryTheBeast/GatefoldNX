@@ -39,7 +39,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	Songate
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source platform/switch
 DATA		:=	data
 INCLUDES	:=	source sysmodule/include
 APP_TITLE	:=	Songate
@@ -55,7 +55,7 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
-CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_VERSION='"$(APP_VERSION)"'
+CFLAGS	+=	$(INCLUDE) -I$(PORTLIBS)/include/opus -D__SWITCH__ -DGF_FFMPEG -DGF_CURL -DGF_TURBOJPEG -DGF_VERSION='"$(APP_VERSION)"'
 
 # Dev builds (the default) keep what is only for testing: the sleep timer's 1-minute choice and
 # Settings → About → Frame times. A release is `make clean && make DEV=0` (make does not notice a changed flag).

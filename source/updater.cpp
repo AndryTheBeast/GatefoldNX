@@ -3,6 +3,7 @@
  * See updater.hpp. Self-contained on purpose: a small JSON reader, SHA-256, CRC-32 and an inflater for the release
  * zips (stored and deflated entries, as every zip tool writes them), so the PC preview needs no extra library.
  */
+#include "words.hpp"
 #include "updater.hpp"
 
 #include <algorithm>
@@ -17,13 +18,7 @@
 #include "automix.hpp"
 #include "cores.hpp"
 
-#ifdef __SWITCH__
-#include <switch.h>
-#include "gfbg.h"
-#define GF_PROTOCOL GFBG_PROTOCOL
-#else
-#define GF_PROTOCOL 6   // gfbg.h's GFBG_PROTOCOL (the PC preview builds without it, as thumbs.cpp)
-#endif
+#include "platform.hpp"
 
 #ifndef GF_VERSION
 #define GF_VERSION "2.0.0 BETA 1"
@@ -742,7 +737,13 @@ std::vector<UpdRelease> readReleases(const std::string& api) {
         r.body = j.s("body");
         for (const Json& a : j["assets"].arr) {
             const std::string n = a.s("name");
+#ifdef GF_WINDOWED
+            // A PC's release is its installer. (Never named .zip: consoles on 2.0.0 BETA 1 take the first .zip they find.)
+            const std::string kind = "-Windows-Setup.exe";
+            if (n.size() > kind.size() && n.compare(n.size() - kind.size(), kind.size(), kind) == 0 && r.zipUrl.empty()) {
+#else
             if (n.size() > 4 && n.substr(n.size() - 4) == ".zip" && r.zipUrl.empty()) {
+#endif
                 r.zipName = n;
                 r.zipUrl = a.s("browser_download_url");
                 r.zipSize = a.i("size");
@@ -821,21 +822,14 @@ std::string readKey(const std::string& text, const char* key) {
 std::string sdPath(const std::string& rel, const std::string& self) { return rel == kNro ? self : "sdmc:/" + rel; }
 
 /** When the console last started, in time() seconds: a different one means it restarted (the background player with it). */
-long long bootStamp() {
-#ifdef __SWITCH__
-    return (long long)time(nullptr) - (long long)(armTicksToNs(armGetSystemTick()) / 1000000000ull);
-#else
-    static const long long at = (long long)time(nullptr);   // the preview: the run is the "boot"
-    return at;
-#endif
-}
+long long bootStamp() { return plat::bootStamp(); }
 
 }  // namespace
 
 // ================================================================== Updater
 
 std::string Updater::thisVersion() { return GF_VERSION; }
-int Updater::thisProtocol() { return GF_PROTOCOL; }
+int Updater::thisProtocol() { return plat::bgProtocol(); }
 
 namespace {
 
@@ -945,6 +939,14 @@ void Updater::readInstalled() {
     std::string pend;
     installed.appPending = exists(self_ + ".gfnew") || (readAll(dir_ + "/updates/pending.txt", pend) && (pend[0] == '@' || pend.find("\n@") != std::string::npos));
     installed.overlayPending = exists(sdPath(kOverlay, self_) + ".gfnew");
+#ifdef GF_WINDOWED
+    if (std::string setup; readAll(dir_ + "/updates/installer.txt", setup)) {
+        if (installed.version == thisVersion()) {   // it ran: this is the new one
+            remove(setup.c_str());
+            remove((dir_ + "/updates/installer.txt").c_str());
+        } else installed.appPending = exists(setup);
+    }
+#endif
     // Once this version is the one running and nothing waits, the note is history.
     if (installed.version == thisVersion() && !installed.appPending && !installed.overlayPending && !installed.bgChanged) installed = UpdInstalled{};
 }
@@ -1004,7 +1006,11 @@ void Updater::doCheck() {
     std::vector<UpdRelease> list;
     if (net::get(kApi, api, err, &prog_)) {
         list = readReleases(api);
+#ifdef GF_WINDOWED
+        if (list.empty() && api.find('[') == std::string::npos) err = "GitHub's answer had no releases in it";   // none for Windows yet is an answer
+#else
         if (list.empty()) err = "GitHub's answer had no releases in it";
+#endif
     }
     if (err.empty()) {
         mkdirs(dir_ + "/updates");
@@ -1076,7 +1082,7 @@ void Updater::doInstallModel(UpdModel m, std::string modelsDir) {
         return;
     }
     remove(dst.c_str());
-    if (rename(tmp.c_str(), dst.c_str()) != 0) { remove(tmp.c_str()); fail("Could not write to the SD card"); return; }
+    if (rename(tmp.c_str(), dst.c_str()) != 0) { remove(tmp.c_str()); fail("Could not write to " GF_THE_CARD); return; }
     std::lock_guard<std::mutex> g(m_);
     modelOk_ = true;
 }
@@ -1116,6 +1122,23 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     }
     if (prog_.cancel) { fail("Stopped"); return; }
 
+#ifdef GF_WINDOWED
+    // ---- 2. the settings, copied first; the installer runs when Songate closes (Restart now, finishUpdate)
+    phase_ = BackingUp;
+    {
+        const std::string backup = backupNow(backupRoot, r.version);
+        if (backup.empty()) { fail("Could not back up " GF_CONFIG_NAME " to " + backupRoot + ": nothing was changed"); return; }
+        phase_ = Installing;
+        writeAll(up + "/installer.txt", zip);
+        writeAll(up + "/installed.txt", "version=" + r.version + "\nfrom=" + thisVersion() + "\nbackup=" + backup + "\nbgChanged=0\nfresh=" + (fresh ? "1" : "0") +
+                                            "\ndate=" + stamp() + "\nboot=" + std::to_string(bootStamp()) + "\n");
+        if (fresh) writeAll(up + "/fresh.txt", backup + "\n");
+        else remove((up + "/fresh.txt").c_str());
+        std::lock_guard<std::mutex> g(m_);
+        installedOk_ = true;
+    }
+    return;
+#else
     // ---- 2. each file, unpacked next to where it goes as .gfnew
     phase_ = Unpacking;
     FILE* f = fopen(zip.c_str(), "rb");
@@ -1146,7 +1169,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
         const std::string target = sdPath(uf.path, self_);
         const size_t slash = target.find_last_of('/');
         if (slash != std::string::npos) mkdirs(target.substr(0, slash));
-        if (!writeAll(target + ".gfnew", data.data(), data.size())) { fclose(f); undo(); fail("Could not write " + uf.path + " (is the SD card full?)"); return; }
+        if (!writeAll(target + ".gfnew", data.data(), data.size())) { fclose(f); undo(); fail("Could not write " + uf.path + " (is " GF_THE_CARD " full?)"); return; }
         placed.push_back(target);
         if (isNro(uf.path)) hasNro = true;
         if (uf.path == kNroV1 && target != self_) movedTo = target;   // going back to 1.x: the app moves home
@@ -1166,7 +1189,7 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     const std::string backup = backupNow(backupRoot, r.version);
     if (backup.empty()) {
         undo();
-        fail("Could not back up config/gatefold-nx to " + backupRoot + ": nothing was changed");
+        fail("Could not back up " GF_CONFIG_NAME " to " + backupRoot + ": nothing was changed");
         return;
     }
 
@@ -1190,7 +1213,15 @@ void Updater::doInstall(UpdRelease r, bool fresh, std::string backupRoot) {
     remove(zip.c_str());   // installed: the download is not needed again
     std::lock_guard<std::mutex> g(m_);
     installedOk_ = true;
+#endif
 }
+
+#ifdef GF_WINDOWED
+std::string Updater::installerFile() const {
+    std::string setup;
+    return readAll(dir_ + "/updates/installer.txt", setup) && exists(setup) ? setup : std::string();
+}
+#endif
 
 void Updater::markBgRestarted() {
     std::string t;
@@ -1302,26 +1333,7 @@ void Updater::cleanLegacy(const std::string& configDir, const std::string& self)
     if (exists("sdmc:/" + std::string(kOverlay)) && exists(ovl)) remove(ovl.c_str());   // (Ultrahand holding it: next launch)
 }
 
-bool Updater::restartBackground(std::string& err) {
-#ifdef __SWITCH__
-    constexpr u64 tid = 0x4200000047464E58ull;
-    if (R_FAILED(pmshellInitialize())) { err = "The console did not allow it: restart the console instead"; return false; }
-    pmshellTerminateProgram(tid);   // fails harmlessly when it is not running
-    svcSleepThread(300'000'000ull);
-    NcmProgramLocation loc{};
-    loc.program_id = tid;
-    loc.storageID = NcmStorageId_None;
-    u64 pid = 0;
-    const Result rc = pmshellLaunchProgram(0, &loc, &pid);
-    pmshellExit();
-    if (R_FAILED(rc)) { err = "It did not start again: restart the console"; return false; }
-    return true;
-#else
-    printf("[updater] the background player restarts\n");
-    (void)err;
-    return true;
-#endif
-}
+bool Updater::restartBackground(std::string& err) { return plat::bgRestart(err); }
 
 const std::vector<std::vector<const char*>>& Updater::factoryFiles() {
     // In App::FactoryPart's order. Settings and the music folder live in settings.txt with each other: Gatefold resets
@@ -1345,16 +1357,7 @@ void Updater::factoryReset(const std::string& configDir, unsigned mask) {
     if (!mask) return;
     const bool all = (mask & ((1u << factoryFiles().size()) - 1)) == (1u << factoryFiles().size()) - 1;
     // The background player first: running, it writes its session, places and settings back into the folder
-#ifdef __SWITCH__
-    constexpr u64 tid = 0x4200000047464E58ull;
-    const bool pm = R_SUCCEEDED(pmshellInitialize());
-    if (pm) {
-        pmshellTerminateProgram(tid);   // fails harmlessly when it is not running
-        svcSleepThread(300'000'000ull);
-    }
-#else
-    printf("[updater] factory reset: the background player ends\n");
-#endif
+    const bool bgEnded = plat::bgEnd();
     const std::string aside = configDir + ".erased";
     if (all) {
         if (isDir(aside)) removeTree(aside);   // one left from an earlier reset that was never launched after (rare)
@@ -1372,18 +1375,7 @@ void Updater::factoryReset(const std::string& configDir, unsigned mask) {
             }
         }
     }
-#ifdef __SWITCH__
-    if (pm) {
-        NcmProgramLocation loc{};
-        loc.program_id = tid;
-        loc.storageID = NcmStorageId_None;
-        u64 pid = 0;
-        pmshellLaunchProgram(0, &loc, &pid);   // not installed: fails harmlessly
-        pmshellExit();
-    }
-#else
-    printf("[updater] factory reset (parts %x): moved aside, the background player starts again\n", mask);
-#endif
+    plat::bgStart(bgEnded);
 }
 
 void Updater::eraseLeftovers(const std::string& configDir) {

@@ -1126,7 +1126,7 @@ std::vector<int> order(const std::vector<const mixan::Info*>& t, int first) {
     // starts spread over the list: up to 64, fewer for a long one (each is improved at a cost of n² a pass: 559 tracks took
     // 1.6 s on the PC with 64, seconds of a frozen screen on the console). AUTOMIX_TRIES (PC tools) overrides it
     int tries = first >= 0 ? 1 : std::min(n, n <= 100 ? 64 : std::max(4, 4000 / n));
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     if (const char* e = getenv("AUTOMIX_TRIES"); e && first < 0) tries = std::clamp(atoi(e), 1, n);
 #endif
     for (int s = 0; s < tries; s++) {

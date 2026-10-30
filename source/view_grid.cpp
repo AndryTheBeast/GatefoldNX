@@ -89,7 +89,7 @@ void App::drawAlbumGrid(float x, float y, float w, float h, float headBottom) {
             bool c = false;
             const float bw = g.measure("Choose music folder", { css::Sm, Weight::SemiBold }) + 56;
             button(uid("lib.pick"), ICON_FOLDER, "Choose music folder", x + (w - bw) / 2, headBottom + 150, true, &c, false, false, DefaultFocus);
-            if (c) navigate(View::PickFolder, -1, "sdmc:/");
+            if (c) navigate(View::PickFolder, -1, plat::root());
         }
         return;
     }

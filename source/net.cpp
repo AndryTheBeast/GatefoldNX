@@ -3,6 +3,7 @@
  * See net.hpp. Console: libcurl (portlibs, built on libnx's ssl service: the console's own TLS and trusted
  * certificates, so no CA bundle travels with Gatefold). Preview: GF_NET=<folder>.
  */
+#include "words.hpp"
 #include "net.hpp"
 
 #include <cstdio>
@@ -26,9 +27,10 @@ bool finish(const std::string& tmp, const std::string& file) {
 }  // namespace
 }  // namespace net
 
-#ifdef __SWITCH__
+#ifdef GF_CURL
 #include <curl/curl.h>
-#include <switch.h>
+
+#include "platform.hpp"
 
 namespace net {
 namespace {
@@ -65,7 +67,7 @@ std::string explain(CURLcode rc, long status) {
     case CURLE_COULDNT_CONNECT: return "No internet connection";
     case CURLE_OPERATION_TIMEDOUT: return "The connection timed out";
     case CURLE_ABORTED_BY_CALLBACK: return "Stopped";
-    case CURLE_WRITE_ERROR: return "Could not write to the SD card (is it full?)";
+    case CURLE_WRITE_ERROR: return "Could not write to " GF_THE_CARD " (is it full?)";
     case CURLE_PEER_FAILED_VERIFICATION: return "The server's certificate could not be checked";
     case CURLE_HTTP_RETURNED_ERROR:
         if (status == 401) return "GitHub refused this build's key for reports";
@@ -127,9 +129,9 @@ bool run(const std::string& url, Sink& sink, std::string& err, const std::string
 bool begin(std::string& err) {
     std::lock_guard<std::mutex> g(gate);
     if (started) return true;
-    if (R_FAILED(socketInitializeDefault())) { err = "The console's network did not start"; return false; }
+    if (!plat::netStart()) { err = GF_CAP_THE_CONSOLE "'s network did not start"; return false; }
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        socketExit();
+        plat::netStop();
         err = "The network library did not start";
         return false;
     }
@@ -141,7 +143,7 @@ void end() {
     std::lock_guard<std::mutex> g(gate);
     if (!started) return;
     curl_global_cleanup();
-    socketExit();
+    plat::netStop();
     started = false;
 }
 
@@ -165,15 +167,15 @@ bool post(const std::string& url, const std::string& json, char* secret, std::st
 bool download(const std::string& url, const std::string& file, std::string& err, Progress* p) {
     const std::string tmp = file + ".part";
     FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) { err = "Could not write to the SD card"; return false; }
+    if (!f) { err = "Could not write to " GF_THE_CARD; return false; }
     setvbuf(f, nullptr, _IOFBF, 256 * 1024);
     Sink s;
     s.file = f;
     s.p = p;
     const bool ok = run(url, s, err);
-    if (fclose(f) != 0 && ok) { err = "Could not write to the SD card (is it full?)"; remove(tmp.c_str()); return false; }
+    if (fclose(f) != 0 && ok) { err = "Could not write to " GF_THE_CARD " (is it full?)"; remove(tmp.c_str()); return false; }
     if (!ok) { remove(tmp.c_str()); return false; }
-    if (!finish(tmp, file)) { err = "Could not write to the SD card"; return false; }
+    if (!finish(tmp, file)) { err = "Could not write to " GF_THE_CARD; return false; }
     return true;
 }
 
@@ -256,7 +258,7 @@ bool download(const std::string& url, const std::string& file, std::string& err,
     fseek(in, 0, SEEK_SET);
     const std::string tmp = file + ".part";
     FILE* out = fopen(tmp.c_str(), "wb");
-    if (!out) { fclose(in); err = "Could not write to the SD card"; return false; }
+    if (!out) { fclose(in); err = "Could not write to " GF_THE_CARD; return false; }
     char buf[32768];
     size_t n;
     bool ok = true;
@@ -270,7 +272,7 @@ bool download(const std::string& url, const std::string& file, std::string& err,
     fclose(in);
     fclose(out);
     if (!ok) { remove(tmp.c_str()); return false; }
-    if (!finish(tmp, file)) { err = "Could not write to the SD card"; return false; }
+    if (!finish(tmp, file)) { err = "Could not write to " GF_THE_CARD; return false; }
     return true;
 }
 

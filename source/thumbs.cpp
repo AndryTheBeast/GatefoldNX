@@ -4,12 +4,13 @@
  * cannot include.
  */
 #include "thumbs.hpp"
+#include "platform.hpp"
 #include "coverio.hpp"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
-#ifdef __SWITCH__
 #include <dirent.h>
+#ifndef _WIN32
 #include <unistd.h>
 #endif
 #include <sys/stat.h>
@@ -112,7 +113,7 @@ bool makeArt(const std::vector<uint8_t>& bytes, std::vector<uint8_t>& out) {
 void ThumbWorker::start(const std::string& dir) {
     if (started_) return;
     dir_ = dir;
-#ifdef __SWITCH__
+if (plat::legacyData()) {
     // The copies live in thumbs/ (GFBG_THUMBS). 0.6 and 0.7.0 kept them in thumbs2/, which is moved over;
     // 0.5.1 kept RGB565 copies in thumbs/ without a map.tsv, which go.
     const std::string old = dir_.substr(0, dir_.rfind('/') + 1) + "thumbs2";
@@ -132,7 +133,7 @@ void ThumbWorker::start(const std::string& dir) {
     if (!hasMap(dir_)) clear(dir_);
     if (hasMap(old) && !hasMap(dir_)) rename(old.c_str(), dir_.c_str());
     else clear(old);
-#endif
+}
     // Every folder on the way: on a fresh card this starts (with the background player) before anything made
     // config/gatefold-nx, and a lone mkdir of thumbs/ failed, so the first run's covers were made and never written.
     for (size_t i = dir_.find('/', dir_.find(":/") + 2); i != std::string::npos; i = dir_.find('/', i + 1))

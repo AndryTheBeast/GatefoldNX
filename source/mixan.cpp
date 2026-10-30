@@ -154,7 +154,7 @@ void Analyzer::begin(int rate, int channels) {
     pitchMap(N, ar_, fLo, fLo * 8, pcOf_, pcW_, binW_, pcNorm_);
     // the bass (v4): G#1 to G#3 in a 4096-point spectrum; only in the PC tools for now (MIXAN_BASSKEY)
     bassKey_ = 0;
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     if (const char* e = getenv("MIXAN_BASSKEY")) bassKey_ = std::max(0.0, atof(e));
 #endif
     buf4_.assign(N4, 0.f);
@@ -750,7 +750,7 @@ Info Analyzer::finishMix() {
     r.key = keyOf(r.start, r.end, &r.keySure);
     r.keyIn = keyOf(r.start, std::min(double(r.end), r.start + 60.0), nullptr);
     r.keyOut = keyOf(std::max(double(r.start), r.end - 60.0), r.end, nullptr);
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     if (getenv("MIXAN_DEBUG"))
         fprintf(stderr, "tempo %.2f (peak/median %.2f) contrast in %.2f out %.2f, %zu beats, period %.5f in %.5f out %.5f\n", tempoConf,
                 best / med, cIn, cOut, beats.size(), period, pIn, pOut);

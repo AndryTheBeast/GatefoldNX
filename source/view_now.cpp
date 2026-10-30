@@ -16,7 +16,11 @@ float clampf(float v, float lo, float hi) { return std::min(hi, std::max(lo, v))
 void App::drawNow(float x, float y, float w, float h) {
     // .np grid: padding clamp(16px, 3vh, 40px) clamp(20px, 4vw, 64px); gap clamp(24px, 4vw, 64px)
     const float padH = clampf(css::W * 0.04f, 20, 64), gap = clampf(css::W * 0.04f, 24, 64);
+#ifdef GF_WINDOWED
+    const float art = std::max(200.f, std::min({ css::H * 0.52f, css::W * 0.40f, 620.f, w - padH * 2 - gap - 440 }));   // a tall window: the info keeps its room
+#else
     const float art = std::min({ css::H * 0.52f, css::W * 0.40f, 620.f });
+#endif
     const float iw = std::min(760.f, w - padH * 2 - art - gap);
     const bool has = now.track >= 0;
     // Automix joining (automixFocus): the cover glides from its place to the middle of the screen and grows, frosted with

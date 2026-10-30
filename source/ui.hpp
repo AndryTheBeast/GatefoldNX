@@ -156,7 +156,7 @@ private:
     const Item* pick(const std::vector<Item>& items, const std::vector<Link>& links, const Item* f, int dx, int dy, bool* blocked = nullptr) const;
 
 public:
-#ifndef __SWITCH__
+#if defined(GF_PREVIEW) || (defined(GF_WINDOWED) && defined(GF_DEV))
     void audit(const char* label, FILE* out) const;   // the preview's D-pad audit (GF_SCRIPT "audit <label>")
 #endif
 

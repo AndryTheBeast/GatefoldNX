@@ -4,7 +4,7 @@
 #include "loudness.hpp"
 #include "mixan.hpp"
 
-#if defined(__SWITCH__) || defined(GF_FFMPEG)
+#ifdef GF_FFMPEG
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>

@@ -2,6 +2,7 @@
  * Gatefold NX · m3u.cpp
  */
 #include "m3u.hpp"
+#include "platform.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -98,7 +99,7 @@ bool readM3u(const std::string& file, std::vector<M3uLine>& out) {
 
 std::string normalisePath(const std::string& path) {
     std::string head, rest = path;
-    if (rest.compare(0, 6, "sdmc:/") == 0) { head = "sdmc:/"; rest = rest.substr(6); }
+    if (const size_t n = plat::rootLen(rest)) { head = rest.substr(0, n); rest = rest.substr(n); }
     else if (!rest.empty() && rest[0] == '/') { head = "/"; rest = rest.substr(1); }
     std::vector<std::string> parts;
     size_t at = 0;
@@ -127,7 +128,7 @@ bool writeM3u(const std::string& file, const std::string& name, const std::vecto
         std::string p = t.path;
         if (p.size() > dir.size() && p.compare(0, dir.size() + 1, dir + "/") == 0) p = p.substr(dir.size() + 1);
         else if (p.size() > root.size() && p.compare(0, root.size() + 1, root + "/") == 0) p = "../" + p.substr(root.size() + 1);
-        else if (p.compare(0, 6, "sdmc:/") == 0) p = p.substr(5);
+        else if (const size_t n = plat::rootLen(p)) p = p.substr(n - 1);
         const std::string who = t.artist.empty() ? t.title : t.artist + " - " + t.title;
         char head[32];
         snprintf(head, sizeof head, "#EXTINF:%d,", t.seconds > 0 ? int(std::lround(t.seconds)) : -1);

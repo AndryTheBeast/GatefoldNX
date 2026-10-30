@@ -34,7 +34,11 @@ struct AlbumArt {
 
 class MetaCache {
 public:
+#ifdef GF_WINDOWED
+    static constexpr int ThumbSize = 384;   // a window can be four times the console's screen
+#else
     static constexpr int ThumbSize = 192;
+#endif
     static constexpr int MaxTextures = 260;   // ~38 MB of thumbnails; the least recently drawn go first
 
     void start(Library* lib, const std::string& cacheFile);

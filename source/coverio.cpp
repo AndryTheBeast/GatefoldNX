@@ -3,6 +3,7 @@
  * See coverio.hpp.
  */
 #include "coverio.hpp"
+#include "platform.hpp"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -96,7 +97,7 @@ void coverTrace(const std::string& line) {
     static int lines = 0;
     std::lock_guard<std::mutex> g(m);
     if (lines >= 200) return;
-    FILE* f = fopen("sdmc:/config/gatefold-nx/cover-trace.txt", lines == 0 ? "wb" : "ab");
+    FILE* f = fopen((std::string(plat::configDir()) + "/cover-trace.txt").c_str(), lines == 0 ? "wb" : "ab");
     if (!f) return;
     fprintf(f, "%s\n", line.c_str());
     fclose(f);

@@ -5,6 +5,7 @@
  * example. Next / Back / Chapters / ×, by D-pad, A and B, or touch. The pages under it are drawn as usual but take no
  * input (the tour is a modal); Ui::rectAny still knows where their buttons are.
  */
+#include "words.hpp"
 #include "app.hpp"
 #include "icons.inc"
 #include "plicons.inc"
@@ -82,7 +83,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
         // ---- Playing
         { 0, 1, ICON_DISC, "Now playing",
           "This is Now playing: the cover, the title, artist, album and year, and what kind of file it is. The genre is "
-          "a link: tap it to see every track of that genre.",
+          "a link: " GF_TAP " it to see every track of that genre.",
           page(View::Now), { { "@main" } } },
         { 1, 1, ICON_HEART, "Track buttons",
           "Add to Liked saves the track to your Liked list. Album, Artist and Folder take you to their pages. The last "
@@ -95,7 +96,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           page(View::Now), { { "np.tab" }, { "np.tab", 1 }, { "np.tab", 2 } } },
         { 0, 1, ICON_PLAY, "The player bar",
           "The controls are always here. The first button sets the order: Default, Repeat list, Repeat track or Shuffle. "
-          "The last one stops the music after this track. On the Joy-Cons, {X} plays and pauses, {L} and {R} skip, and "
+          "The last one stops the music after this track. " GF_ON_THE_PADS "{X} plays and pauses, {L} and {R} skip, and "
           "{ZL} and {ZR} jump ten seconds.",
           nullptr, { { "pb.order" }, { "pb.prev" }, { "pb.play" }, { "pb.next" }, { "pb.sac" } } },
         { 1, 1, ICON_WAVE, "The seek bar",
@@ -109,16 +110,15 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           nullptr, { { "pb.sleep" }, { "pb.eq" }, { "pb.queue" }, { "pb.mute" }, { "pb.vol" }, { "pb.canvas" } } },
         { 2, 1, ICON_MOON, "The sleep timer",
           "15 to 90 minutes, or the end of the track. The music fades out over its last ten seconds and pauses where you "
-          "were; the background player keeps the time with Songate closed too. Then a card counts down and puts the "
-          "console to sleep, unless you stay awake.",
+          GF_SLEEP_WORDS "Then a card counts down and puts " GF_THE_CONSOLE " to sleep, unless you stay awake.",
           settings(App::SetPlayback), { { "set.sleepcon", 0, 4 } } },
         { 0, 1, ICON_PLUS, "The track menu",
-          "Every track has a menu: press {+} on it, or hold your finger on it for a moment. For example, Play next slots "
+          "Every track has a menu: " GF_TOUR_MENU ". For example, Play next slots "
           "it in right after the current track, and Add to a playlist… files it away.",
           page(View::Queue), { { "@main" } } },
         { 2, 1, ICON_TAG, "Tags, covers and details",
           "The track menu also edits its tags (title, artist, album, genre, year…) and changes its cover with any image on "
-          "the SD card, for one track or the whole album. Songate keeps your changes apart: your files are never "
+          GF_THE_CARD ", for one track or the whole album. Songate keeps your changes apart: your files are never "
           "touched, and Undo puts them back. Details shows its plays and its loudness.",
           page(View::Queue), { { "@main" } } },
         // ---- Library
@@ -145,17 +145,16 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "Try them on Liked or any playlist: the view you pick there stays with that page.",
           page(View::List, -1), { { "pl.view", 0 }, { "pl.view", 1 }, { "pl.view", 2 }, { "pl.view", 3 } } },
         { 1, 2, ICON_FOLDER, "Folders",
-          "Your music folder exactly as it sits on the SD card. Add as playlist puts a folder in the sidebar; Add all "
+          "Your music folder exactly as it sits " GF_ON_CARD ". Add as playlist puts a folder in the sidebar; Add all "
           "as playlists does it for every folder inside it at once.",
           [](App& a) { a.navigate(View::Folders, a.lib.rootFolders.empty() ? -1 : a.lib.rootFolders[0], {}, false); },
           { { "fo.play" }, { "fo.shuffle" }, { "fo.addpl" }, { "fo.addall" } } },
         { 1, 2, ICON_SEARCH, "Search",
-          "Press {Y} or tap here to search your artists, albums and tracks. For example, \"live\" finds every live "
+          "Press {Y} or " GF_TAP " here to search your artists, albums and tracks. For example, \"live\" finds every live "
           "recording.",
           nullptr, { { "tb.search" } } },
         { 2, 2, ICON_HISTORY, "Play statistics",
-          "A track counts as played after a minute, or nearly all of a shorter one, in Songate and in the background "
-          "player. Plays, the last play and the date added show in Details, and smart playlists like Most played and "
+          "A track counts as played after a minute, or nearly all of a shorter one, " GF_PLAYED_WHERE ". Plays, the last play and the date added show in Details, and smart playlists like Most played and "
           "Forgotten favourites are built from them.",
           page(View::Queue), { { "@main" } } },
         // ---- Playlists
@@ -166,7 +165,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           page(View::Queue), { { "@main" } } },
         { 0, 3, ICON_PLUS, "Your playlists",
           "The + next to PLAYLISTS creates a playlist: your own, a smart one that keeps itself up to date (most played, "
-          "recently added, one genre…), an Automix or a Mood playlist, or one imported from an .m3u file. Tap the "
+          "recently added, one genre…), an Automix or a Mood playlist, or one imported from an .m3u file. " GF_CAP_TAP " the "
           "PLAYLISTS heading to see them all and put them in order.",
           nullptr, { { "nav.playlists" }, { "nav.newpl" } } },
         { 2, 3, PLI_SMART, "Smart playlists",
@@ -191,26 +190,28 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           page(View::Queue), { { "nav.playlists" } } },
         { 1, 3, PLI_MOOD, "Mood playlists",
           "A Mood playlist sorts your library by how it sounds: Happy, Party, Relaxed, Sad or Aggressive. Songate "
-          "measures each song on the console, so the list fills in as it goes. For example: + › Mood playlist…, then "
+          "measures each song on " GF_THE_CONSOLE ", so the list fills in as it goes. For example: + › Mood playlist…, then "
           "Relaxed for a quiet evening.",
           page(View::Queue), { { "nav.newpl" } } },
         { 1, 3, ICON_HEART, "Playlist pages",
           "Liked and every playlist have a page like this. Play or shuffle it, export it as an .m3u8 file that other "
-          "players can read, or use Games to have it start when a game opens. You can also give it an icon, rename it "
+          "players can read" GF_GAMES_WORDS ". You can also give it an icon, rename it "
           "or delete it.",
           page(View::List, -1), { { "@main" } } },
         { 2, 3, PLI_STAR, "Icons and order",
-          "Every playlist can wear one of 78 icons, shown in the sidebar even when it is folded. Tap the PLAYLISTS "
+          "Every playlist can wear one of 78 icons, shown in the sidebar even when it is folded. " GF_CAP_TAP " the PLAYLISTS "
           "heading for the Playlists page: Move puts them in your order, as in the queue.",
           page(View::Playlists), { { "@main" } } },
+#ifndef GF_WINDOWED
         { 2, 3, ICON_GAME, "A playlist for a game",
           "Games on a playlist's page makes it start by itself when a game opens, on the HOME menu, back in the game or "
           "when it closes: where it was left, or shuffled afresh. The background player plays it, with Songate closed.",
           page(View::List, -1), { { "pl.games" } } },
+#endif
         // ---- Files
         { 1, 4, PLI_SDCARD, "Files",
-          "Files browses the whole SD card. It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
-          "Press {+} on a file to use it: an image can become a cover, an .lrc file a track's lyrics, an .m3u8 a "
+          "Files browses the whole " GF_CARD_NAME ". It is hidden at first: turn it on in Settings › Appearance › Sidebar. "
+          GF_FILE_MENU ": an image can become a cover, an .lrc file a track's lyrics, an .m3u8 a "
           "playlist. You can also rename, copy, move and delete, one file or several.",
           nullptr, { { "nav.files" } } },
         // ---- Sound
@@ -223,7 +224,7 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "start of the next, but not between tracks of one album, so live albums stay seamless.",
           settings(App::SetPlayback), { { "set.xfade", 0, 6 }, { "set.level", 0, 4 } } },
         { 2, 5, ICON_WAVE, "Volume levelling",
-          "Each track's loudness is measured on the console, as broadcasters measure it, with its true peak. Track "
+          "Each track's loudness is measured on " GF_THE_CONSOLE ", as broadcasters measure it, with its true peak. Track "
           "levels every song alike; Album keeps an album's quiet and loud songs as they were; Auto does Album, but Track "
           "while shuffling. Your files are never changed.",
           settings(App::SetPlayback), { { "set.level", 0, 4 } } },
@@ -246,17 +247,17 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           settings(App::SetAppearance), { { "set.theme", 0 }, { "set.theme", 1 }, { "set.theme", 3 }, { "set.theme", 4 } } },
         { 2, 8, ICON_SIDEBAR, "The sidebar, your way",
           "Fold the sidebar to icons, reorder its tabs, hide the ones you never use (Now playing stays), add dividing "
-          "lines, and show Files. Tap the button at the top left to fold it any time.",
+          "lines, and show Files. " GF_CAP_TAP " the button at the top left to fold it any time.",
           settings(App::SetAppearance), { { "set.side" } } },
         { 2, 8, ICON_SLIDERS, "The visualizer",
           "The spectrum's sensitivity, smoothing, number of bars and peak caps, for Now playing and the Canvas apart, and "
           "how much the cover pulses with the bass.",
           settings(7), { { "set.vsens" }, { "set.vbands" }, { "set.vpeaks" } } },
         { 2, 8, ICON_GAME, "Controls",
-          "{LS} moves a pointer: {A} taps and drags under it, with its speed and acceleration here. {RS} scrolls, and a "
-          "USB mouse works too, its wheel scrolling the list under it. Touch works everywhere.",
+          GF_TOUR_POINTER,
           settings(8), { { "set.ptrspeed" }, { "set.ptraccel" } } },
         // ---- Background player and overlay
+#ifndef GF_WINDOWED
         { 0, 7, ICON_GAME, "The background player",
           "The background player keeps the music going on the HOME menu, in games, and after Songate is closed. Game "
           "actions decide what it does when a game opens, when you go to HOME, when you return and when the game "
@@ -275,13 +276,14 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           "The overlay's Browse opens your folders, or your playlists by kind: Normal, Smart, Mood and Automix, each with "
           "Songate's own icons. Play from any track, add one or all to the queue, all without leaving the game.",
           nullptr, {} },
+#endif
         // ---- Settings
         { 0, 8, ICON_GEAR, "Settings",
           "Every option lives here, grouped by category. Find a setting searches them by name: \"sleep\" finds the sleep "
-          "timer, the console's sleep and the screen dimming.",
+          "timer, " GF_THE_CONSOLE "'s sleep and the screen dimming.",
           settings(0), { { "@settingsCats" } } },
         { 2, 8, ICON_FOLDER, "Storage",
-          "Where each browser opens, where backups go, and what Songate keeps on the card (covers, measurements, "
+          "Where each browser opens, where backups go, and what Songate keeps " GF_KEPT_WHERE " (covers, measurements, "
           "tags), each with its size and a Clear button.",
           settings(App::SetStorage), { { "@main" } } },
         { 1, 8, ICON_HISTORY, "Backups and resets",
@@ -301,12 +303,11 @@ const std::vector<TourStep>& App::tourStepsAt(int level) {
           settings(App::SetUpdates), { { "set.updbeta" }, { "set.model" } } },
         { 1, 8, ICON_HELP, "Support",
           "Found a bug, or have an idea? Support sends it straight to Songate's developer, with what helps to fix it: "
-          "your Songate and firmware versions and recent crash reports, never your file names. It stays off until you "
+          GF_VERSIONS_WORDS ". It stays off until you "
           "turn it on.",
           settings(App::SetSupport), { { "set.repon" } } },
         { 0, 8, ICON_SPARKLE, "You're all set",
-          "{DPAD} reaches everything, {B} goes back, and touch works everywhere. {LS} moves a pointer and {RS} "
-          "scrolls. Enjoy your music. This tour is waiting in Settings › About whenever you want it.",
+          GF_TOUR_END,
           nullptr, {} },
     };
     static const std::vector<TourStep> levels[3] = {
@@ -493,7 +494,11 @@ void App::drawTour() {
             const size_t o = word.find('{', i), c = o == std::string::npos ? o : word.find('}', o);
             if (c == std::string::npos) { rs.push_back({ word.substr(i), "" }); break; }
             if (o > i) rs.push_back({ word.substr(i, o - i), "" });
+#ifdef GF_WINDOWED
+            rs.push_back({ "", plat::capName(word.substr(o + 1, c - o - 1)) });
+#else
             rs.push_back({ "", word.substr(o + 1, c - o - 1) });
+#endif
             i = c + 1;
         }
         return rs;
@@ -688,7 +693,7 @@ void App::drawTour() {
 void App::offerTour() {
     confirm(ICON_SPARKLE, "Welcome to Songate", "A tour of Songate", "Basic, Advanced or Complete: you choose", "Take the tour?",
             "Songate shows you around its own screens, with your music: playing, the library, playlists, files, sound, the "
-            "Canvas, the background player and the overlay, and Settings. It starts once your music is read. It is also in "
+            "Canvas, " GF_TOUR_BG_WORDS "and Settings. It starts once your music is read. It is also in "
             "Settings › About.",
             "Take the tour", [this] { tourPending = true; });
     sheet.askSafe = true;

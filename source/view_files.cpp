@@ -7,9 +7,10 @@
  * playlist or the music folder) and what every file browser does: rename, copy, move, delete (asked first) and
  * details. Copying, and deleting a folder, run on a worker and show in the progress stack.
  */
+#include "words.hpp"
 #include <dirent.h>
 #include <sys/stat.h>
-#ifdef __SWITCH__
+#ifndef _WIN32
 #include <unistd.h>   // rmdir
 #endif
 
@@ -73,12 +74,11 @@ std::string kindName(Kind k, const std::string& name) {
     }
 }
 
-std::string join(const std::string& a, const std::string& b) { return a.back() == '/' ? a + b : a + "/" + b; }
+std::string join(const std::string& a, const std::string& b) { return plat::join(a, b); }
 std::string parentOf(const std::string& p) {
-    const size_t s = p.find_last_of('/');
-    return s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s);
+    return plat::parentDir(p);
 }
-bool isRoot(const std::string& p) { return p.empty() || p == "sdmc:/" || p == "sdmc:"; }
+bool isRoot(const std::string& p) { return plat::isRoot(p); }
 /** p is a or below it. */
 bool under(const std::string& p, const std::string& a) {
     if (a.empty()) return false;
@@ -150,42 +150,12 @@ std::vector<FileEntry> listFolder(const std::string& path, bool hidden) {
     return out;
 }
 
-#ifdef __SWITCH__
-/** The console's file system read directly: up to 64 entries with their sizes a request, where stat() asked once a file
- *  (a folder of thousands held the app for many seconds: Details and Delete measure before they show). */
-void measureFs(FsFileSystem* fs, const std::string& path, int& files, uint64_t& bytes, int cap) {
-    FsDir d;
-    char p[FS_MAX_PATH];
-    snprintf(p, sizeof p, "%s", path.c_str());
-    if (R_FAILED(fsFsOpenDirectory(fs, p, FsDirOpenMode_ReadDirs | FsDirOpenMode_ReadFiles, &d))) return;
-    static thread_local std::vector<FsDirectoryEntry> buf(64);
-    std::vector<std::string> dirs;
-    for (;;) {
-        s64 n = 0;
-        if (files >= cap || R_FAILED(fsDirRead(&d, &n, buf.size(), buf.data())) || n <= 0) break;
-        for (s64 i = 0; i < n; i++) {
-            const FsDirectoryEntry& e = buf[size_t(i)];
-            if (e.type == FsDirEntryType_Dir) dirs.push_back(e.name);
-            else { bytes += uint64_t(e.file_size); files++; }
-        }
-    }
-    fsDirClose(&d);
-    for (const auto& n : dirs) {
-        if (files >= cap) break;
-        measureFs(fs, (path == "/" ? "/" : path + "/") + n, files, bytes, cap);
-    }
-}
-#endif
-
 /** Files and bytes below p (p itself when a file), counting at most `cap` entries. */
 void measureTree(const std::string& p, int& files, uint64_t& bytes, int cap = 50000) {
     struct stat st;
     if (stat(p.c_str(), &st) != 0) return;
     if (!S_ISDIR(st.st_mode)) { files++; bytes += uint64_t(st.st_size); return; }
-#ifdef __SWITCH__
-    if (p.rfind("sdmc:/", 0) == 0)
-        if (FsFileSystem* fs = fsdevGetDeviceFileSystem("sdmc")) { measureFs(fs, p.substr(5), files, bytes, cap); return; }
-#endif
+    if (plat::measureFiles(p, files, bytes, cap)) return;
     DIR* d = opendir(p.c_str());
     if (!d) return;
     while (dirent* e = readdir(d)) {
@@ -263,7 +233,7 @@ std::string freeName(const std::string& dir, const std::string& name, bool folde
 
 /** Folders the console needs, asked about more firmly. */
 bool systemPath(const std::string& p) {
-    for (const char* s : { "sdmc:/atmosphere", "sdmc:/bootloader", "sdmc:/switch", "sdmc:/Nintendo", "sdmc:/config", "sdmc:/emuMMC" })
+    for (const char* s : plat::systemFolders())
         if (under(s, p) || under(p, s)) return true;
     return false;
 }
@@ -278,7 +248,7 @@ bool App::inMusicFolder(const std::string& path) const {
 
 std::string App::filesStart() const {
     if (!store.filesDir.empty() && isDir(store.filesDir)) return store.filesDir;
-    return "sdmc:/";
+    return plat::root();
 }
 
 void App::openFiles(const std::string& dir) {
@@ -418,9 +388,9 @@ void App::fileDelete(const std::string& path) {
     if (dir) measureTree(path, n, bytes);
     const std::string sub = dir ? "Folder · " + std::to_string(n) + (n == 1 ? " file · " : " files · ") + fmtSize(bytes)
                                 : kindName(kindOf(name, false), name) + " · " + fmtSize(bytes = [&] { struct stat st; return stat(path.c_str(), &st) == 0 ? uint64_t(st.st_size) : 0; }());
-    std::string text = dir ? "Everything in it is deleted from the SD card. This cannot be undone." : "It is deleted from the SD card. This cannot be undone.";
+    std::string text = dir ? "Everything in it is deleted from " GF_THE_CARD ". This cannot be undone." : "It is deleted from " GF_THE_CARD ". This cannot be undone.";
     if (inMusicFolder(path)) text += " Your library is read again after.";
-    if (systemPath(path)) text = "This is part of your console's setup (or Songate's own settings): deleting it can stop homebrew or the console "
+    if (systemPath(path)) text = "This is part of " GF_YOUR_CONSOLE "'s setup (or Songate's own settings): deleting it can stop " GF_SYSTEM_WORDS " "
                                  "from working. " + text;
     confirm(dir ? ICON_FOLDER : kindIcon(kindOf(name, false)), "Delete", name, sub, dir ? "Delete this folder?" : "Delete this file?", text, "Delete",
             [this, path, name, dir, n] {
@@ -463,9 +433,9 @@ void App::fileDeleteMany(const std::vector<std::string>& paths) {
         inLib = inLib || inMusicFolder(p);
         sys = sys || systemPath(p);
     }
-    std::string text = "Everything selected is deleted from the SD card, folders with all that is in them. This cannot be undone.";
+    std::string text = "Everything selected is deleted from " GF_THE_CARD ", folders with all that is in them. This cannot be undone.";
     if (inLib) text += " Your library is read again after.";
-    if (sys) text = "Some of it is part of your console's setup (or Songate's own settings): deleting it can stop homebrew or the console "
+    if (sys) text = "Some of it is part of " GF_YOUR_CONSOLE "'s setup (or Songate's own settings): deleting it can stop " GF_SYSTEM_WORDS " "
                     "from working. " + text;
     const std::string what = std::to_string(paths.size()) + " items";
     confirm(ICON_X, "Delete", what, std::to_string(n) + (n == 1 ? " file · " : " files · ") + fmtSize(bytes), "Delete " + what + "?", text, "Delete",
@@ -602,7 +572,7 @@ void App::drawFiles(float x, float y, float w, float h) {
     const bool root = isRoot(path);
     if (files.listed != path || files.listedHidden != store.showHidden || files.listedGen != files.gen) {
         // Looked at only when listed (a stat every frame waited on the SD card each time)
-        if (!isDir(path)) path = route.query = "sdmc:/";   // gone (deleted, the card changed)
+        if (!isDir(path)) path = route.query = plat::root();   // gone (deleted, the card changed)
         files.entries = listFolder(path, store.showHidden);
         files.listed = path;
         files.listedHidden = store.showHidden;
@@ -623,9 +593,9 @@ void App::drawFiles(float x, float y, float w, float h) {
     float cy = oy + 18 + 8;
     kicker("Files", x + 28, cy, pal.text3);
     cy += 10;
-    g.text(root ? "SD card" : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
+    g.text(root ? GF_CARD_NAME : baseName(path), { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
     cy += 38;
-    std::string sub = path + "  ·  " + std::to_string(nDirs) + (nDirs == 1 ? " folder" : " folders") + "  ·  " + std::to_string(nFiles) +
+    std::string sub = (path == "/" ? std::string(GF_CARD_NAME) : path) + "  ·  " + std::to_string(nDirs) + (nDirs == 1 ? " folder" : " folders") + "  ·  " + std::to_string(nFiles) +
                       (nFiles == 1 ? " file" : " files");
     if (store.showHidden) sub += "  ·  hidden files shown";
     g.text(sub, { css::Sm }, x + 28, cy + 4, pal.text3, 1, Align::Left, int(w - 56));
@@ -719,7 +689,7 @@ void App::drawFiles(float x, float y, float w, float h) {
         if (picked) g.roundRect(rx, ry, rw, rowH - 4, 10, pal.accent, 0.12f);
         g.roundRect(rx + 16, mid - 18, 36, 36, 8, known || picked ? pal.accent : pal.surface2, picked ? 0.9f : known ? 0.16f : 1.f);
         g.icon(picked ? ICON_CHECK : kindIcon(k), rx + 34, mid, 18, picked ? pal.onAccent : known ? pal.accentInk : pal.text2, hidden ? 0.5f : 1.f);
-        std::string info = e.dir ? fmtDate(e.mtime) : fmtSize(e.size) + (e.mtime > 0 ? "  ·  " + fmtDate(e.mtime) : "");
+        std::string info = e.dir ? (e.mtime > 315619200 ? fmtDate(e.mtime) : std::string()) : fmtSize(e.size) + (e.mtime > 0 ? "  ·  " + fmtDate(e.mtime) : "");
         if (clipped) info = (files.clipMove ? "Moving" : "Copying") + std::string("  ·  ") + info;
         const int iw = g.measure(info, { css::Sm });
         g.textC(e.name, { css::Base, Weight::SemiBold }, rx + 16 + 36 + 14, mid, hidden ? pal.text3 : pal.text, 1, Align::Left,
@@ -779,7 +749,7 @@ void App::fileSheetHeader(const char*& icon, std::string& kick, std::string& tit
     const Kind k = kindOf(baseName(p), dir);
     icon = kindIcon(k);
     kick = sheet.page == Sheet::FileLink ? "Lyrics for a track" : sheet.page == Sheet::FileInfo ? "Details" : kindName(k, baseName(p));
-    title = isRoot(p) ? "SD card" : baseName(p);
+    title = isRoot(p) ? GF_CARD_NAME : baseName(p);
     if (sheet.page == Sheet::FileLink) { sub = sheet.arg.empty() ? "Every track" : "Tracks matching “" + sheet.arg + "”"; return; }
     sub = dir ? parentOf(p) : sheet.memo["sub"];
 }
@@ -969,7 +939,7 @@ void App::fileSheetRows(std::vector<SheetRow>& rows) {
                          sheet.entries.clear();
                          ui.focusDefault();
                      } });
-    rows.push_back({ Row::Action, ICON_X, "Delete", dir ? "The folder and everything in it" : "From the SD card", "", [this, p] {
+    rows.push_back({ Row::Action, ICON_X, "Delete", dir ? "The folder and everything in it" : "From " GF_THE_CARD, "", [this, p] {
                          closeSheet();
                          fileDelete(p);
                      } });

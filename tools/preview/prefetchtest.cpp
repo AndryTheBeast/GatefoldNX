@@ -3,7 +3,7 @@
  * The decoder's read-ahead (ffdecoder.hpp: prefetch and the feeder) against decoding in place: the same file read both
  * ways in uneven pieces, with pauses that let the feeder run and pieces taken faster than it fills, a seek midway and
  * a skip at the start; every sample must match, and both must end together.
- * Build: clang++ -std=c++20 -O2 -DGF_FFMPEG -Isource -I<ffmpeg>/include tools/preview/prefetchtest.cpp source/ffdecoder.cpp
+ * Build: clang++ -std=c++20 -O2 -DGF_PREVIEW -DGF_FFMPEG -Isource -I<ffmpeg>/include tools/preview/prefetchtest.cpp source/ffdecoder.cpp
  *        -L<ffmpeg>/lib -lavformat -lavcodec -lswresample -lavutil -o prefetchtest.exe
  */
 #include <chrono>

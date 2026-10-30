@@ -5,6 +5,7 @@
 #pragma once
 #include <map>
 #include <string>
+#include "platform.hpp"
 #include <unordered_map>
 #include <vector>
 
@@ -39,7 +40,7 @@ struct Session {
 };
 
 struct Store {
-    static constexpr const char* Dir = "sdmc:/config/gatefold-nx";
+    static inline const char* const Dir = plat::configDir();
 
     std::string musicRoot;   // the folder the library is read from; empty until chosen or found
     std::vector<FolderPlaylist> playlists;
@@ -60,6 +61,10 @@ struct Store {
     int lyricTimingFor = 2;    // ... for lyrics from 0 the tags, 1 .lrc files, 2 both
     bool resume = true;
     bool background = true;   // play through the background player (sysmodule) when it is installed
+#ifdef GF_WINDOWED
+    int winX = 0, winY = 0, winW = 0, winH = 0;   // where the window was left
+    bool winMax = false;
+#endif
     // The list views (ListMode) of the playlists, Folders and Library → Tracks, and the Library's tab
     int viewPlaylist = 1, viewFolders = 2, viewTracks = 1, viewGenre = 1;   // viewGenre: a genre's or an artist's Tracks tab
     int viewPlaylists = 2;     // the Playlists page: tiles

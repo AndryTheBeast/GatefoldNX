@@ -21,7 +21,12 @@ double clockNow() { return SDL_GetTicks64() / 1000.0; }
 
 bool Player::init() {
     Mix_Init(MIX_INIT_FLAC | MIX_INIT_MP3 | MIX_INIT_OGG | MIX_INIT_OPUS);
+#ifdef GF_WINDOWED
+    // Exactly this, not what the device would rather have: the mix, its joins and its equalizer are 48 kHz 16-bit stereo; SDL converts
+    if (Mix_OpenAudioDevice(48000, AUDIO_S16SYS, 2, 2048, nullptr, 0) != 0) {
+#else
     if (Mix_OpenAudio(48000, AUDIO_S16SYS, 2, 2048) != 0) {
+#endif
         SDL_Log("Mix_OpenAudio: %s", Mix_GetError());
         return false;
     }
@@ -59,7 +64,7 @@ void Player::shutdown() {
 bool Player::load(const std::string& path, bool paused, double fade, const automix::Plan* mix) {
     // Opened before anything stops: the file's tables are read while the music still plays. Automix's next track was
     // usually opened and moved to its offset already, on a worker (prepare)
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     const auto loadT0 = std::chrono::steady_clock::now();
 #endif
     prepJoin();
@@ -78,7 +83,7 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
         if (ff && mix && mix->offset > 0.001 && d->skip(mix->offset)) offset = mix->offset;   // Automix: from its first beat
         if (ff) d->prefetch(rate_ * 3, rate_ / 2);   // read ahead (ffdecoder.hpp): half a second now, the rest on the feeder
     }
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     if (mix)   // the PC preview checks it with this
         SDL_Log("load: %s, %.1f ms on the main thread", prepared ? "prepared ahead" : "opened here",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - loadT0).count());
@@ -114,7 +119,7 @@ bool Player::load(const std::string& path, bool paused, double fade, const autom
     {
         std::lock_guard<std::mutex> g(ffLock_);
         if (cross) {
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
             SDL_Log("crossfade %.2f s into %s", fade, path.c_str());   // the PC preview checks it with this
 #endif
             old1 = std::move(out_);   // a crossfade still running: that outgoing track just stops

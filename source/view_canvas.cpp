@@ -12,7 +12,9 @@
 
 namespace {
 
-constexpr float vw = css::W / 100.f, vh = css::H / 100.f, vmax = std::max(vw, vh);
+float vw() { return css::W / 100.f; }
+float vh() { return css::H / 100.f; }
+float vmax() { return std::max(vw(), vh()); }
 float clampf(float v, float lo, float hi) { return std::min(hi, std::max(lo, v)); }
 
 /** CSS `ease-in-out infinite alternate` over a period: 0 → 1 → 0 … */
@@ -32,7 +34,7 @@ void App::drawCanvasLyricsOf(float x, float y, float w, float h, int size, int l
         // be read clear of it; faded at the top too once scrolled, by as much as it is (at the top, the first line sits
         // right under the title as before): cut off at the box, they ran under the progress line and half a line showed at
         // each end (the user, 2026-10-29)
-        const Font f{ int(clampf(1.25f * vw, 16, 22)) };
+        const Font f{ int(clampf(1.25f * vw(), 16, 22)) };
         const float below = std::round(h * 0.28f);
         float total = 0;
         for (const auto& l : lyrics) total += 26 * g.wrap(l.text.empty() ? " " : l.text, f, int(w), 3).size();
@@ -209,8 +211,8 @@ void App::drawCanvas() {
         blur(now.blur, bn);
     }
     const float g1 = alternate(t, 60), g3 = alternate(t, 76);
-    g.glow(-20 * vmax + 35 * vmax + 14 * vmax * g1, -24 * vmax + 35 * vmax + 10 * vmax * g1, 35 * vmax * (1 + 0.15f * g1), pal.blobs[0], 0.5f);
-    g.glow(css::W + 22 * vmax - 35 * vmax + 16 * vmax * g3, css::H + 30 * vmax - 35 * vmax - 12 * vmax * g3, 35 * vmax * (1 + 0.1f * g3),
+    g.glow(-20 * vmax() + 35 * vmax() + 14 * vmax() * g1, -24 * vmax() + 35 * vmax() + 10 * vmax() * g1, 35 * vmax() * (1 + 0.15f * g1), pal.blobs[0], 0.5f);
+    g.glow(css::W + 22 * vmax() - 35 * vmax() + 16 * vmax() * g3, css::H + 30 * vmax() - 35 * vmax() - 12 * vmax() * g3, 35 * vmax() * (1 + 0.1f * g3),
            pal.blobs[2], 0.5f);
     g.vignette(css::W * 0.5f, css::H * 0.45f, css::W * 1.2f, css::H * 0.9f, pal.bg, 0.7f);
     g.rectV(0, css::H * 0.7f, css::W, css::H * 0.3f, pal.bg, 0, pal.bg, 0.55f);
@@ -220,25 +222,25 @@ void App::drawCanvas() {
     auto stage = [&](int l) {
         Stage s;
         if (l == 1) {
-            s.art = std::min({ 16 * vh, 12 * vw, 200.f });
-            s.ax = 8 * vw;
-            s.ay = 7 * vh;
+            s.art = std::min({ 16 * vh(), 12 * vw(), 200.f });
+            s.ax = 8 * vw();
+            s.ay = 7 * vh();
         } else if (l == 2) {
-            s.art = std::min({ 54 * vh, 62 * vw, 900.f });
-            const float top = 4 * vh, bottom = css::H - 25 * vh;   // the text ends well above the seek bar
-            const float textH = 3.5f * vh + 34 + 6 + 24 + 6 + 20;
+            s.art = std::min({ 54 * vh(), 62 * vw(), 900.f });
+            const float top = 4 * vh(), bottom = css::H - 25 * vh();   // the text ends well above the seek bar
+            const float textH = 3.5f * vh() + 34 + 6 + 24 + 6 + 20;
             s.ax = (css::W - s.art) / 2;
             s.ay = top + (bottom - top - s.art - textH) / 2;
         } else {
-            s.art = std::min({ 62 * vh, 44 * vw, 860.f, css::H - 190.f });
-            const float colW = std::min(46 * vw, 760.f), gap = clampf(6 * vw, 32, 110);
-            const float padT = 5 * vh, padB = std::max(19 * vh, 170.f), padX = 6 * vw;
+            s.art = std::min({ 62 * vh(), 44 * vw(), 860.f, css::H - 190.f });
+            const float colW = std::min(46 * vw(), 760.f), gap = clampf(6 * vw(), 32, 110);
+            const float padT = 5 * vh(), padB = std::max(19 * vh(), 170.f), padX = 6 * vw();
             const float total = s.art + gap + colW;
             s.ax = padX + (css::W - padX * 2 - total) / 2;
             s.ay = padT + (css::H - padT - padB - s.art) / 2;
             s.sx = s.ax + s.art + gap;
             s.sw = colW;
-            s.sh = std::min(78 * vh, s.art * 1.15f);
+            s.sh = std::min(78 * vh(), s.art * 1.15f);
             s.sy = padT + (css::H - padT - padB - s.sh) / 2;
         }
         return s;
@@ -257,7 +259,7 @@ void App::drawCanvas() {
     // .cv-art: a slow float, the cover with a Ken Burns zoom, a deep shadow. Both motions can be turned off in Settings → Canvas.
     // (it rests through an Automix join, easing out with the glide and back in after it, as the pulse does: the user, 2026-10-29)
     const float floatY = store.motion && store.canvasFloat ? (-5 + 11 * alternate(t, 14)) * (1 - std::max(m, fc.quiet)) : 0;
-    const float rad = clampf(1.2f * vw, 10, 18);
+    const float rad = clampf(1.2f * vw(), 10, 18);
     // Optional bass pulse (Settings → Visualizer), scaled from 50% 60% like the Now playing cover
     if (store.canvasPulse && coverBeat > 0) {
         const float grown = art * (1 + coverBeat);
@@ -293,7 +295,7 @@ void App::drawCanvas() {
             const float cw = 36 * K + float(g.measure(mixLabel, { int(std::round(css::Xs * K)), Weight::SemiBold }));
             if (cvTo != 1 || m > 0.5f)
                 automixChip(mixLabel, restX + restArt / 2 - cw / 2, std::max(restY + floatY - 4 - 11 * K, 16 * K), K, automixCoverEase(), false, true);
-            else automixChip(mixLabel, css::W - 8 * vw - cw, restY + floatY + restArt / 2, K, automixCoverEase(), false, true);
+            else automixChip(mixLabel, css::W - 8 * vw() - cw, restY + floatY + restArt / 2, K, automixCoverEase(), false, true);
         }
     }
     g.roundStroke(ax, fy, art, art, rad, 1, { 1, 1, 1 }, 0.06f);
@@ -310,7 +312,7 @@ void App::drawCanvas() {
     // way to the next one's, from left to right, timed to the join (the user, 2026-10-29); else the song's own
     const bool give = simple && mixOld.on;
     auto infoOf = [&](bool old) -> const TrackInfo& { return old ? mixOld.info : now.info; };
-    const Font kf{ int(clampf(0.85f * vw, 11, 14)), Weight::Bold };
+    const Font kf{ int(clampf(0.85f * vw(), 11, 14)), Weight::Bold };
     for (int l = 0; l < 3; l++) {
         // the stage hiding them all: only the layout it returns to, as a ghost (its text ready); hidden interface drawn at
         // nothing cost Now playing frames on the console
@@ -326,31 +328,31 @@ void App::drawCanvas() {
         g.setShift(0, dy);
         if (l == 2) {
             // minimal: centred under the cover, no kicker
-            const Font tf{ int(clampf(2.2f * vw, 22, 40)), Weight::ExtraBold };
+            const Font tf{ int(clampf(2.2f * vw(), 22, 40)), Weight::ExtraBold };
             auto block = [&](bool old) {
                 const TrackInfo& in = infoOf(old);
-                float ty = s.ay + s.art + 3.5f * vh + dy;
+                float ty = s.ay + s.art + 3.5f * vh() + dy;
                 g.text(has ? in.title : title, tf, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
                 ty += tf.size * 1.25f + 6;
-                g.text(in.artist, { int(clampf(1.3f * vw, 15, 24)), Weight::SemiBold }, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
+                g.text(in.artist, { int(clampf(1.3f * vw(), 15, 24)), Weight::SemiBold }, css::W / 2.f, ty, pal.text, A, Align::Center, int(css::W * 0.8f));
                 ty += 24 + 6;
-                g.text(albumOf(in), { int(clampf(1.05f * vw, 14, 19)) }, css::W / 2.f, ty, pal.text2, A, Align::Center, int(css::W * 0.8f));
+                g.text(albumOf(in), { int(clampf(1.05f * vw(), 14, 19)) }, css::W / 2.f, ty, pal.text2, A, Align::Center, int(css::W * 0.8f));
             };
             if (give) {
                 float wide = 0;
                 for (bool o : { true, false })
-                    wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, { int(clampf(1.3f * vw, 15, 24)), Weight::SemiBold })) });
+                    wide = std::max({ wide, float(g.measure(infoOf(o).title, tf)), float(g.measure(infoOf(o).artist, { int(clampf(1.3f * vw(), 15, 24)), Weight::SemiBold })) });
                 wide = std::min(wide, css::W * 0.8f);
-                const float by0 = s.ay + s.art + 3.5f * vh + dy;
+                const float by0 = s.ay + s.art + 3.5f * vh() + dy;
                 wiped(css::W / 2.f - wide / 2, css::W / 2.f + wide / 2, by0, by0 + tf.size * 1.25f + 6 + 24 + 6 + 20, block);
             } else {
                 block(false);
             }
         } else if (l == 1) {
             // lyrics first: a small cover with the meta beside it, large lines below
-            const float mx = s.ax + s.art + 28, mw = css::W - 8 * vw - mx;
-            const Font tf{ int(clampf(2 * vw, 22, 40)), Weight::ExtraBold };
-            const Font arf{ int(clampf(1.2f * vw, 15, 24)), Weight::SemiBold };
+            const float mx = s.ax + s.art + 28, mw = css::W - 8 * vw() - mx;
+            const Font tf{ int(clampf(2 * vw(), 22, 40)), Weight::ExtraBold };
+            const Font arf{ int(clampf(1.2f * vw(), 15, 24)), Weight::SemiBold };
             const float block = kf.size * 1.4f + 4 + tf.size * 1.1f + 4 + arf.size * 1.4f;
             float my = s.ay + (s.art - block) / 2 + dy;
             g.textSpaced(kick, kf, mx, my + kf.size * 0.7f, 0.16f, pal.accentInk, A);
@@ -369,13 +371,13 @@ void App::drawCanvas() {
             my += tf.size * 1.1f + 4;
             // ending where the Cover layout's lyrics end (its side column's foot), for consistency (the user, 2026-10-29; it
             // ran to 80 % of the screen, past the progress line)
-            const float ly = s.ay + s.art + 3 * vh + dy, lh = st[0].sy + st[0].sh + dy - ly;
-            if (lyricsOn) drawCanvasLyrics(8 * vw, ly, css::W - 16 * vw, lh, int(clampf(3.3f * vw, 28, 66)), 1, A);
+            const float ly = s.ay + s.art + 3 * vh() + dy, lh = st[0].sy + st[0].sh + dy - ly;
+            if (lyricsOn) drawCanvasLyrics(8 * vw(), ly, css::W - 16 * vw(), lh, int(clampf(3.3f * vw(), 28, 66)), 1, A);
         } else {
             // cover: meta at the top of the side column, lyrics fill the rest; without lyrics the meta is centred
-            const Font tf{ int(clampf(3.6f * vw, 30, 72)), Weight::ExtraBold };
-            const Font arf{ int(clampf(1.7f * vw, 18, 32)), Weight::SemiBold };
-            const Font alf{ int(clampf(1.05f * vw, 14, 19)) };
+            const Font tf{ int(clampf(3.6f * vw(), 30, 72)), Weight::ExtraBold };
+            const Font arf{ int(clampf(1.7f * vw(), 18, 32)), Weight::SemiBold };
+            const Font alf{ int(clampf(1.05f * vw(), 14, 19)) };
             const std::vector<std::string> lines = g.wrap(title, tf, int(s.sw), 2);
             const float metaH = kf.size * 1.4f + 10 + lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f;
             float my = (lyricsOn ? s.sy : s.ay + (s.art - metaH) / 2) + dy;
@@ -405,8 +407,8 @@ void App::drawCanvas() {
             else block(false);
             my += lines.size() * std::round(tf.size * 1.02f) + 10 + arf.size * 1.35f + 6 + alf.size * 1.45f;
             if (lyricsOn) {
-                const float ly = my + 4 * vh;
-                drawCanvasLyrics(s.sx, ly, s.sw, s.sy + s.sh + dy - ly, int(clampf(2.05f * vw, 20, 40)), 0, A);
+                const float ly = my + 4 * vh();
+                drawCanvasLyrics(s.sx, ly, s.sw, s.sy + s.sh + dy - ly, int(clampf(2.05f * vw(), 20, 40)), 0, A);
             }
         }
         g.setGhost(wasGhost);
@@ -420,7 +422,7 @@ void App::drawCanvas() {
     // Coming back from idle, the spectrum folds back first: the controls only return in its last moments,
     // so they never sit on top of the bars (going idle, they leave first and the bars rise after).
     canvasCtl += ((idle || canvasViz > 0.12f ? 0.f : 1.f) - canvasCtl) * (1 - std::exp(-dt / 0.12f));
-    const float padX = 4 * vw, bottom = css::H - 3.2f * vh;
+    const float padX = 4 * vw(), bottom = css::H - 3.2f * vh();
     // .cv-progress sits just above the transport, as on PC: closer to the buttons than to the text above
     const float toolsCy = bottom - 21, transCy = toolsCy - 21 - 6 - 8 - 30, progCy = transCy - 30 - 14;
     const float ctlA = canvasCtl, slide = (1 - canvasCtl) * 14;
@@ -442,7 +444,7 @@ void App::drawCanvas() {
     // A constant pace over Settings → Canvas → Spectrum rise, eased at both ends (smootherstep).
     canvasViz = clampf(canvasViz + (idle ? 1.f : -1.6f) * dt / std::max(0.1f, store.canvasVizTime), 0, 1);   // back a little faster: a press waits on it
     const float vz = canvasViz * canvasViz * canvasViz * (canvasViz * (canvasViz * 6 - 15) + 10);
-    const float base = progCy + vz * (css::H - 6 * vh - progCy);
+    const float base = progCy + vz * (css::H - 6 * vh() - progCy);
     if (vz < 0.999f) {
         const float a = 1 - vz;
         g.roundRect(padX, base - 1.5f, pw, 3, 1.5f, pal.text, 0.16f * a);

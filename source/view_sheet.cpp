@@ -10,6 +10,7 @@
  * app: the console's FFmpeg can read but not write files, and the music stays
  * untouched — Gatefold 1.4's default for covers ("only in Gatefold") as well.
  */
+#include "words.hpp"
 #include <SDL2/SDL_image.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -41,7 +42,7 @@ std::string fieldOf(const Track& t, const std::string& k) {
     return {};
 }
 
-std::string joinPath(const std::string& dir, const std::string& name) { return dir.back() == '/' ? dir + name : dir + "/" + name; }
+std::string joinPath(const std::string& dir, const std::string& name) { return plat::join(dir, name); }
 
 bool isImage(const std::string& name) {
     const size_t dot = name.find_last_of('.');
@@ -88,19 +89,10 @@ void App::applyEdits(Track& t) {
 }
 
 bool App::keyboard(const char* header, const std::string& initial, std::string& out) {
-    SwkbdConfig kbd;
-    if (R_FAILED(swkbdCreate(&kbd, 0))) {
-        toast("The keyboard is not available in applet mode");
-        return false;
-    }
-    swkbdConfigMakePresetDefault(&kbd);
-    swkbdConfigSetHeaderText(&kbd, header);
-    swkbdConfigSetGuideText(&kbd, header);
-    swkbdConfigSetInitialText(&kbd, initial.c_str());
     char buf[512] = {};
-    const Result rc = swkbdShow(&kbd, buf, sizeof buf);
-    swkbdClose(&kbd);
-    if (R_FAILED(rc)) return false;   // cancelled: keep what was there
+    const plat::TextResult r = plat::askText(header, header, initial.c_str(), buf, sizeof buf);
+    if (r == plat::TextResult::Unavailable) toast("The keyboard is not available in applet mode");
+    if (r != plat::TextResult::Done) return false;   // cancelled: keep what was there
     out = buf;
     return true;
 }
@@ -297,7 +289,7 @@ void App::drawSheet() {
                                   grab = Grab{ Grab::Queue, qp, upNext, 1 };
                                   ui.focus(upNext ? uid("np.next", qp - q.pos - 1) : uid("pl.r", qp));
                                   ui.setPadMode(true);
-                                  toast("Move it with the D-pad, then press A");
+                                  toast(GF_MOVE_WORDS);
                               } });
         if (qp != q.pos)
             items.push_back({ ICON_X, "Remove from the playlist", "", [this, qp] {
@@ -332,7 +324,7 @@ void App::drawSheet() {
                                           grab = Grab{ Grab::List, row, false, 1, ref };
                                           ui.focus(uid("pl.r", row));
                                           ui.setPadMode(true);
-                                          toast("Move it with the D-pad, then press A");
+                                          toast(GF_MOVE_WORDS);
                                       } });
             }
             if (pl.automix) {   // an Automix playlist: this track first (pinned), or Gatefold's choice again
@@ -402,7 +394,7 @@ void App::drawSheet() {
                               sheet.page = Sheet::Info;
                               ui.focusDefault();
                           } });
-        items.push_back({ ICON_X, "Delete from the SD card…", "", [this] { sheet.page = Sheet::Delete; ui.focusDefault(); }, true });
+        items.push_back({ ICON_X, "Delete from " GF_THE_CARD "…", "", [this] { sheet.page = Sheet::Delete; ui.focusDefault(); }, true });
     } else if (page == Sheet::Lists) {
         // Your own playlists (folder playlists follow their folder, so tracks cannot be added to them).
         items.push_back({ ICON_PLUS, "New playlist…", "", [this, t] { closeSheet(); newPlaylist(t); } });
@@ -419,11 +411,8 @@ void App::drawSheet() {
         for (const auto& [k, l] : kFields)
             items.push_back({ nullptr, l, sheet.draft[k], [this, k = k, l = l] { editTag(k, l); } });
     } else if (page == Sheet::Cover) {
-        if (sheet.dir != "sdmc:/")
-            items.push_back({ ICON_BACK, "Up one folder", "", [this] {
-                                  const size_t s = sheet.dir.find_last_of('/');
-                                  listCoverDir(s <= 5 ? std::string("sdmc:/") : sheet.dir.substr(0, s));
-                              } });
+        if (!plat::isRoot(sheet.dir))
+            items.push_back({ ICON_BACK, "Up one folder", "", [this] { listCoverDir(plat::parentDir(sheet.dir)); } });
         for (const auto& e : sheet.entries) {
             if (e.back() == '/') {
                 const std::string name = e.substr(0, e.size() - 1);
@@ -556,7 +545,7 @@ void App::drawSheet() {
         }
     }
     if (page == Sheet::Delete) {
-        g.text("Delete this track from the SD card?", { css::Lg, Weight::Bold }, x + 24, ry + 8, pal.text, 1, Align::Left, int(w - 48));
+        g.text("Delete this track from " GF_THE_CARD "?", { css::Lg, Weight::Bold }, x + 24, ry + 8, pal.text, 1, Align::Left, int(w - 48));
         float ty = ry + 40;
         for (const auto& l : g.wrap("The file is removed for good, and it leaves the library, the playlist and Liked. " + tr.path, { css::Sm },
                                     int(w - 48), 3)) {

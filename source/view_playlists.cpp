@@ -82,7 +82,7 @@ void App::drawPlaylists(float x, float y, float w, float h) {
     cy += 10;
     g.text("Playlists", { css::Xxl, Weight::Bold }, x + 28, cy, pal.text, 1, Align::Left, int(w - 56));
     cy += 38;
-    g.text(held >= 0 ? "Moving “" + store.playlists[size_t(held)].name + "”: the D-pad moves it, A puts it down" : sub, { css::Sm }, x + 28, cy + 4,
+    g.text(held >= 0 ? "Moving “" + store.playlists[size_t(held)].name + "”: " GF_MOVING_LOW : sub, { css::Sm }, x + 28, cy + 4,
            held >= 0 ? pal.accentInk : pal.text3, 1, Align::Left, int(w - 56));
     cy += 22 + 16;
 

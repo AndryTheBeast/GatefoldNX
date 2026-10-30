@@ -129,6 +129,9 @@ public:
      *  swapped in, a fresh start or a restore is done. Returns the .nro to start next: this one, replaced; the one a release
      *  under the other name put in its own place (going back to 1.x, Gatefold NX: this one was removed); or empty. */
     static std::string finishPending(const std::string& configDir, const std::string& self);
+#ifdef GF_WINDOWED
+    std::string installerFile() const;   // the update waiting to run
+#endif
     /** The first launch after the rebranding (1.x was Gatefold NX): its .nro, and its overlay once Songate's is in, removed
      *  (the HOME menu's homebrew and Ultrahand would list both); the settings folder stays config/gatefold-nx. Not while an
      *  update waits (going back to 1.x puts them there on purpose). */

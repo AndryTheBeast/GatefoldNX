@@ -4,6 +4,7 @@
  * exporting playlists, the cover picker, the updater's backups), chosen with the music-folder picker; and what
  * Gatefold keeps on the SD card, measured on a worker, each with a Clear button that asks first.
  */
+#include "words.hpp"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -14,13 +15,9 @@
 #include "cores.hpp"
 #include "icons.inc"
 
-#ifdef __SWITCH__
-#include <switch.h>
-#endif
-
 namespace {
 
-std::string joinP(const std::string& a, const std::string& b) { return a.empty() || a.back() == '/' ? a + b : a + "/" + b; }
+std::string joinP(const std::string& a, const std::string& b) { return plat::join(a, b); }
 bool isDirP(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); }
 
 std::vector<std::string> entries(const std::string& dir) {
@@ -38,45 +35,8 @@ std::vector<std::string> entries(const std::string& dir) {
 /** Files and bytes below p (p itself when a file); only names `keep` accepts at its top. */
 struct Use { int64_t bytes = 0; int files = 0; };
 
-#ifdef __SWITCH__
-/** The console's file system read directly: a directory gives up to 64 entries with their sizes in one request, where
- *  stat() asked once per file (thousands of requests for the covers cache, each one queued with everything else). */
-void measureFs(FsFileSystem* fs, const std::string& path, Use& u, bool (*keep)(const std::string&), bool top) {
-    FsDir d;
-    char p[FS_MAX_PATH];
-    snprintf(p, sizeof p, "%s", path.c_str());
-    if (R_FAILED(fsFsOpenDirectory(fs, p, FsDirOpenMode_ReadDirs | FsDirOpenMode_ReadFiles, &d))) {
-        FsFile f;   // a file, not a folder
-        s64 size = 0;
-        if (R_SUCCEEDED(fsFsOpenFile(fs, p, FsOpenMode_Read, &f))) {
-            if (R_SUCCEEDED(fsFileGetSize(&f, &size))) { u.bytes += size; u.files++; }
-            fsFileClose(&f);
-        }
-        return;
-    }
-    static thread_local std::vector<FsDirectoryEntry> buf(64);
-    std::vector<std::string> dirs;
-    for (;;) {
-        s64 n = 0;
-        if (R_FAILED(fsDirRead(&d, &n, buf.size(), buf.data())) || n <= 0) break;
-        for (s64 i = 0; i < n; i++) {
-            const FsDirectoryEntry& e = buf[size_t(i)];
-            if (top && keep && !keep(e.name)) continue;
-            if (e.type == FsDirEntryType_Dir) dirs.push_back(e.name);
-            else { u.bytes += e.file_size; u.files++; }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // a breath between batches for the rest of Gatefold
-    }
-    fsDirClose(&d);
-    for (const auto& n : dirs) measureFs(fs, (path == "/" ? "/" : path + "/") + n, u, keep, false);
-}
-#endif
-
 void measure(const std::string& p, Use& u, bool (*keep)(const std::string&) = nullptr) {
-#ifdef __SWITCH__
-    if (p.rfind("sdmc:/", 0) == 0)
-        if (FsFileSystem* fs = fsdevGetDeviceFileSystem("sdmc")) { measureFs(fs, p.substr(5), u, keep, true); return; }
-#endif
+    if (plat::measureStorage(p, u.bytes, u.files, keep)) return;
     // The SD card serves one request at a time: a walk of thousands of files without pauses held up everything Gatefold
     // reads (covers, tags, the settings) and the app stalled. A short pause every 24 files lets the rest through.
     static thread_local int walked = 0;
@@ -126,7 +86,7 @@ const char* App::folderPickName() const {
 void App::chooseFolder(int which) {
     folderFor = which;
     const std::string cur = folderPickField();
-    navigate(View::PickFolder, -1, isDirP(cur) ? cur : which == 4 ? std::string("sdmc:/config") : std::string("sdmc:/"));
+    navigate(View::PickFolder, -1, isDirP(cur) ? cur : std::string(which == 4 ? plat::configParent() : plat::root()));
 }
 
 void App::scanStorage() {
@@ -178,7 +138,7 @@ void App::clearStorage(int which) {
         "Release zips kept from an install that did not finish. The release list stays.",
     };
     confirm(which == 4 ? ICON_HISTORY : which == 5 ? ICON_DOWNLOAD : ICON_FOLDER, "Storage", titles[which],
-            storage.seen ? sizeText(storage.use[which].bytes) + " on the SD card" : std::string("On the SD card"), "Clear it?", texts[which], "Clear",
+            storage.seen ? sizeText(storage.use[which].bytes) + " " GF_ON_CARD : std::string(GF_CAP_ON_CARD), "Clear it?", texts[which], "Clear",
             [this, which] {
                 const std::string dir = Store::Dir;
                 switch (which) {

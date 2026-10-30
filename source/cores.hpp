@@ -14,8 +14,8 @@
  *           tracks one after another, only in time nothing else on those cores wants
  */
 #pragma once
-#ifdef __SWITCH__
-#include <switch.h>
+#ifndef GF_PREVIEW
+#include "platform.hpp"
 #endif
 
 namespace cores {
@@ -26,9 +26,8 @@ constexpr Place FileOps{ 2, 0x30 }, Net{ 2, 0x30 };
 
 /** Moves the calling thread there. Where that is not allowed it simply stays where it is. */
 inline void moveHere(Place p) {
-#ifdef __SWITCH__
-    svcSetThreadPriority(CUR_THREAD_HANDLE, u32(p.priority));
-    svcSetThreadCoreMask(CUR_THREAD_HANDLE, p.core, 1u << p.core);
+#ifndef GF_PREVIEW
+    plat::placeThread(p.core, p.priority);
 #else
     (void)p;
 #endif

@@ -1,5 +1,6 @@
 # Build output (binaries are attached to releases, not committed)
 build/
+build-windows*/
 *.elf
 *.nacp
 *.nro
@@ -21,6 +22,7 @@ sysmodule/deps/
 tools/preview/deps/
 tools/preview/out/
 tools/preview/out-live/
+tools/windows/deps/
 
 # Developer notes and reference images
 docs/NEXT_SESSION.md

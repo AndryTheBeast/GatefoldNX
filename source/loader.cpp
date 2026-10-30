@@ -15,11 +15,18 @@
 #include "cores.hpp"
 #include "gfx.hpp"
 #include "library.hpp"
+#ifdef GF_WINDOWED
+std::vector<uint8_t> mediaJpeg(SDL_Surface* s);   // metacache.cpp
+#endif
 
 void TrackLoader::Result::release() {
     if (cover) SDL_FreeSurface(cover);
     if (blur) SDL_FreeSurface(blur);
     if (frost) SDL_FreeSurface(frost);
+#ifdef GF_WINDOWED
+    if (mediaCover) SDL_FreeSurface(mediaCover);
+    mediaCover = nullptr;
+#endif
     cover = blur = frost = nullptr;
 }
 
@@ -151,7 +158,13 @@ void TrackLoader::work(const Request& r, Result& out) {
     }
     if (!rgba) return;
     // The cover is drawn at most ~450 px (the Canvas); 512 keeps it sharp without aliasing while it floats and zooms.
+#ifdef GF_WINDOWED
+    out.cover = Gfx::shrink(rgba, 1536);   // … three times that on a big window
+    out.mediaCover = Gfx::shrink(rgba, 256);
+    if (out.mediaCover) out.mediaJpeg = mediaJpeg(out.mediaCover);
+#else
     out.cover = Gfx::shrink(rgba, 512);
+#endif
     // 64×64 for the palette (as Gatefold samples it), 12×12 stretched with linear filtering for the backdrop blur.
     SDL_Surface* thumb = SDL_CreateRGBSurfaceWithFormat(0, 64, 64, 32, SDL_PIXELFORMAT_RGBA32);
     SDL_Surface* tiny = SDL_CreateRGBSurfaceWithFormat(0, 12, 12, 32, SDL_PIXELFORMAT_RGBA32);

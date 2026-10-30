@@ -51,23 +51,55 @@ std::mt19937 rng{ 0x6a7e };
 
 bool App::init() {
     launchAt_ = profAt_ = SDL_GetPerformanceCounter();
-    romfsInit();
-    plInitialize(PlServiceType_User);
-    psmInitialize();
-    lblInitialize();   // Dim the screen: the handheld backlight (failing is fine: a veil instead)
+    plat::init();
     metadataInit();
     startMark("sys");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) return false;
     IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG | IMG_INIT_WEBP);
     startMark("init");
+#ifdef GF_WINDOWED
+    store.load();   // the window goes where it was left
+    {
+        // The console's shape, as big as the screen comfortably holds at this screen's own scale
+        SDL_Rect room{ 0, 0, 1280, 720 };
+        SDL_GetDisplayUsableBounds(0, &room);
+        float dpi = 96;
+        SDL_GetDisplayDPI(0, &dpi, nullptr, nullptr);
+        const float k = std::min({ dpi / 96.f, room.w * 0.92f / 1280, room.h * 0.92f / 720 });
+        // Where it was left, if a screen is still there
+        bool kept = store.winW >= 640 && store.winH >= 360;
+        if (kept) {
+            const SDL_Rect at{ store.winX + 40, store.winY + 8, 80, 30 };
+            kept = false;
+            for (int d = 0; d < SDL_GetNumVideoDisplays(); d++) {
+                SDL_Rect b{}, o{};
+                if (SDL_GetDisplayBounds(d, &b) == 0 && SDL_IntersectRect(&at, &b, &o)) kept = true;
+            }
+        }
+        const Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALLOW_HIGHDPI | (store.winMax ? SDL_WINDOW_MAXIMIZED : 0);
+        window_ = kept ? SDL_CreateWindow("Songate", store.winX, store.winY, store.winW, store.winH, flags)
+                       : SDL_CreateWindow("Songate", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, int(1280 * k), int(720 * k), flags);
+        if (window_) SDL_SetWindowMinimumSize(window_, 640, 360);
+    }
+#else
     window_ = SDL_CreateWindow("Songate", 0, 0, css::W, css::H, 0);
+#endif
     renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!window_ || !renderer_ || !g.init(renderer_)) return false;
+#ifdef GF_WINDOWED
+    fitWindow();
+    textCardOwner();
+    plat::windowReady(window_);
+    SDL_AddEventWatch(&App::resizeWatch, this);
+    SDL_SetWindowHitTest(window_, &App::hitTest, this);
+#endif
     // Text in a scroll area follows its scroll sub-pixel, so a glide does not end in one-pixel steps.
     ui.onArea = [this](const ScrollArea* a) { g.setShift(0, textShift - (a ? a->y : 0)); };
     startMark("sdl");
 
+#ifndef GF_WINDOWED
     store.load();
+#endif
     // After a factory reset: its old settings folder, moved aside at exit, is deleted in the background
     if (struct stat st; stat((std::string(Store::Dir) + ".erased").c_str(), &st) == 0)
         eraseOld_ = std::thread([] {
@@ -97,23 +129,26 @@ bool App::init() {
 
     // Closing from the HOME menu ends the process without running shutdown(): hold the exit until the
     // settings and the session are written, and save whenever the app loses focus anyway.
-    appletLockExit();
-    appletHook(&appletCookie_, &App::appletEvent, this);
+    plat::holdExit();
+    plat::watchLeave(&App::onLeave, this);
 
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    padInitializeDefault(&pad_);
+    plat::padInit();
 
     // First start: always ask (the user, 2026-10-27). The folder picker at the card's top, and over it, when the card has
     // a Music folder at its top, a welcome card offering it; Choose another, B or × leave the picker to choose with.
     std::string found;
+#ifdef GF_WINDOWED
+    if (store.musicRoot.empty()) found = plat::musicFolder();
+#else
     if (store.musicRoot.empty())
-        for (const auto& d : listDirs("sdmc:/"))
-            if (strcasecmp(d.c_str(), "music") == 0) { found = "sdmc:/" + d; break; }   // keep the card's own spelling
+        for (const auto& d : listDirs(plat::root()))
+            if (strcasecmp(d.c_str(), "music") == 0) { found = plat::join(plat::root(), d); break; }   // keep the card's own spelling
+#endif
     rescan();
     pcm_.resize(Spectrum::N);
     if (store.musicRoot.empty()) {
         tourAsk = true;   // a first launch: the tour is offered (the welcome card, or once a folder is chosen)
-        navigate(View::PickFolder, -1, "sdmc:/", false);
+        navigate(View::PickFolder, -1, plat::root(), false);
         if (!found.empty()) welcomeCard(found);
     }
     else if (player.remote() && bgAdoptQueue()) {}   // the background player's queue, playing or not, wins
@@ -217,6 +252,13 @@ void App::rescan(const std::vector<std::string>* given) {
 }
 
 void App::shutdown() {
+#ifdef GF_WINDOWED
+    if (window_) keepWindowPlace();
+#endif
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+    fprintf(stderr, "frames %ld at %d Hz: mean %.2f ms, worst %.1f ms, work worst %.1f ms, late %ld, starved %u\nlaunch: %s\n", statFrames_, hz_,
+            statSum_ / std::max(1L, statFrames_) * 1000, statWorst_ * 1000, statWork_, statLate_, player.takeTrace().starved, startStats_.c_str());
+#endif
     closeJoinEditor();   // its worker ends first
     updater.stop();   // a download stops; the files are only swapped when it finished
     setDimmed(false);
@@ -224,12 +266,9 @@ void App::shutdown() {
     Store::flush();
     stats.stop();
     levels.stop();
-    appletUnhook(&appletCookie_);
-    appletSetMediaPlaybackState(false);
-    if (awakeHeld) {   // the console's own idle times again
-        appletSetIdleTimeDetectionExtension(AppletIdleTimeDetectionExtension_None);
-        appletSetAutoSleepDisabled(false);
-    }
+    plat::unwatchLeave();
+    plat::setMediaPlaying(false);
+    if (awakeHeld) plat::setKeepAwake(false);   // the console's own idle times again
     wave.cancel();
     loader.stop();
     if (libCheck_.joinable()) libCheck_.join();
@@ -256,33 +295,27 @@ void App::shutdown() {
     if (window_) SDL_DestroyWindow(window_);
     IMG_Quit();
     SDL_Quit();
-    lblExit();
-    psmExit();
-    plExit();
-    romfsExit();
+    plat::quit();
     net::end();
     // An update's files that wait (the app's own .nro above all: romfs no longer reads it), a fresh start or a restore;
     // then, after Restart now, the (new) Gatefold starts again.
     const std::string next = Updater::finishPending(Store::Dir, selfPath);
-    const std::string again = next.empty() ? selfPath : next;   // (going back to 1.x: its own .nro, where it is)
-    if (factoryMask_) Updater::factoryReset(Store::Dir, factoryMask_);   // what was ticked (or everything), moved aside; it starts again
-    if (relaunch) {
-#ifdef __SWITCH__
-        if (envHasNextLoad()) envSetNextLoad(again.c_str(), again.c_str());
+#ifdef GF_WINDOWED
+    const std::string setup = updater.installerFile();
+    const std::string again = !setup.empty() ? setup : next.empty() ? selfPath : next;
 #else
-        printf("[updater] Songate starts again: %s\n", again.c_str());
+    const std::string again = next.empty() ? selfPath : next;   // (going back to 1.x: its own .nro, where it is)
 #endif
-    }
-    appletUnlockExit();
+    if (factoryMask_) Updater::factoryReset(Store::Dir, factoryMask_);   // what was ticked (or everything), moved aside; it starts again
+    if (relaunch) plat::relaunch(again);
+    plat::releaseExit();
 }
 
-void App::appletEvent(AppletHookType type, void* self) {
+void App::onLeave(bool exiting, void* self) {
     auto* app = static_cast<App*>(self);
-    if (type == AppletHookType_OnExitRequest || (type == AppletHookType_OnFocusState && appletGetFocusState() != AppletFocusState_InFocus)) {
-        app->setDimmed(false);   // the backlight is the system's again outside Gatefold
-        app->persistNow();
-        if (type == AppletHookType_OnExitRequest) Store::flush();
-    }
+    app->setDimmed(false);   // the backlight is the system's again outside Gatefold
+    app->persistNow();
+    if (exiting) Store::flush();
 }
 
 void App::persistSoon(float delay) {
@@ -353,16 +386,182 @@ void App::restoreSession() {
 }
 
 void App::run() {
+    lastTick_ = SDL_GetPerformanceCounter();
+    while (running && plat::mainLoop()) frame();
+}
+
+#ifdef GF_WINDOWED
+/** The window, in app pixels and real ones: the shorter way it is 1280×720's scale, the other way there is more room. */
+void App::fitWindow() {
+    int pw = 1280, ph = 720;
+    SDL_GetRendererOutputSize(renderer_, &pw, &ph);
+    if (pw <= 0 || ph <= 0) return;
+    // As big as on the whole screen (the console's 1280×720 filling it the short way), however small the window: it shows less, like
+    // any desktop app, and only under kMinW × kMinH does everything shrink with it. In twentieths, so that dragging an edge does
+    // not make all the text again for each pixel of a change
+    SDL_Rect screen{ 0, 0, 1280, 720 };
+    const int on = SDL_GetWindowDisplayIndex(window_);
+    if (on >= 0) SDL_GetDisplayBounds(on, &screen);
+    constexpr float kMinW = 1000, kMinH = 600;
+    const float full = std::min(screen.w / 1280.f, screen.h / 720.f);
+    const float s = std::max(0.25f, std::floor(std::min({ full, pw / kMinW, ph / kMinH }) * 20) / 20);
+    css::W = int(std::ceil(pw / s - 0.01f));
+    css::H = int(std::ceil(ph / s - 0.01f));
+    SDL_RenderSetScale(renderer_, s, s);
+    SDL_DisplayMode m{};
+    const int display = SDL_GetWindowDisplayIndex(window_);
+    hz_ = display >= 0 && SDL_GetDesktopDisplayMode(display, &m) == 0 && m.refresh_rate > 0 ? m.refresh_rate : 60;
+    const bool sameSize = frameTex_[0] && s == scale_ && pw == framePw_ && ph == framePh_;
+    g.setDisplay(s, hz_);
+    scale_ = s;
+    framePw_ = pw;
+    framePh_ = ph;
+    if (sameSize) return;
+    // A little larger than needed: a window being dragged wider keeps them, instead of a new pair every pixel
+    if (frameTex_[0] && pw <= frameTexW_ && ph <= frameTexH_) return;
+    frameTexW_ = (pw + 255) / 256 * 256;
+    frameTexH_ = (ph + 255) / 256 * 256;
+    for (SDL_Texture*& t : frameTex_) {
+        if (t) SDL_DestroyTexture(t);
+        t = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, frameTexW_, frameTexH_);
+        if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+    }
+}
+
+/** Windows holds a window's owner while its edge is dragged: its messages come from inside SDL's pump, which does not
+ *  return until the mouse is let go. So the frames go on from here, between frames by construction (App::frame). */
+int App::resizeWatch(void* self, SDL_Event* e) {
+    auto* app = static_cast<App*>(self);
+    if (e->type != SDL_WINDOWEVENT || !app->pumping_ || app->resizing_) return 0;
+    if (e->window.event != SDL_WINDOWEVENT_SIZE_CHANGED && e->window.event != SDL_WINDOWEVENT_EXPOSED && e->window.event != SDL_WINDOWEVENT_MOVED) return 0;
+    app->resizing_ = true;
+    app->fitWindow();
+    app->frame();
+    app->resizing_ = false;
+    return 0;
+}
+#endif
+
+#ifdef GF_WINDOWED
+/** Between frames: going full screen resizes everything. The Canvas is always full screen; F11 and Alt+Enter, the whole app. */
+void App::applyFullscreen() {
+    fullCanvas_ = canvas;
+    const bool want = fullApp_ || fullCanvas_;
+    if (want == fullNow_) return;
+    if (want) keepWindowPlace();
+    fullNow_ = want;
+    SDL_SetWindowFullscreen(window_, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    fitWindow();
+}
+
+/** The window has no frame of its own: its edges still resize it, and the app's title bar moves it (and snaps it, and a double click
+ *  maximises it), but for what is pressed there. */
+SDL_HitTestResult App::hitTest(SDL_Window* w, const SDL_Point* p, void* self) {
+    auto* app = static_cast<App*>(self);
+    if (app->fullNow_) return SDL_HITTEST_NORMAL;
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(w, &ww, &wh);
+    if (!(SDL_GetWindowFlags(w) & SDL_WINDOW_MAXIMIZED)) {
+        constexpr int m = 7, c = 16;
+        const bool l = p->x < m, r = p->x >= ww - m, t = p->y < m, b = p->y >= wh - m;
+        const bool lc = p->x < c, rc = p->x >= ww - c, tc = p->y < c, bc = p->y >= wh - c;
+        if ((t && lc) || (l && tc)) return SDL_HITTEST_RESIZE_TOPLEFT;
+        if ((t && rc) || (r && tc)) return SDL_HITTEST_RESIZE_TOPRIGHT;
+        if ((b && lc) || (l && bc)) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        if ((b && rc) || (r && bc)) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        if (t) return SDL_HITTEST_RESIZE_TOP;
+        if (b) return SDL_HITTEST_RESIZE_BOTTOM;
+        if (l) return SDL_HITTEST_RESIZE_LEFT;
+        if (r) return SDL_HITTEST_RESIZE_RIGHT;
+    }
+    const float ax = p->x / app->scale_, ay = p->y / app->scale_;
+    if (ay >= css::TbH || ax < kLightsW) return SDL_HITTEST_NORMAL;
+    for (const SDL_FRect& k : app->titleKeep_) if (ax >= k.x && ax < k.x + k.w) return SDL_HITTEST_NORMAL;
+    return SDL_HITTEST_DRAGGABLE;
+}
+
+/** × on the window: Keep playing leaves the app by the clock, as the console's background player keeps the music. */
+void App::closeWindow() {
+    if (!store.background) { running = false; return; }
+    fullApp_ = false;
+    if (canvas) openCanvas(false);
+    applyFullscreen();
+    keepWindowPlace();
+    persistNow();
+    plat::trayIcon(true);
+}
+
+void App::showWindow() {
+    plat::trayIcon(false);
+    SDL_RestoreWindow(window_);
+    SDL_RaiseWindow(window_);
+    lastTick_ = SDL_GetPerformanceCounter();
+}
+
+void App::keepWindowPlace() {
+    const Uint32 fl = SDL_GetWindowFlags(window_);
+    store.winMax = (fl & SDL_WINDOW_MAXIMIZED) != 0;
+    if (fl & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) return;
+    SDL_GetWindowPosition(window_, &store.winX, &store.winY);
+    SDL_GetWindowSize(window_, &store.winW, &store.winH);
+}
+
+void App::systemCommands() {
+    if (closePending_) { closePending_ = false; closeWindow(); }
+#ifdef GF_DEV
+    if (static const char* cmd = getenv("GF_ITEMS"); cmd) {   // tests: a toast shown, for the log
+        static std::string seen;
+        if (toastText != seen) { seen = toastText; if (!seen.empty()) fprintf(stderr, "toast: %s\n", seen.c_str()); }
+    }
+#endif
+    for (plat::Cmd c = plat::nextCommand(); c != plat::Cmd::None; c = plat::nextCommand()) switch (c) {
+        case plat::Cmd::PlayPause: togglePlay(); break;
+        case plat::Cmd::Play: if (!isPlaying()) togglePlay(); break;
+        case plat::Cmd::Pause: if (isPlaying()) togglePlay(); break;
+        case plat::Cmd::Next: next(false); break;
+        case plat::Cmd::Previous: prev(); break;
+        case plat::Cmd::Show: showWindow(); break;
+        case plat::Cmd::Quit: running = false; break;
+        default: break;
+    }
+    // The title bar follows the interface's colours as they fade from cover to cover, a few steps a second
+    if (time - titleAt_ > 0.12) {
+        titleAt_ = time;
+        const auto pack = [](const Rgb& c) { return (Uint32(std::lround(std::clamp(c.r, 0.f, 1.f) * 255)) << 16) | (Uint32(std::lround(std::clamp(c.g, 0.f, 1.f) * 255)) << 8) | Uint32(std::lround(std::clamp(c.b, 0.f, 1.f) * 255)); };
+        const Uint32 bg = pack(pal.bg), fg = pack(pal.text);
+        if (bg != titleBg_ || fg != titleFg_) {
+            titleBg_ = bg;
+            titleFg_ = fg;
+            plat::titleColours(bg, fg);
+        }
+    }
+    const bool has = now.track >= 0, playing = isPlaying();
+    if (has != mediaHas_ || playing != mediaPlaying_) {
+        mediaHas_ = has;
+        mediaPlaying_ = playing;
+        plat::mediaState(has, playing);
+    }
+}
+#endif
+
+void App::frame() {
+#ifdef GF_WINDOWED
+    if (!resizing_) {
+        pumping_ = true;
+        SDL_PumpEvents();
+        pumping_ = false;
+    }
+#endif
     const double freq = double(SDL_GetPerformanceFrequency());
-    Uint64 last = SDL_GetPerformanceCounter();
-    while (running && appletMainLoop()) {
+    {
         const Uint64 nowTicks = SDL_GetPerformanceCounter();
-        const double interval = double(nowTicks - last) / freq;
-        last = nowTicks;
+        const double interval = double(nowTicks - lastTick_) / freq;
+        lastTick_ = nowTicks;
         // Frames are presented on vsync, so each one is on screen for a whole number of refreshes. The measured
         // interval jitters a millisecond or two around that; stepping animations by the jitter made their
-        // motion uneven, most visibly at the slow start and end of an eased one. So dt is whole refreshes (at most 6).
-        dt = std::clamp(int(std::lround(interval * 60)), 1, 6) / 60.f;
+        // motion uneven, most visibly at the slow start and end of an eased one. So dt is whole refreshes (at most a tenth
+        // of a second), of this screen: 60 a second on the console, 144 or whatever the monitor under the window does on a PC.
+        dt = std::clamp(int(std::lround(interval * hz_)), 1, hz_ / 10) / float(hz_);
         time += dt;
 
         profAt_ = nowTicks;
@@ -371,9 +570,34 @@ void App::run() {
         input();
         update();
         profMark(0);
+#ifdef GF_WINDOWED
+        // Minimised or in the tray: the music goes on, nothing is drawn
+        if (SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) {
+            ui.endFrame();
+            SDL_Delay(16);
+            return;
+        }
+        SDL_SetRenderTarget(renderer_, frameTex_[frameCur_]);
+        SDL_RenderSetScale(renderer_, scale_, scale_);
+#endif
         draw();
         ui.endFrame();
-#ifndef __SWITCH__
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+        // Tests press controls by name: every few frames, what is on screen and where
+        if (static const char* items = getenv("GF_ITEMS"); items && profFrames_ % 10 == 0) {
+            const std::string tmp = std::string(items) + ".new";
+            if (FILE* out = fopen(tmp.c_str(), "w")) {
+                char label[320];
+                snprintf(label, sizeof label, "scale %.3f size %d %d pos %.2f playing %d vol %.3f track %s", double(scale_), css::W, css::H, player.loaded() ? player.position() : -1.0,
+                         int(isPlaying()), double(store.volume), now.track >= 0 ? lib.tracks[now.track].title.c_str() : "-");
+                ui.audit(label, out);
+                for (const auto& t : g.said) fprintf(out, "TEXT %.0f %.0f %.0f %.0f|%s\n", double(t.x), double(t.y), double(t.w), double(t.h), t.text.c_str());
+                fclose(out);
+                rename(tmp.c_str(), items);
+            }
+        }
+#endif
+#ifdef GF_PREVIEW
         // The preview's D-pad audit: hostshim sets GF_AUDIT from the script's "audit <label>"
         if (const char* a = getenv("GF_AUDIT"); a && *a) {
             static FILE* out = fopen("dpad-audit.txt", "w");
@@ -388,9 +612,25 @@ void App::run() {
 #endif
         frameAt_ = (frameAt_ + 1) % 120;
         profAt_ = SDL_GetPerformanceCounter();
+#ifdef GF_WINDOWED
+        SDL_SetRenderTarget(renderer_, nullptr);
+        const SDL_Rect whole{ 0, 0, framePw_, framePh_ };
+        SDL_RenderCopy(renderer_, frameTex_[frameCur_], &whole, nullptr);
+        frameCur_ ^= 1;
+#endif
         SDL_RenderPresent(renderer_);
         profMark(7);
         if (firstFrame_) { firstFrame_ = false; launchAt("frame1"); }
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+        g.said.clear();
+#endif
+#if defined(GF_WINDOWED) && defined(GF_DEV)
+        statFrames_++;
+        statSum_ += interval;
+        statWorst_ = std::max(statWorst_, interval);
+        statWork_ = std::max(statWork_, double(workMs_[(frameAt_ + 119) % 120]));
+        statLate_ += interval > 1.5 / hz_;
+#endif
         profFrames_++;
         g.endFrame();
     }
@@ -403,14 +643,14 @@ void App::run() {
 void App::plusMenu(bool held) {
     if (route.view == View::Playlists && !canvas) {   // the Playlists page: the playlist's menu (Move, Icon, Rename)
         if (plHoverShown >= 0) openPlaylistMenu(plHoverShown);
-        else if (!held) toast(plHoverShown == -1 ? "Liked stays first" : "Select a playlist, then press +");
+        else if (!held) toast(plHoverShown == -1 ? "Liked stays first" : "Select a playlist, then " GF_MENU_WORDS);
     } else if (route.view == View::Files && !canvas) {   // Files: the menu of the row under focus
         if (!files.hover.empty()) openFileMenu(files.hover);
-        else if (!held) toast("Select a file or folder, then press +");
+        else if (!held) toast("Select a file or folder, then " GF_MENU_WORDS);
     } else {
         const int t = hoverTrackShown >= 0 ? hoverTrackShown : !held && (route.view == View::Now || canvas) ? now.track : -1;
         if (t >= 0) openTrackMenu(t, hoverTrackShown >= 0 ? hoverQueueShown : -1, hoverUpNextShown);
-        else if (!held) toast("Select a track, then press +");
+        else if (!held) toast("Select a track, then " GF_MENU_WORDS);
     }
 }
 
@@ -418,9 +658,24 @@ void App::input() {
     SDL_Event e;
     bool touched = false;
     bool mouseMoved = false;
+#ifdef GF_WINDOWED
+    bool rightClick = false;
+#endif
     float wheel = 0;
+#ifdef GF_WINDOWED
+    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) > 0) {   // pumped at the top of the frame
+#else
     while (SDL_PollEvent(&e)) {
+#endif
+#ifdef GF_WINDOWED
+        if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE) closeWindow();
+        if (e.type == SDL_FINGERDOWN) typingByTouch_ = true;
+        if (e.type == SDL_KEYDOWN || (e.type == SDL_MOUSEBUTTONDOWN && e.button.which != SDL_TOUCH_MOUSEID)) typingByTouch_ = false;
+        if (e.type == SDL_KEYDOWN && !e.key.repeat &&
+            (e.key.keysym.sym == SDLK_F11 || (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) fullApp_ = !fullApp_;
         if (e.type == SDL_QUIT) running = false;
+        if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)) fitWindow();
+#endif
         // A mouse (a USB one on the console; the PC's in the preview and the live page): it moves the pointer, its wheel
         // scrolls the list under it, its left button presses there (the user, 2026-10-30: "the UI should scroll where the
         // mouse is, app wide"). The mouse events SDL makes up from touches are left to the finger events.
@@ -434,6 +689,20 @@ void App::input() {
             pointer.y = std::clamp(my, 0.f, float(css::H - 1));
             pointer.idle = 0;
             mouseMoved = true;
+#ifdef GF_WINDOWED
+            pointerIsMouse_ = true;
+            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) rightClick = true;
+#endif
+#ifdef GF_WINDOWED
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) lightDown_ = lightAt(pointer.x, pointer.y);
+            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && lightDown_ >= 0) {
+                const int was = lightDown_;
+                lightDown_ = -1;
+                if (lightAt(pointer.x, pointer.y) == was) pressLight(was);
+                continue;
+            }
+            if (lightDown_ >= 0) continue;
+#endif
             if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) { ui.touchDown(pointer.x, pointer.y); mouseHeld_ = true; }
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && mouseHeld_) { ui.touchUp(pointer.x, pointer.y); mouseHeld_ = false; }
         }
@@ -447,27 +716,50 @@ void App::input() {
         }
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION) touched = true;
         const float x = e.tfinger.x * css::W, y = e.tfinger.y * css::H;
+#ifdef GF_WINDOWED
+        if (e.type == SDL_FINGERDOWN && x < 12 && y < css::TbH) lightsHold_ = 4;   // a finger in the corner
+        if (e.type == SDL_FINGERDOWN && lightAt(x, y) >= 0) { lightDown_ = lightAt(x, y); continue; }
+        if (e.type == SDL_FINGERUP && lightDown_ >= 0) {
+            const int was = lightDown_;
+            lightDown_ = -1;
+            if (lightAt(x, y) == was) pressLight(was);
+            continue;
+        }
+#endif
         if (e.type == SDL_FINGERDOWN) ui.touchDown(x, y);
         else if (e.type == SDL_FINGERMOTION) ui.touchMove(x, y);
         else if (e.type == SDL_FINGERUP) ui.touchUp(x, y);
     }
 
-    padUpdate(&pad_);
-    u64 down = padGetButtonsDown(&pad_);
-    const u64 held = padGetButtons(&pad_);
+    plat::padRead();
+    uint64_t down = plat::padDown();
+#ifdef GF_WINDOWED
+    if (down && plat::padWasLast()) typingByTouch_ = true;
+    if (fitPending_) { fitPending_ = false; fitWindow(); }
+    applyFullscreen();
+    updateLights();
+    if (rightClick) down |= plat::BtnPlus;
+    systemCommands();
+#endif
+    const uint64_t held = plat::padHeld();
     // Any input brings the Canvas controls back.
-    canvasIdle = (down || touched) ? 0 : canvasIdle + dt;
+#ifdef GF_WINDOWED
+    const bool woken = touched || mouseMoved || wheel != 0;   // the mouse counts too: the Canvas's controls and a dimmed screen come back
+#else
+    const bool woken = touched;
+#endif
+    canvasIdle = (down || woken) ? 0 : canvasIdle + dt;
     // ... and the screen out of its dimming. That first press only wakes it: it does nothing else.
     {
-        const HidAnalogStickState l0 = padGetStickPos(&pad_, 0), r0 = padGetStickPos(&pad_, 1);
-        const bool any = down || held || touched || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
+        const plat::Stick l0 = plat::stick(0), r0 = plat::stick(1);
+        const bool any = down || held || woken || std::abs(l0.x) + std::abs(l0.y) > 9000 || std::abs(r0.x) + std::abs(r0.y) > 9000;
         idleFor = any ? 0 : idleFor + dt;
         if (any && dimmed) { setDimmed(false); down = 0; }
     }
 
     // + opens the track menu for the focused track (or the one playing); HOME closes the app, so + no longer exits.
     const bool notice = coverNotice == 1 || appCoverNotice == 1 || sleepPromptAt > 0 || tourStep >= 0;   // … and the tour   // the overlay covers' modal (drawCoverNotice), the sleep card
-    if ((down & HidNpadButton_Plus) && !notice) {
+    if ((down & plat::BtnPlus) && !notice) {
         if (sheet.page != Sheet::Closed) closeSheet();
         else plusMenu(false);
     }
@@ -476,10 +768,10 @@ void App::input() {
     if (ui.touchHeld()) plusAfterHold = 2;
     else if (plusAfterHold > 0 && --plusAfterHold == 0 && sheet.page == Sheet::Closed && !notice) plusMenu(true);
     const bool modal = sheet.page != Sheet::Closed || notice || je.open || ap.open;
-    if (!modal && (down & HidNpadButton_Minus)) openCanvas(!canvas);
+    if (!modal && (down & plat::BtnMinus)) openCanvas(!canvas);
     // Left stick: a pointer for what the D-pad reaches badly (the player bar's right end, small
     // buttons). Slow near the centre, fast at the edge; A taps and drags under it like a finger.
-    const HidAnalogStickState ls = padGetStickPos(&pad_, 0);
+    const plat::Stick ls = plat::stick(0);
     const float mag = std::hypot(float(ls.x), float(ls.y)) / 32767.f;
     bool pointerMoved = false;
     if (mag > 0.15f) {
@@ -496,6 +788,9 @@ void App::input() {
         const float speed = (store.pointerAccel ? 90 + 1250 * k * k : 120 + 700 * k) * scale;   // px/s
         pointer.x = std::clamp(pointer.x + ls.x / 32767.f / mag * speed * dt, 0.f, float(css::W - 1));
         pointer.y = std::clamp(pointer.y - ls.y / 32767.f / mag * speed * dt, 0.f, float(css::H - 1));
+#ifdef GF_WINDOWED
+        pointerIsMouse_ = false;
+#endif
         pointer.idle = 0;
         pointerMoved = true;
     } else if (mouseMoved) {
@@ -506,7 +801,7 @@ void App::input() {
     // the wheel: the list under the pointer, a notch about two rows (the focused list when nothing scrolls there)
     if (wheel != 0 && !ui.scrollAreaAt(pointer.x, pointer.y, -wheel * 110)) ui.scrollFocusedArea(-wheel * 110);
     if (wheel != 0) rehover_ = 0.5f;
-    if (touched || (down & (HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right)))
+    if (touched || (down & (plat::BtnUp | plat::BtnDown | plat::BtnLeft | plat::BtnRight)))
         pointer.idle = Pointer::Hide + 1;   // the D-pad or a finger took over
     const bool pointing = pointer.idle <= Pointer::Hide || pointer.down;
     if (pointing) canvasIdle = 0;
@@ -523,37 +818,37 @@ void App::input() {
     if (grab.pos >= 0) {
         const View gv = grab.kind == Grab::Playlists ? View::Playlists : grab.kind == Grab::Tabs ? View::Settings
                       : grab.kind == Grab::List ? View::List : grab.upNext ? View::Now : View::Queue;
-        if ((down & (HidNpadButton_A | HidNpadButton_B)) || touched || pointerMoved || modal || canvas || route.view != gv ||
+        if ((down & (plat::BtnA | plat::BtnB)) || touched || pointerMoved || modal || canvas || route.view != gv ||
             (grab.kind == Grab::List && route.ref != grab.ref)) {
             grabDrop();
-            down &= ~u64(HidNpadButton_A | HidNpadButton_B);
+            down &= ~uint64_t(plat::BtnA | plat::BtnB);
         }
     }
-    if (pointing && (down & HidNpadButton_A)) {
+    if (pointing && (down & plat::BtnA)) {
         ui.touchDown(pointer.x, pointer.y);
         ui.setPadMode(true);
         pointer.down = true;
-    } else if (pointer.down && !(held & HidNpadButton_A)) {
+    } else if (pointer.down && !(held & plat::BtnA)) {
         ui.touchUp(pointer.x, pointer.y);
         pointer.down = false;
-    } else if (down & HidNpadButton_A) {
+    } else if (down & plat::BtnA) {
         ui.activate();
     }
-    ui.padHeld(held & HidNpadButton_A);   // a Hold item (the equalizer buttons) acts when A is let go, or on a long press
+    ui.padHeld(held & plat::BtnA);   // a Hold item (the equalizer buttons) acts when A is let go, or on a long press
     // B puts a picked-up slider down before it goes back.
-    if (down & HidNpadButton_B)
+    if (down & plat::BtnB)
         ui.anyEngaged() ? ui.disengage() : sleepPromptAt > 0 ? closeSleepPrompt() : tourStep >= 0 ? tourBack() : je.open ? closeJoinEditor() : ap.open ? closeAutomixPicker() : notice ? closeCoverNotice() : modal ? sheetBack() : back();
-    if (down & HidNpadButton_X) togglePlay();
-    if (!modal && (down & HidNpadButton_Y)) openSearch();
-    if (down & HidNpadButton_L) prev();
-    if (down & HidNpadButton_R) next(false);
-    if (down & HidNpadButton_ZL) seekBy(-10);
-    if (down & HidNpadButton_ZR) seekBy(10);
+    if (down & plat::BtnX) togglePlay();
+    if (!modal && (down & plat::BtnY)) openSearch();
+    if (down & plat::BtnL) prev();
+    if (down & plat::BtnR) next(false);
+    if (down & plat::BtnZL) seekBy(-10);
+    if (down & plat::BtnZR) seekBy(10);
 
-    const bool up = held & HidNpadButton_Up;
-    const bool dn = held & HidNpadButton_Down;
-    const bool lf = held & HidNpadButton_Left;
-    const bool rt = held & HidNpadButton_Right;
+    const bool up = held & plat::BtnUp;
+    const bool dn = held & plat::BtnDown;
+    const bool lf = held & plat::BtnLeft;
+    const bool rt = held & plat::BtnRight;
     if (grab.pos >= 0) {
         if (rUp.step(up, dt)) grabStep(-grab.cols);
         if (rDown.step(dn, dt)) grabStep(grab.cols);
@@ -583,7 +878,7 @@ void App::input() {
     }
 
     // Right stick: the list under the pointer while it shows (the user, 2026-10-30), else whatever list has focus.
-    const HidAnalogStickState rs = padGetStickPos(&pad_, 1);
+    const plat::Stick rs = plat::stick(1);
     if (std::abs(rs.y) > 6000) {
         const float dy = -rs.y / 32767.f * 1400 * dt;
         if (pointer.idle <= Pointer::Hide && ui.scrollAreaAt(pointer.x, pointer.y, dy)) rehover_ = 0.5f;
@@ -706,7 +1001,7 @@ void App::update() {
         now.fade = std::min(1.f, now.fade + dt / 0.5f);
     }
     {
-        const float to = store.sidebarCollapsed ? 0.f : 1.f;
+        const float to = sidebarFolded() ? 0.f : 1.f;
         if (to == 1 && sideP_ == 0) sideOpenedAt_ = time;
         sideP_ = !store.motion ? to : to > sideP_ ? std::min(to, sideP_ + dt / 0.38f) : std::max(to, sideP_ - dt / 0.38f);
         const float e = sideP_ < 0.5f ? 4 * sideP_ * sideP_ * sideP_ : 1 - std::pow(-2 * sideP_ + 2, 3.f) / 2;   // cubic, in and out
@@ -1129,7 +1424,7 @@ void App::updateAutomix() {
     xfadeChecked = true;
     mixAnnounced = false;   // (loadTrack: a load other than this join's ends the stage)
     keepMixOld();
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     SDL_Log("automix: at %.2f s, next from %.2f s, %.2f s%s, %s: %s, %s, %s, %s, loop %d", pl.startOut, pl.offset, pl.length,
             pl.beatmatched ? " on the beat" : "", automix::name(pl.join.preset), automix::name(pl.join.volume), automix::name(pl.join.eq),
             automix::name(pl.join.filter), automix::name(pl.join.effect), pl.join.loopBars);   // the PC preview checks it with this
@@ -1182,7 +1477,7 @@ int App::crossfadeNext(double left) const {
 }
 
 bool App::bgShown() const {
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     static const bool fake = getenv("GF_BGCFG") != nullptr;   // the preview has no background player: its settings, to look at
     if (fake) return true;
 #endif
@@ -1482,18 +1777,14 @@ void App::updateSleep() {
     if (isPlaying()) sleepReleased = false;
     const bool want = store.keepAwake && !sleepReleased;
     if (want != awakeHeld) {
-        // (1.1 called appletSetAutoSleepTimeAndDimmingTimeEnabled, which only an overlay applet may: from Gatefold it did
-        // nothing, so the console dimmed by itself whenever the music was paused.) An application's own ways: the idle
-        // time stretched as far as it goes, and auto-sleep off.
         awakeHeld = want;
-        appletSetIdleTimeDetectionExtension(want ? AppletIdleTimeDetectionExtension_ExtendedUnsafe : AppletIdleTimeDetectionExtension_None);
-        appletSetAutoSleepDisabled(want);
+        plat::setKeepAwake(want);
     }
     // "Media playing" keeps the screen from dimming and the console from sleeping: while music plays, and all the time
     // while Keep awake holds (Gatefold's own dimming, below, then decides). Set from here alone, once per change.
     if (const int media = (isPlaying() || want) ? 1 : 0; media != mediaState) {
         mediaState = media;
-        appletSetMediaPlaybackState(media != 0);
+        plat::setMediaPlaying(media != 0);
     }
     // ... and Dim the screen, after store.dimAfter minutes without input (only then: else the system dims).
     const bool dim = want && store.dimAfter > 0 && idleFor >= store.dimAfter * 60.0 && sleepPromptAt == 0;
@@ -1503,7 +1794,7 @@ void App::updateSleep() {
     // The sleep card's count: at 0 the console goes to sleep.
     if (sleepPromptAt > 0 && time - sleepPromptAt >= store.sleepConsole) {
         closeSleepPrompt();
-        appletRequestToSleep();
+        plat::requestSleep();
     }
 }
 
@@ -1511,7 +1802,7 @@ void App::sleepEnded(bool seen) {
     sleepChoice = 0;
     sleepReleased = true;
     // Then the console sleeps, after a card that lets you stay awake; only Gatefold in front can ask for that.
-    if (seen && store.sleepConsole > 0 && appletGetFocusState() == AppletFocusState_InFocus) {
+    if (seen && store.sleepConsole > 0 && plat::inFocus()) {
         if (sheet.page != Sheet::Closed) closeSheet();
         sleepPromptAt = time;
         idleFor = 0;
@@ -1530,18 +1821,9 @@ void App::closeSleepPrompt() {
 /** Handheld: the backlight goes down, and back up to what it was; docked: a veil (veilA), as the TV is not ours. */
 void App::setDimmed(bool on) {
     if (on && !dimmed) {
-        if (appletGetOperationMode() == AppletOperationMode_Handheld && R_SUCCEEDED(lblGetCurrentBrightnessSetting(&dimSaved)) &&
-            R_SUCCEEDED(lblSetCurrentBrightnessSetting(std::min(dimSaved, 0.04f)))) {
-            lblApplyCurrentBrightnessSettingToBacklight();
-            dimmed = 1;
-        } else {
-            dimmed = 2;
-        }
+        dimmed = plat::dimBacklight(dimSaved) ? 1 : 2;
     } else if (!on && dimmed) {
-        if (dimmed == 1) {
-            lblSetCurrentBrightnessSetting(dimSaved);
-            lblApplyCurrentBrightnessSettingToBacklight();
-        }
+        if (dimmed == 1) plat::restoreBacklight(dimSaved);
         dimmed = 0;
     }
 }
@@ -1552,9 +1834,9 @@ void App::sampleBattery() {
     if (time - battery.lastAt < 10) return;
     battery.lastAt = time;
     double pct = 0;
-    PsmChargerType ct = PsmChargerType_Unconnected;
-    if (R_FAILED(psmGetRawBatteryChargePercentage(&pct)) || R_FAILED(psmGetChargerType(&ct))) return;
-    const int charging = ct != PsmChargerType_Unconnected;
+    bool plugged = false;
+    if (!plat::batteryRaw(pct, plugged)) return;
+    const int charging = plugged;
     const long long wall = (long long)std::time(nullptr);
     // A charger in or out, or a gap (the app was suspended, its clock stopped): the old samples no longer tell the rate.
     if (charging != battery.charging || (battery.lastWall && wall - battery.lastWall > 120)) battery.samples.clear();
@@ -2103,8 +2385,8 @@ std::vector<int> App::resolvePlaylistFile(const std::string& file, int& missing)
     for (const M3uLine& l : lines) {
         const std::string& p = l.path;
         std::string cand;
-        if (p.compare(0, 6, "sdmc:/") == 0) cand = p;
-        else if (!p.empty() && p[0] == '/') cand = "sdmc:" + p;
+        if (plat::rootLen(p)) cand = p;
+        else if (!p.empty() && p[0] == '/') cand = plat::fromRoot(p);
         else if (!(p.size() > 1 && p[1] == ':')) cand = dir + "/" + p;   // a drive letter is someone else's card
         int t = -1;
         if (!cand.empty()) {
@@ -2147,12 +2429,12 @@ void App::openPlaylistPicker() {
     std::string at = playlistPickerAt;
     struct stat st;
     if (at.empty() || stat(at.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) at = store.importDir;   // Settings → Storage and reset
-    if (at.empty() || stat(at.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) at = "sdmc:/";
+    if (at.empty() || stat(at.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) at = plat::root();
     navigate(View::PickPlaylist, -1, at);
 }
 
 void App::leavePlaylistPicker() {
-    if (route.view == View::PickPlaylist || route.view == View::PickExport) route.query = "sdmc:/";   // as if at the root: back() leaves
+    if (route.view == View::PickPlaylist || route.view == View::PickExport) route.query = plat::root();   // as if at the root: back() leaves
     back();
 }
 
@@ -2168,7 +2450,7 @@ void App::openExportPicker(const std::string& name, const std::vector<int>& trac
     std::string at = exportPickerAt;
     if (!isDir(at)) at = store.exportDir;   // Settings → Storage and reset
     if (!isDir(at) && !lib.roots.empty()) at = isDir(lib.roots[0] + "/Playlists") ? lib.roots[0] + "/Playlists" : lib.roots[0];
-    if (!isDir(at)) at = "sdmc:/";
+    if (!isDir(at)) at = plat::root();
     navigate(View::PickExport, -1, at);
 }
 
@@ -2176,7 +2458,7 @@ void App::openExportPicker(const std::string& name, const std::vector<int>& trac
 void App::exportPlaylist(const std::string& dir) {
     std::string safe = exportName;
     for (char& c : safe) if (strchr("/\\:*?\"<>|", c)) c = ' ';
-    const std::string file = (dir.back() == '/' ? dir : dir + "/") + safe + ".m3u8";
+    const std::string file = plat::join(dir, safe + ".m3u8");
     auto write = [this, dir, file, safe] {
         std::vector<M3uTrack> out;
         out.reserve(exportTracks.size());
@@ -2191,7 +2473,7 @@ void App::exportPlaylist(const std::string& dir) {
         const size_t n = out.size();
         leavePlaylistPicker();
         toast("Exported " + std::to_string(n) + (n == 1 ? " track to " : " tracks to ") + safe + ".m3u8 in " +
-              (dir == "sdmc:/" ? std::string("the SD card") : baseName(dir)));
+              (plat::isRoot(dir) ? std::string(plat::rootName()) : baseName(dir)));
     };
     struct stat st;
     if (stat(file.c_str(), &st) != 0) { write(); return; }
@@ -2315,6 +2597,10 @@ void App::forgetNowPlaying() {
 /** The loaded cover: uploaded, crossfaded in, and the palette from it. */
 void App::applyCover(TrackLoader::Result& r) {
     if (r.gen != loadGen || now.track < 0) { r.release(); return; }
+#ifdef GF_WINDOWED
+    plat::mediaInfo(now.info.title, now.info.artist, now.info.album, r.mediaCover ? static_cast<const uint8_t*>(r.mediaCover->pixels) : nullptr,
+                    r.mediaCover ? r.mediaCover->w : 0, r.mediaCover ? r.mediaCover->h : 0, r.mediaJpeg);
+#endif
     if (mixOld.on) mixOld.coverIn = true;   // (a join's outgoing cover is now.prevCover from here: mixCover)
     // Keep the outgoing cover for the 500 ms crossfade.
     if (now.prevCover) SDL_DestroyTexture(now.prevCover);
@@ -2523,10 +2809,9 @@ void App::back() {
     // The playlist browsers (import, export): B goes to the folder above; at the SD card's root it leaves them.
     if (route.view == View::PickPlaylist || route.view == View::PickExport) {
         const std::string& p = route.query;
-        const size_t s = p.find_last_of('/');
-        if (!(p.empty() || p == "sdmc:/" || p == "sdmc:")) {
+        if (!plat::isRoot(p)) {
             const std::string child = p;
-            navigate(route.view, -1, s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s), false);
+            navigate(route.view, -1, plat::parentDir(child), false);
             ui.focus(uid("pk.dir", int(uid(child) & 0x7fffffff)));
             return;
         }
@@ -2539,11 +2824,10 @@ void App::back() {
         return;
     }
     // Files: B goes to the folder above (the one come from is focused); at the SD card's root it leaves as any page.
-    if (route.view == View::Files && !(route.query.empty() || route.query == "sdmc:/" || route.query == "sdmc:")) {
-        const std::string& p = route.query;
-        const size_t s = p.find_last_of('/');
+    if (route.view == View::Files && !plat::isRoot(route.query)) {
+        const std::string p = route.query;
         files.focusAfter = p;
-        navigate(View::Files, -1, s == std::string::npos || s <= 5 ? std::string("sdmc:/") : p.substr(0, s), false);
+        navigate(View::Files, -1, plat::parentDir(p), false);
         return;
     }
     // Settings: from a category's options, B goes back to that category in the list; only from the list does it leave.
@@ -2564,19 +2848,10 @@ void App::back() {
 }
 
 void App::openSearch() {
-    SwkbdConfig kbd;
-    if (R_FAILED(swkbdCreate(&kbd, 0))) {
-        toast("The keyboard is not available in applet mode");
-        return;
-    }
-    swkbdConfigMakePresetDefault(&kbd);
-    swkbdConfigSetGuideText(&kbd, "Artist, album or track");
-    swkbdConfigSetHeaderText(&kbd, "Search");
-    if (route.view == View::Search) swkbdConfigSetInitialText(&kbd, route.query.c_str());
     char out[256] = {};
-    const Result rc = swkbdShow(&kbd, out, sizeof out);
-    swkbdClose(&kbd);
-    if (R_SUCCEEDED(rc) && out[0]) navigate(View::Search, -1, out, route.view != View::Search);
+    const plat::TextResult r = plat::askText("Search", "Artist, album or track", route.view == View::Search ? route.query.c_str() : nullptr, out, sizeof out);
+    if (r == plat::TextResult::Unavailable) toast("The keyboard is not available in applet mode");
+    if (r == plat::TextResult::Done && out[0]) navigate(View::Search, -1, out, route.view != View::Search);
 }
 
 void App::toast(const std::string& s) {
@@ -2662,21 +2937,16 @@ std::string App::trackSub(int t) const {
 
 
 int main(int argc, char** argv) {
-    // The running .nro (hbloader gives its path), where an update's new one is swapped in
-    std::string self = "sdmc:/switch/Songate/Songate.nro";
-#ifdef __SWITCH__
-    if (argc > 0 && argv[0] && strncmp(argv[0], "sdmc:/", 6) == 0 && strstr(argv[0], ".nro")) self = argv[0];
-    // An update installed while Gatefold was closed some other way (the console restarted): its .nro is swapped in
-    // before anything reads this one, and the new one starts instead.
-    if (const std::string next = Updater::finishPending(Store::Dir, self); !next.empty() && envHasNextLoad()) {
-        envSetNextLoad(next.c_str(), next.c_str());
-        return 0;
-    }
-    Updater::cleanLegacy(Store::Dir, self);   // after the rebranding: 1.x's .nro and overlay, once (the first launch)
-#else
-    (void)argc;
-    (void)argv;
+    // The running program, where an update's new one is swapped in
+    const std::string self = plat::selfPath(argc, argv);
+    if (plat::swapsSelf()) {
+        // An update installed while Gatefold was closed some other way (the console restarted): its .nro is swapped in
+        // before anything reads this one, and the new one starts instead.
+        if (const std::string next = Updater::finishPending(Store::Dir, self); !next.empty() && plat::relaunch(next)) return 0;
+#ifndef GF_WINDOWED
+        Updater::cleanLegacy(Store::Dir, self);   // after the rebranding: 1.x's .nro and overlay, once (the first launch)
 #endif
+    }
     App app;
     app.selfPath = self;
     if (app.init()) app.run();

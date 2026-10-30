@@ -124,7 +124,7 @@ void appendf(std::string& s, const char* fmt, ...) {
 void makeDirs() {
     static bool made = false;   // the tag cache is opened in the folder straight after the first save
     if (made) return;
-    mkdir("sdmc:/config", 0777);
+    mkdir(plat::configParent(), 0777);
     mkdir(Store::Dir, 0777);
     made = true;
 }
@@ -166,6 +166,9 @@ void Store::load() {
         else if (k == "lyricTimingFor") lyricTimingFor = std::clamp(atoi(v.c_str()), 0, 2);
         else if (k == "resume") resume = v == "1";
         else if (k == "background") background = v == "1";
+#ifdef GF_WINDOWED
+        else if (k == "window") { int m = 0; sscanf(v.c_str(), "%d %d %d %d %d", &winX, &winY, &winW, &winH, &m); winMax = m != 0; }
+#endif
         else if (k == "viewPlaylist") viewPlaylist = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewFolders") viewFolders = std::clamp(atoi(v.c_str()), 0, 3);
         else if (k == "viewTracks") viewTracks = std::clamp(atoi(v.c_str()), 0, 3);
@@ -364,7 +367,7 @@ void Store::saveEqPresets() const {
 }
 
 void Store::saveEdits() const {
-    mkdir("sdmc:/config", 0777);
+    mkdir(plat::configParent(), 0777);
     mkdir(Dir, 0777);
     auto clean = [](std::string s) {
         for (char& c : s) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
@@ -397,6 +400,9 @@ void Store::save() const {
     appendf(f, "canvasFloat=%d\ncanvasZoom=%d\nresume=%d\ntheme=%d\ncanvasAutoMinimal=%d\n", canvasFloat, canvasZoom, resume, theme,
             canvasAutoMinimal);
     appendf(f, "background=%d\n", background);
+#ifdef GF_WINDOWED
+    appendf(f, "window=%d %d %d %d %d\n", winX, winY, winW, winH, int(winMax));
+#endif
     appendf(f, "brightness=%d\nsaturation=%.2f\ncolourTransition=%.2f\ncustomBg=%d\ncustomAccent=%d\ncustomAccent2=%d\n", brightness, double(saturation),
             double(colourTransition), customBg, customAccent, customAccent2);
     appendf(f, "customMode=%d\n", customMode);

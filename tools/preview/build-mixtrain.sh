@@ -7,7 +7,7 @@ OUT="${1:-$HERE/out}"
 SRC="$HERE/../../source"
 FFMPEG="${FFMPEG:?an FFmpeg win64 shared build folder}"
 mkdir -p "$OUT"
-FLAGS=(-std=c++20 -O2 -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DGF_FFMPEG -D_SILENCE_CXX20_U8PATH_DEPRECATION_WARNING -I"$SRC" -I"$FFMPEG/include")
+FLAGS=(-std=c++20 -O2 -DGF_PREVIEW -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DGF_FFMPEG -D_SILENCE_CXX20_U8PATH_DEPRECATION_WARNING -I"$SRC" -I"$FFMPEG/include")
 clang++ "${FLAGS[@]}" "$HERE/mixtrain.cpp" "$SRC/mixan.cpp" "$SRC/mood.cpp" "$SRC/automix.cpp" "$SRC/loudness.cpp" "$SRC/ffdecoder.cpp" \
   -L"$FFMPEG/lib" -lavformat -lavcodec -lswresample -lavutil -Xlinker /subsystem:console -o "$OUT/mixtrain.exe"
 cp "$FFMPEG/bin/"*.dll "$OUT/"

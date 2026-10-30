@@ -5,7 +5,7 @@
 #include "coverio.hpp"
 
 #include <SDL2/SDL_image.h>
-#ifdef __SWITCH__
+#ifdef GF_TURBOJPEG
 #include <turbojpeg.h>
 #endif
 
@@ -59,7 +59,7 @@ unsigned long long fnv64(const void* data, size_t n) {
  */
 std::vector<uint8_t> encodeJpeg(SDL_Surface* s, int quality) {
     std::vector<uint8_t> out;
-#ifdef __SWITCH__
+#ifdef GF_TURBOJPEG
     tjhandle h = tjInitCompress();
     if (!h) return out;
     unsigned char* buf = nullptr;
@@ -197,6 +197,10 @@ int MetaCache::slotFor(const std::string& key) {
     slotKey_.push_back(key);
     return slotByKey_[key] = int(slots_.size()) - 1;
 }
+
+#ifdef GF_WINDOWED
+std::vector<uint8_t> mediaJpeg(SDL_Surface* s) { return encodeJpeg(s, 85); }
+#endif
 
 bool MetaCache::pump(SDL_Renderer* r) {
     frame_++;

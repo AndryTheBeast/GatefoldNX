@@ -2,6 +2,7 @@
  * Gatefold NX · shell.cpp
  * The frame around every view: #bg, #titlebar, #sidebar, #playerbar (app.css).
  */
+#include "words.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -121,6 +122,9 @@ void App::draw() {
     }
     if (!hidden) drawHint();
     else hints_.clear();
+#ifdef GF_WINDOWED
+    drawWindowLights();
+#endif
     drawPointer();
     drawFrameTimes();
     profMark(5);
@@ -173,7 +177,86 @@ void App::drawFrameTimes() {
 }
 
 /** The left stick's pointer: a translucent white dot in a soft dark ring, readable on any cover without glaring. */
+#ifdef GF_WINDOWED
+namespace {
+constexpr float kLightY = css::TbH / 2, kLightR = 6.5f;
+float lightX(int i) { return 21 + i * 20.f; }
+}  // namespace
+
+/** Which of the window's lights is at that place: 0 close, 1 minimise, 2 full screen, or -1. */
+int App::lightAt(float px, float py) const {
+    if (canvas || lightsP_ < 0.9f || py > css::TbH) return -1;
+    for (int i = 0; i < 3; i++) if (std::fabs(px - lightX(i)) <= 10) return i;
+    return -1;
+}
+
+/** 0 away, 1 all there, eased. */
+float App::lightsShown() const { return lightsP_ * lightsP_ * (3 - 2 * lightsP_); }
+
+/** The lights stay out of the way until the mouse reaches the window's top left corner (the system's cursor is there: in the resizing
+ *  edge the app gets no mouse events, so it is asked where it is). They wait a moment for it to travel to them, and for as long
+ *  as it stays near them. */
+void App::updateLights() {
+    SDL_ShowCursor(canvas && canvasIdle > 3 ? SDL_DISABLE : SDL_ENABLE);   // the arrow leaves the Canvas with its controls
+    int gx = 0, gy = 0, wx = 0, wy = 0, ww = 0, wh = 0;
+    SDL_GetGlobalMouseState(&gx, &gy);
+    SDL_GetWindowPosition(window_, &wx, &wy);
+    SDL_GetWindowSize(window_, &ww, &wh);
+    const int px = gx - wx, py = gy - wy;
+    const bool inside = py >= 0 && py < wh && px < ww;
+    constexpr int kWall = 3;
+    const bool atWall = inside && px >= 0 && px < kWall && py / scale_ < css::TbH;   // the top left corner: the bar's height of the wall
+    if (atWall && cameFromInside_) lightsHold_ = 2.5f;
+    else if (lightsHold_ > 0 && inside && px >= 0 && px / scale_ < kLightsW + 44 && py / scale_ < css::TbH) lightsHold_ = std::max(lightsHold_, 0.6f);
+    lightsHold_ = std::max(0.f, lightsHold_ - dt);
+    // the wall counts when reached from inside: the mouse only crossing it on its way in is not a request
+    if (!atWall) cameFromInside_ = inside && px >= kWall;
+    const float want = lightsHold_ > 0 && !canvas ? 1.f : 0.f;
+    if (!store.motion) lightsP_ = want;
+    else lightsP_ = want > lightsP_ ? std::min(want, lightsP_ + dt / 0.22f) : std::max(want, lightsP_ - dt / 0.22f);
+}
+
+void App::pressLight(int i) {
+    if (i == 0) closeWindow();
+    else if (i == 1) SDL_MinimizeWindow(window_);
+    else fullApp_ = !fullApp_;
+}
+
+/** The window's controls, drawn into the app's own bar: red closes, yellow minimises, green goes full screen. Over everything, as
+ *  they work whatever is open; their marks show while the mouse is near, grey when another window is in front. */
+void App::drawWindowLights() {
+    const float e = lightsShown();
+    if (e <= 0.002f) return;
+    static const Rgb lit[3] = { { 1.f, 0.373f, 0.341f }, { 0.996f, 0.737f, 0.180f }, { 0.157f, 0.784f, 0.251f } };
+    static const Rgb ink[3] = { { 0.302f, 0, 0 }, { 0.6f, 0.345f, 0 }, { 0, 0.396f, 0.051f } };
+    const bool front = SDL_GetKeyboardFocus() == window_;
+    const bool near = pointerIsMouse_ && pointer.idle < 3 && pointer.y <= css::TbH && pointer.x <= kLightsW - 4;
+    for (int i = 0; i < 3; i++) {
+        const float cx = lightX(i) - (1 - e) * (22 - i * 4.f), cy = kLightY;   // in from the wall, the far one furthest
+        const bool down = lightDown_ == i;
+        if (front || near) {
+            g.circle(cx, cy, kLightR, lit[i], e);
+            if (down) g.circle(cx, cy, kLightR, { 0, 0, 0 }, 0.22f);
+        } else g.circle(cx, cy, kLightR, pal.text, 0.2f * e);
+        if (!near || e < 0.9f) continue;
+        const float a = 3.2f;
+        if (i == 0) {
+            g.polyline({ { cx - a, cy - a }, { cx + a, cy + a } }, 1.6f, ink[i]);
+            g.polyline({ { cx - a, cy + a }, { cx + a, cy - a } }, 1.6f, ink[i]);
+        } else if (i == 1) {
+            g.polyline({ { cx - a - 0.6f, cy }, { cx + a + 0.6f, cy } }, 1.8f, ink[i]);
+        } else {   // two corners, pointing apart
+            g.polyline({ { cx - a, cy + 0.6f }, { cx - a, cy + a }, { cx - 0.6f, cy + a } }, 1.6f, ink[i]);
+            g.polyline({ { cx + a, cy - 0.6f }, { cx + a, cy - a }, { cx + 0.6f, cy - a } }, 1.6f, ink[i]);
+        }
+    }
+}
+#endif
+
 void App::drawPointer() {
+#ifdef GF_WINDOWED
+    if (pointerIsMouse_) return;
+#endif
     const float a = pointer.down ? 1.f : std::clamp(1 - (pointer.idle - Pointer::Hide + 0.4f) / 0.4f, 0.f, 1.f);
     if (a <= 0) return;
     const float r = pointer.down ? 7 : 9;
@@ -225,9 +308,22 @@ void App::drawBackground() {
 
 void App::drawTitlebar() {
     const float cy = css::TbH / 2;
+#ifdef GF_WINDOWED
+    float x = 10 + (kLightsW - 10) * lightsShown();   // it steps aside for the window's three lights (drawWindowLights)
+#else
     float x = 10;
-    hint(uid("tb.sidebar"), store.sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar");
-    if (iconButton(uid("tb.sidebar"), ICON_SIDEBAR, x + 17, cy)) { store.sidebarCollapsed = !store.sidebarCollapsed; store.save(); }
+#endif
+    hint(uid("tb.sidebar"), sidebarFolded() ? "Show the sidebar" : "Hide the sidebar");
+    if (iconButton(uid("tb.sidebar"), ICON_SIDEBAR, x + 17, cy)) {
+#ifdef GF_WINDOWED
+        if (css::W < kNarrowW) sideOpenedNarrow_ = !sideOpenedNarrow_;   // for now: the setting is for windows with room
+        else
+#endif
+        { store.sidebarCollapsed = !store.sidebarCollapsed; store.save(); }
+    }
+#ifdef GF_WINDOWED
+    titleKeep_[0] = { x, 0, 34, css::TbH };
+#endif
     x += 34 + 6;
 
     // .brand: the name alone, its own wordmark (the user, 2026-10-30: "better font, bold, magical", then the mark beside it
@@ -252,10 +348,17 @@ void App::drawTitlebar() {
     }
 
     // .search: centred in what is left of the bar; opens the console keyboard
+#ifdef GF_WINDOWED
+    const float left = std::max(sideW + 12, 10 + 40 + 120.f), right = css::W - 150;   // where it is with the lights away: it does not move with them
+#else
     const float left = std::max(sideW + 12, x + 120), right = css::W - 150;
+#endif
     const float sw = std::min(520.f, right - left), sx = left + (right - left - sw) / 2, sy = cy - 16;
     const Id sid = uid("tb.search");
     if (ui.item(sid, { sx, sy, sw, 32 }, 9)) openSearch();
+#ifdef GF_WINDOWED
+    titleKeep_[1] = { sx, 0, sw, css::TbH };
+#endif
     const bool hot = ui.focused(sid) && ui.showFocusRing();
     g.roundRect(sx, sy, sw, 32, 9, hot ? pal.surface : pal.text, hot ? 1.f : 0.065f);
     g.roundStroke(sx, sy, sw, 32, 9, 1, hot ? pal.accent : pal.text, hot ? 0.55f : 0.09f);
@@ -265,17 +368,22 @@ void App::drawTitlebar() {
             int(sw - 90));
     // <kbd>: the button that opens search
     const Font kf{ css::Xs };
-    const float kw = g.measure("Y", kf) + 12;
+#ifdef GF_WINDOWED
+    const std::string searchKey = plat::capName("Y");
+#else
+    const char* const searchKey = "Y";
+#endif
+    const float kw = g.measure(searchKey, kf) + 12;
     g.roundStroke(sx + sw - 12 - kw, cy - 9, kw, 18, 5, 1, pal.text, 0.15f);
-    g.textC("Y", kf, sx + sw - 12 - kw / 2, cy, pal.text3, 1, Align::Center);
+    g.textC(searchKey, kf, sx + sw - 12 - kw / 2, cy, pal.text3, 1, Align::Center);
 
     // Where Windows has its caption buttons: the clock and the battery.
     const std::time_t tt = std::time(nullptr);
     const std::tm* lt = std::localtime(&tt);
     char clock[8];
     std::strftime(clock, sizeof clock, "%H:%M", lt);
-    u32 pct = 0;
-    const bool haveBattery = R_SUCCEEDED(psmGetBatteryChargePercentage(&pct));
+    unsigned pct = 0;
+    const bool haveBattery = plat::batteryLevel(pct);
     float rx = css::W - 18;
     if (haveBattery) {
         const float bw = 24, bh = 12, bx = rx - bw - 3, by = cy - bh / 2;
@@ -782,7 +890,7 @@ void App::backgroundJobs(Job (&jobs)[JobSlots], bool (&busy)[JobSlots]) {
         if (ph == Updater::BackingUp || ph == Updater::Installing) jobs[4].total = 0;   // quick: just busy
         busy[4] = true;
     }
-#ifndef __SWITCH__
+#ifdef GF_PREVIEW
     // The PC preview has no background player, and its covers are made too fast to overlap: GF_JOBS=1 shows all
     // three at once (hostshim.cpp), so the stack and its menus can be looked at.
     if (getenv("GF_JOBS")) {
@@ -966,7 +1074,7 @@ void App::drawSleepPrompt() {
     const Font tf{ css::Lg, Weight::Bold }, sf{ css::Base };
     const float w = 520, pad = 24, x = (css::W - w) / 2;
     const std::vector<std::string> lines =
-        g.wrap("The sleep timer has paused the music. The console goes to sleep by itself unless you stay awake.", sf, int(w - pad * 2 - 52), 3);
+        g.wrap("The sleep timer has paused the music. " GF_CAP_THE_CONSOLE " goes to sleep by itself unless you stay awake.", sf, int(w - pad * 2 - 52), 3);
     const float h = pad + 26 + 8 + lines.size() * 21.f + 20 + 34 + pad;
     const float y = (css::H - h) / 2 + (1 - a) * 10;
     g.roundRect(x, y + 10, w, h, 18, { 0, 0, 0 }, 0.3f * a);
@@ -983,7 +1091,7 @@ void App::drawSleepPrompt() {
     const float bw = button(uid("sleep.now"), ICON_MOON, "Sleep now", tx, by, true, &sleepNow, false, false, DefaultFocus);
     button(uid("sleep.stay"), nullptr, "Stay awake", tx + bw + 8, by, false, &stay);
     if (sleepPromptAt == time) ui.focus(uid("sleep.now"));
-    if (sleepNow) { closeSleepPrompt(); appletRequestToSleep(); }
+    if (sleepNow) { closeSleepPrompt(); plat::requestSleep(); }
     if (stay) closeSleepPrompt();
 }
 

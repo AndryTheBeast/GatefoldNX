@@ -4,6 +4,7 @@
  * console to Songate's reports on GitHub (report.hpp: a repository of its own); and Atmosphère's crash reports. The card's
  * reads (the crash reports, the console's versions) and the sending run on workers; nothing of it on the main thread.
  */
+#include "words.hpp"
 #include <algorithm>
 #include <ctime>
 
@@ -15,7 +16,11 @@
 namespace {
 
 const char* const kAreas[] = { "Now playing", "Library and playlists", "Automix", "Mood playlists", "Canvas and lyrics",
-                               "Sound and equalizer", "Background player and overlay", "Updates and settings", "Something else" };
+                               "Sound and equalizer",
+#ifndef GF_WINDOWED
+                               "Background player and overlay",
+#endif
+                               "Updates and settings", "Something else" };
 constexpr int kAreaCount = int(std::size(kAreas));
 const char* const kOften[] = { "Always", "Sometimes", "Once" };
 
@@ -33,9 +38,7 @@ void App::allowReports() {
     confirm(ICON_HELP, "Support", "Send reports from Songate?", "GitHub · AndryTheBeast/songate-reports, a private repository",
             "Allow Songate to send reports?",
             "Songate sends a report only when you fill in the form and press Send, to a private repository on GitHub that only "
-            "Songate's developer can read. With what you write it sends Songate's version, the firmware and Atmosphère's, docked "
-            "or handheld, the background player, the playing file's format, how many tracks you have, and, if you leave them on, "
-            "Atmosphère's crash reports and Songate's last messages. Never your files' names. GitHub sees your console's IP "
+            "Songate's developer can read. With what you write it sends " GF_REPORT_SENDS " Never your files' names. GitHub sees " GF_YOUR_CONSOLE "'s IP "
             "address. You can turn this off at any time.",
             "Allow", [this] {
                 store.reports = true;
@@ -98,9 +101,11 @@ std::string App::reportBody() const {
     b += "\n\n### " + std::string(bug ? "What happened" : "The idea") + "\n\n" + (sheet.repWhat.empty() ? "(not given)" : sheet.repWhat) + "\n";
     if (bug) b += "\n### Steps\n\n" + (sheet.repSteps.empty() ? std::string("(not given)") : sheet.repSteps) + "\n";
     // the app's part: nothing of the user's files but the playing one's format
-    b += "\n### This console\n\n| | |\n|---|---|\n| Songate | " + Updater::thisVersion() + " · protocol " + std::to_string(Updater::thisProtocol()) + " |\n";
+    b += "\n### " GF_CAP_THIS_CONSOLE "\n\n| | |\n|---|---|\n| Songate | " + Updater::thisVersion() + " · protocol " + std::to_string(Updater::thisProtocol()) + " |\n";
     b += "{{SYSTEM}}";
+#ifndef GF_WINDOWED
     b += "| Background player | " + std::string(player.remote() ? "connected" : "not connected") + " |\n";
+#endif
     if (now.track >= 0 && !now.info.codec.empty()) {
         std::string f = now.info.codec;
         if (now.info.sampleRate > 0) { char r[24]; snprintf(r, sizeof r, " · %.1f kHz", now.info.sampleRate / 1000.0); f += r; }
@@ -188,7 +193,7 @@ void App::reportRows(std::vector<SheetRow>& rows) {
     log.on = sheet.repLog;
     log.h = 62;
     rows.push_back(log);
-    Row text{ Row::Text, ICON_INFO, "", "Always: Songate's version, the firmware and Atmosphère's, the background player, the playing file's format "
+    Row text{ Row::Text, ICON_INFO, "", GF_REPORT_ALWAYS
                                        "and how many tracks you have. Never your files' names." };
     text.h = 2 * 19.f + 14;
     rows.push_back(text);
@@ -218,8 +223,12 @@ void App::reportFooter(float x, float w, float fy) {
                 cores::moveHere(cores::Net);
                 const report::System s = report::system();
                 std::string b = body;
+#ifdef GF_WINDOWED
+                const std::string sys = "| System | " + s.firmware + " |\n";
+#else
                 const std::string sys = "| Firmware | " + s.firmware + " |\n| Atmosphère | " + s.atmosphere + " |\n| Mode | " +
                                         (s.docked ? "docked" : "handheld") + " |\n";
+#endif
                 b.replace(b.find("{{SYSTEM}}"), 10, sys);
                 std::string cr;
                 if (withCrashes) {
@@ -246,7 +255,7 @@ void App::crashRows(std::vector<SheetRow>& rows) {
         return;
     }
     if (supportCrashes_.empty()) {
-        rows.push_back({ Row::Text, ICON_CHECK, "", "None on this console: Atmosphère has not recorded a crash." });
+        rows.push_back({ Row::Text, ICON_CHECK, "", "None on " GF_THIS_CONSOLE ": Atmosphère has not recorded a crash." });
         rows.back().h = 19 + 14;
         return;
     }
