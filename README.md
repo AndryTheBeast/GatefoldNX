@@ -11,7 +11,9 @@ By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · versio
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
 <!-- The tour video: on GitHub, replace the next line by dragging docs/tour.mp4 here (the inline player) -->
-<a href="docs/tour.mp4"><img src="docs/tour-poster.webp" alt="Watch the tour of Songate"></a>
+https://github.com/user-attachments/assets/ae117ba4-6bb8-43b2-8334-0b8ebb37557d
+
+
 
 <p align="center"><i>"We just can't ship junk."</i><br><sub>Steve Jobs, Apple's Mac event, August 2007</sub></p>
 
