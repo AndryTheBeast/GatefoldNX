@@ -109,6 +109,7 @@ private:
     u64 appPid_ = 0, appProgram_ = 0;   // the application now, when it is not Gatefold
     float gameVolumeFor(u64 program) const;
     void applyGameVolume();             // m_ held
+    bool volumePending_ = false;        // no connection to aud:a was free: the watcher tries again
     void saveGameVolumes();
     u64 gatefoldPid_ = 0;
     u32 appState_ = GfbgApp_None;

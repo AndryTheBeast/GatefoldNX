@@ -412,12 +412,16 @@ float Engine::gameVolumeFor(u64 program) const {
     return cfg_.gameVolume;
 }
 
-/** The game's own audio, through aud:a (11.0.0+) or audout:a before it. m_ held. */
+/** The game's own audio, through aud:a (11.0.0+) or audout:a before it. Open only for the call: these services allow few
+ *  connections and am aborts when it finds one full (2021-0003, 2026-10-30). No connection free: tried again by the watcher. m_ held. */
 void Engine::applyGameVolume() {
+    volumePending_ = false;
     if (!appPid_) return;
     const float v = gameVolumeFor(appProgram_);
-    if (hosversionAtLeast(11, 0, 0)) audaSetAudioOutputProcessMasterVolume(appPid_, 0, v);
-    else audoutaSetProcessMasterVolume(appPid_, 0, v);
+    const bool aud = hosversionAtLeast(11, 0, 0);
+    if (R_FAILED(aud ? audaInitialize() : audoutaInitialize())) { volumePending_ = true; return; }
+    if (aud) { audaSetAudioOutputProcessMasterVolume(appPid_, 0, v); audaExit(); }
+    else { audoutaSetProcessMasterVolume(appPid_, 0, v); audoutaExit(); }
 }
 
 GfbgGameVolume Engine::gameVolume() {
@@ -1429,8 +1433,10 @@ void Engine::watchMain(void* self) {
         if (!app) pid = 0;
         if (pid != lastPid) { lastPid = pid; seenAt = now; pdmFocus = -1; }
 
+        // pdm:qry only while a game runs, and only for this look (see applyGameVolume). Not free: "in front" just means "running"
         s32 total = 0, first = 0, end = 0;
-        if (app && R_SUCCEEDED(pdmqryGetAvailablePlayEventRange(&total, &first, &end)) && end != lastEnd) {
+        const bool pdm = app && R_SUCCEEDED(pdmqryInitialize());
+        if (pdm && R_SUCCEEDED(pdmqryGetAvailablePlayEventRange(&total, &first, &end)) && end != lastEnd) {
             lastEnd = end;
             PdmPlayEvent ev[16];
             s32 got = 0;
@@ -1442,6 +1448,7 @@ void Engine::watchMain(void* self) {
                     else if (t == PdmAppletEventType_OutOfFocus || t == PdmAppletEventType_OutOfFocus4) pdmFocus = 0;
                 }
         }
+        if (pdm) pdmqryExit();
 
         mutexLock(&e->m_);
         const bool isGatefold = app && pid == e->gatefoldPid_;
@@ -1452,6 +1459,8 @@ void Engine::watchMain(void* self) {
             u64 program = 0;
             if (gamePid) pmdmntGetProgramId(&program, gamePid);
             e->appProgram_ = program;
+            e->applyGameVolume();
+        } else if (e->volumePending_) {
             e->applyGameVolume();
         }
         mutexUnlock(&e->m_);

@@ -38,16 +38,11 @@ void __appInit(void) {
     fsdevMountSdmc();
     pmdmntInitialize();
     timeInitialize();     // the clock for play statistics (bg-plays.txt); without it plays are dated by Gatefold
-    pdmqryInitialize();   // failing is fine: then "in front" just means "running"
-    if (hosversionAtLeast(11, 0, 0)) audaInitialize();   // game volume
-    else audoutaInitialize();
+    // aud:a and pdm:qry are opened only for each use (Engine): they allow few connections, and am needs them too
     // sm stays open: audout is opened later, from the audio thread, once audio is up.
 }
 
 void __appExit(void) {
-    pdmqryExit();
-    audaExit();
-    audoutaExit();
     pmdmntExit();
     timeExit();
     fsdevUnmountAll();
