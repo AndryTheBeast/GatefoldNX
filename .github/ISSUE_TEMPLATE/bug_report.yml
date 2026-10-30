@@ -1,0 +1,93 @@
+name: 🐞 Bug report
+description: Something in Songate does not work as it should.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Testing was only done on HOS 22.5.0 and 23.0.0 with the latest HATS pack from sthetix, and only MP3, M4A and FLAC are supported. Reports from other setups are welcome, just say so below.
+  - type: input
+    id: version
+    attributes:
+      label: Songate version
+      description: Settings › About.
+      placeholder: 2.0.0 BETA 1
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware (HOS)
+      description: System Settings › System on the console.
+      placeholder: "23.0.0"
+    validations:
+      required: true
+  - type: input
+    id: atmosphere
+    attributes:
+      label: Atmosphère version
+      placeholder: 1.11.2
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part of Songate?
+      options:
+        - Now playing
+        - Library and playlists
+        - Automix
+        - Mood playlists
+        - Canvas and lyrics
+        - Sound and equalizer
+        - Background player and overlay
+        - Updates and settings
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: File format
+      description: Of the track playing, if it matters.
+      options:
+        - MP3
+        - M4A (AAC)
+        - FLAC
+        - Another format (unsupported)
+        - It does not depend on the file
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen
+      placeholder: |
+        1. Open …
+        2. Press …
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: often
+    attributes:
+      label: How often?
+      options:
+        - Always
+        - Sometimes
+        - Once
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, or a crash report from `atmosphere/crash_reports` on the SD card.

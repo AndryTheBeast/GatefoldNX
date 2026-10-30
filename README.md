@@ -1,12 +1,19 @@
-<p align="center"><img src="docs/banner.webp" width="760" alt="Songate"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/wordmark-light.png">
+    <img src="docs/wordmark-dark.png" width="520" alt="Songate">
+  </picture>
+</p>
 <p align="center"><b>A native music player for the Nintendo Switch.</b><br>
 Your own music folder, synced lyrics, colours from every cover, DJ-style Automix, and music that keeps playing on the HOME menu and in games.<br>
 By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 BETA · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
-<a href="../../releases"><b>⬇️ Download</b></a> · <a href="docs/tour.mp4"><b>▶️ Watch the tour</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
+<a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
+
+<!-- The tour video: on GitHub, replace the next line by dragging docs/tour.mp4 here (the inline player) -->
+<a href="docs/tour.mp4"><img src="docs/tour-poster.webp" alt="Watch the tour of Songate"></a>
 
 <p align="center"><i>"We just can't ship junk."</i><br><sub>Steve Jobs, Apple's Mac event, August 2007</sub></p>
-
-![Now playing](docs/screenshots/now-playing.webp)
 
 Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefold-foobar2000), DEVIROYrus's modern interface for foobar2000 on Windows, and was called Gatefold NX until 2.0.0. It is not a port: it is a native rewrite in C++ (devkitPro, libnx, SDL2). Layout values come from Gatefold's CSS, and CSS pixels map 1:1 onto the Switch's 1280×720 screen. Its palette algorithm, icons and typeface are Gatefold's own. Automix, Mood playlists, the background player, the overlay and the updater are Songate's.
 

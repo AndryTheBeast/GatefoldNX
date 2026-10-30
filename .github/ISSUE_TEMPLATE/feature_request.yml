@@ -1,0 +1,41 @@
+name: 💡 Feature request
+description: An idea for Songate.
+title: "[Idea] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What would you like Songate to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it would help
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part of Songate?
+      options:
+        - Now playing
+        - Library and playlists
+        - Automix
+        - Mood playlists
+        - Canvas and lyrics
+        - Sound and equalizer
+        - Background player and overlay
+        - Updates and settings
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Songate version
+      description: Settings › About. Optional, but it helps.
+      placeholder: 2.0.0 BETA 1
