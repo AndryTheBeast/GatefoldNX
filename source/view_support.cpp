@@ -177,6 +177,7 @@ void App::reportRows(std::vector<SheetRow>& rows) {
     }
     rows.push_back({ Row::Group, nullptr, "Sent with it" });
     rows.back().h = 38;
+#ifndef GF_WINDOWED
     // the crash reports of the last 30 days (none: nothing to send)
     int recent = 0;
     if (supportAsked_ && !supportThread_.joinable())
@@ -188,6 +189,7 @@ void App::reportRows(std::vector<SheetRow>& rows) {
     if (!recent) crashes.act = nullptr;
     crashes.h = 62;
     rows.push_back(crashes);
+#endif
     Row log{ Row::Toggle, nullptr, "Songate's log", "Its last 40 messages, the ones shown at the bottom of the screen", "",
              [this] { sheet.repLog = !sheet.repLog; } };
     log.on = sheet.repLog;
