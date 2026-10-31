@@ -93,7 +93,7 @@ The same app on Windows, from the same code: the library, playlists, Automix, Mo
 
 **Not on the PC:** the background player, the overlay, game actions and per-game volumes. They belong to the console.
 
-**Not tested yet:** game pads, a second monitor, taskbar buttons, Sleep now, the colour picker, and installing an update from inside the app. If you try them, please [say how it went](../../issues/new/choose).
+**Not tested yet:** game pads, a second monitor, taskbar buttons, Sleep now, the colour picker, and an in-app update from a real release. If you try them, please [say how it went](../../issues/new/choose).
 
 The sections below describe the console. The PC's differences are the ones listed here.
 
@@ -249,7 +249,7 @@ Open it with Ultrahand's combo (L + D-pad down + R3, a click of the right stick,
 
 You need a Switch running **Atmosphère**, and **Ultrahand** for the overlay. **Tests were only made on HOS 22.5.0 and 23.0.0, with the latest HATS pack from sthetix.**
 
-Download `Songate-<version>.zip` from [Releases](../../releases) and unzip it onto the root of the SD card. It holds:
+Download `SongateNX-<version>.zip` from [Releases](../../releases) and unzip it onto the root of the SD card. It holds:
 
 | Path | What |
 |---|---|
@@ -275,7 +275,7 @@ The app and the overlay work without the background player. Without it, or with 
 
 You need a 64-bit PC. **Tests were only made on Windows 11.**
 
-Download `Songate-<version>-Windows-Setup.exe` from [Releases](../../releases) and run it. It needs no administrator rights: you choose a folder, which shortcuts you want, and whether to open Songate at the end. Windows' protected folders, like Program Files, can't be used. Settings › Updates installs newer versions, once you turn it on.
+Download `SongateWIN-<version>.exe` from [Releases](../../releases) and run it. It needs no administrator rights: you choose a folder, which shortcuts you want, and whether to open Songate at the end. Windows' protected folders, like Program Files, can't be used. Settings › Updates installs newer versions, once you turn it on.
 
 🛡️ **"Windows protected your PC"?** The installer isn't signed, so Windows doesn't know it yet. Click **More info**, then **Run anyway**. Your browser may also ask whether to keep the download. The release notes list the file's SHA-256, if you'd like to check it first.
 

@@ -26,7 +26,7 @@
 
 namespace {
 
-constexpr const char* kApi = "https://api.github.com/repos/AndryTheBeast/Songate/releases?per_page=30";
+constexpr const char* kApiUrl = "https://api.github.com/repos/AndryTheBeast/Songate/releases?per_page=30";
 // Automix's models (the open-source model repository): its latest release's assets, by GitHub's own redirect (no API call)
 constexpr const char* kModels = "https://github.com/AndryTheBeast/songate-automix/releases/latest/download/";
 constexpr const char* kModelsManifest = "songate-automix-models.json";
@@ -695,12 +695,14 @@ bool readManifest(const std::string& text, UpdRelease& r) {
     r.manifest = true;
     r.protocol = int(m.i("protocol"));
     if (!m.s("version").empty()) r.version = Updater::pretty(m.s("version"));
+#ifndef GF_WINDOWED   // the manifest's zip is the console's: a PC's download keeps its installer's own size and checksum
     const Json& zip = m["zip"];
     if (zip.kind == Json::Obj) {
         if (!zip.s("name").empty()) r.zipName = zip.s("name");
         if (zip.i("size")) r.zipSize = zip.i("size");
         if (!zip.s("sha256").empty()) r.zipSha = zip.s("sha256");
     }
+#endif
     r.files.clear();
     for (const Json& f : m["files"].arr) {
         UpdFile u{ f.s("path"), f.i("size"), f.s("sha256") };
@@ -739,8 +741,7 @@ std::vector<UpdRelease> readReleases(const std::string& api) {
             const std::string n = a.s("name");
 #ifdef GF_WINDOWED
             // A PC's release is its installer. (Never named .zip: consoles on 2.0.0 BETA 1 take the first .zip they find.)
-            const std::string kind = "-Windows-Setup.exe";
-            if (n.size() > kind.size() && n.compare(n.size() - kind.size(), kind.size(), kind) == 0 && r.zipUrl.empty()) {
+            if (plat::isInstaller(n) && r.zipUrl.empty()) {
 #else
             if (n.size() > 4 && n.substr(n.size() - 4) == ".zip" && r.zipUrl.empty()) {
 #endif
@@ -1004,6 +1005,11 @@ bool Updater::poll() {
 void Updater::doCheck() {
     std::string api, err;
     std::vector<UpdRelease> list;
+#if defined(GF_DEV) && defined(GF_WINDOWED)
+    const char* const kApi = getenv("GF_API") ? getenv("GF_API") : kApiUrl;   // tests: a release served from this PC
+#else
+    const char* const kApi = kApiUrl;
+#endif
     if (net::get(kApi, api, err, &prog_)) {
         list = readReleases(api);
 #ifdef GF_WINDOWED

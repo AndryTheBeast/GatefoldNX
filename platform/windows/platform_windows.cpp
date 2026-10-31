@@ -131,9 +131,16 @@ std::string selfPath(int, char**) {
 
 bool swapsSelf() { return true; }   // only settings wait for a launch here (a restore, a fresh start): the installer replaces the program
 
+/** SongateWIN-<version>.exe, never named .zip: consoles on 2.0.0 BETA 1 take the first .zip they find. */
+bool isInstaller(const std::string& name) {
+    const size_t cut = name.find_last_of("/\\");
+    const std::string n = cut == std::string::npos ? name : name.substr(cut + 1);
+    return n.rfind("SongateWIN-", 0) == 0 && n.size() > 15 && n.compare(n.size() - 4, 4, ".exe") == 0;
+}
+
 /** The next launch, or an update's installer, which starts Songate again when it is done. */
 bool relaunch(const std::string& program) {
-    const bool setup = program.size() > 10 && program.compare(program.size() - 10, 10, "-Setup.exe") == 0;
+    const bool setup = isInstaller(program);
     std::wstring cmd = L"\"" + winpath::wide(program.c_str()) + L"\"" + (setup ? L" /SILENT /SUPPRESSMSGBOXES /NORESTART" : L" --after");
     STARTUPINFOW si{ sizeof si };
     PROCESS_INFORMATION pi{};

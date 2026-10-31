@@ -39,6 +39,7 @@ cp "$HERE/licence-SDL.txt" "$L/SDL.txt"
 } > "$L/README-licences.txt"
 
 VERSION="$(grep -E '^APP_VERSION' "$ROOT/Makefile" | sed -E 's/^APP_VERSION[[:space:]:=]*//; s/[[:space:]]+$//')"
-NAME="Songate-$(echo "$VERSION" | tr ' ' '-')-Windows-Setup"
+# 2.0.0 BETA 1 → SongateWIN-2.0.0-beta.1, the spelling of the tag (plat::isInstaller finds it by that start)
+NAME="SongateWIN-$(echo "$VERSION" | tr 'A-Z' 'a-z' | sed -E 's/ ([a-z]+) ([0-9]+)$/-\1.\2/; s/ /-/g')"
 "$ISCC" //Q "//DAppVersion=$VERSION" "//DOutName=$NAME" "$(cygpath -w "$HERE/songate.iss")"
 echo "built $OUT/release/$NAME.exe"

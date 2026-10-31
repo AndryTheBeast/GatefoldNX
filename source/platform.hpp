@@ -77,6 +77,8 @@ void titleColours(uint32_t background, uint32_t text);
 void mediaInfo(const std::string& title, const std::string& artist, const std::string& album, const uint8_t* rgba, int w, int h,
                const std::vector<uint8_t>& jpeg);
 void mediaState(bool hasTrack, bool playing);
+/** A file name, or a path ending in one, is a release's installer. */
+bool isInstaller(const std::string& name);
 /** The usual place for music, offered at the first launch. */
 std::string musicFolder();
 #endif
