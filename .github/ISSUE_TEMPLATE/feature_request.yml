@@ -18,6 +18,16 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Nintendo Switch
+        - Windows
+        - Both
+    validations:
+      required: true
+  - type: dropdown
     id: part
     attributes:
       label: Which part of Songate?
@@ -29,6 +39,7 @@ body:
         - Canvas and lyrics
         - Sound and equalizer
         - Background player and overlay
+        - The PC's window, tray and keyboard
         - Updates and settings
         - Something else
     validations:

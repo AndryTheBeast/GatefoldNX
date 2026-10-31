@@ -6,7 +6,16 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Testing was only done on HOS 22.5.0 and 23.0.0 with the latest HATS pack from sthetix, and only MP3, M4A and FLAC are supported. Reports from other setups are welcome, just say so below.
+        Thanks for reporting. Testing was only done on HOS 22.5.0 and 23.0.0 with the latest HATS pack from sthetix, and on Windows 11, and only MP3, M4A and FLAC are supported. Reports from other setups are welcome, just say so below.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Nintendo Switch
+        - Windows
+    validations:
+      required: true
   - type: input
     id: version
     attributes:
@@ -19,17 +28,20 @@ body:
     id: firmware
     attributes:
       label: Firmware (HOS)
-      description: System Settings › System on the console.
+      description: Switch only. System Settings › System on the console.
       placeholder: "23.0.0"
-    validations:
-      required: true
   - type: input
     id: atmosphere
     attributes:
       label: Atmosphère version
+      description: Switch only.
       placeholder: 1.11.2
-    validations:
-      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Windows only. Settings › System › About.
+      placeholder: Windows 11 25H2
   - type: dropdown
     id: part
     attributes:
@@ -42,6 +54,7 @@ body:
         - Canvas and lyrics
         - Sound and equalizer
         - Background player and overlay
+        - The PC's window, tray and keyboard
         - Updates and settings
         - Something else
     validations:
@@ -90,4 +103,4 @@ body:
     id: extra
     attributes:
       label: Anything else?
-      description: Screenshots, or a crash report from `atmosphere/crash_reports` on the SD card.
+      description: Screenshots, or on the Switch a crash report from `atmosphere/crash_reports` on the SD card.

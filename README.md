@@ -5,8 +5,8 @@
     <img src="docs/wordmark-dark.png" width="520" alt="Songate">
   </picture>
 </p>
-<p align="center"><b>A native music player for the Nintendo Switch.</b><br>
-Your own music folder, synced lyrics, colours from every cover, DJ-style Automix, and music that keeps playing on the HOME menu and in games.<br>
+<p align="center"><b>A native music player for the Nintendo Switch and Windows.</b><br>
+Your own music folder, synced lyrics, colours from every cover and DJ-style Automix. On the Switch, music that keeps playing on the HOME menu and in games.<br>
 By <a href="https://github.com/AndryTheBeast"><b>AndryTheBeast</b></a> · version 2.0.0 BETA 1 · based on <a href="https://github.com/DEVIROYrus/gatefold-foobar2000"><b>Gatefold</b></a> by <a href="https://github.com/DEVIROYrus"><b>DEVIROYrus</b></a><br>
 <a href="../../releases"><b>⬇️ Download</b></a> · <a href="https://github.com/AndryTheBeast/songate-automix"><b>🎚️ The Automix models</b></a></p>
 
@@ -21,6 +21,8 @@ Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefo
 
 > [!IMPORTANT]
 > **Tests were only made on HOS 22.5.0 and 23.0.0, with the latest HATS pack from sthetix.** Other setups may work, but they have not been tested.
+>
+> **On Windows, tests were only made on Windows 11.** See [Songate for PC](#-songate-for-pc).
 >
 > **Only MP3, M4A and FLAC are supported.** Other formats are untested (see [Formats](#-formats)).
 
@@ -74,6 +76,26 @@ Songate began as a recreation of [Gatefold](https://github.com/DEVIROYrus/gatefo
 | ![Tour](docs/screenshots/tour.webp) | |
 
 <sub>The screenshots and the tour video come from the PC preview (see below). The music is from NCS (NoCopyrightSounds), [ncs.io](https://ncs.io): see [Credits](#-credits-and-licences).</sub>
+
+---
+
+## 💻 Songate for PC
+
+The same app on Windows, from the same code: the library, playlists, Automix, Mood, the equalizer, lyrics and the Canvas all work as they do on the console. **Tests were only made on Windows 11.**
+
+![Songate on Windows](docs/screenshots/pc-now-playing.webp)
+
+- ⌨️ **Keyboard and mouse.** Space plays and pauses, Ctrl F searches, C opens the Canvas, right-click opens the track menu. Settings → Controls lists every key.
+- 🪟 **A real window** that keeps the interface sharp at any size, on high refresh rate screens too. F11 or Alt Enter for full screen. The window's close, minimise and full screen buttons appear when the mouse reaches the top left corner.
+- 🔽 **Keep playing when the window closes.** Songate stays by the clock, playing, and its icon brings it back (Settings → Playback).
+- ▶️ **Media keys and Windows' media controls.**
+- 📁 **Settings are in `%APPDATA%\Songate`.** Uninstalling leaves them there.
+
+**Not on the PC:** the background player, the overlay, game actions and per-game volumes. They belong to the console.
+
+**Not tested yet:** game pads, a second monitor, taskbar buttons, Sleep now, the colour picker, and installing an update from inside the app. If you try them, please [say how it went](../../issues/new/choose).
+
+The sections below describe the console. The PC's differences are the ones listed here.
 
 ---
 
@@ -223,6 +245,8 @@ Open it with Ultrahand's combo (L + D-pad down + R3, a click of the right stick,
 
 ## 💾 Installation
 
+### 🎮 On the Switch
+
 You need a Switch running **Atmosphère**, and **Ultrahand** for the overlay. **Tests were only made on HOS 22.5.0 and 23.0.0, with the latest HATS pack from sthetix.**
 
 Download `Songate-<version>.zip` from [Releases](../../releases) and unzip it onto the root of the SD card. It holds:
@@ -246,6 +270,16 @@ Download `Songate-<version>.zip` from [Releases](../../releases) and unzip it on
 📁 Put your music anywhere on the card. On first start a folder called `Music` at the top of the card is used; otherwise a folder picker opens (Settings → Library → Music folder changes it). Settings, playlists, Liked, your edits and the caches are kept in `sdmc:/config/gatefold-nx/`.
 
 The app and the overlay work without the background player. Without it, or with *Keep playing outside Songate* turned off, Songate plays by itself and the music stops when you leave it.
+
+### 💻 On Windows
+
+You need a 64-bit PC. **Tests were only made on Windows 11.**
+
+Download `Songate-<version>-Windows-Setup.exe` from [Releases](../../releases) and run it. It needs no administrator rights: you choose a folder, which shortcuts you want, and whether to open Songate at the end. Windows' protected folders, like Program Files, can't be used. Settings › Updates installs newer versions, once you turn it on.
+
+🛡️ **"Windows protected your PC"?** The installer isn't signed, so Windows doesn't know it yet. Click **More info**, then **Run anyway**. Your browser may also ask whether to keep the download. The release notes list the file's SHA-256, if you'd like to check it first.
+
+📁 At the first start, choose your music folder (Settings → Library → Music folder changes it).
 
 ## 🎼 Formats
 
@@ -280,6 +314,10 @@ make -C overlay          # the overlay: Songate.ovl
 
 `tools/bgtest/` runs the background player's decoders on a PC, to compare them with FFmpeg.
 
+### 💻 Windows
+
+`tools/windows/` builds Songate for PC from the same `source/`, with clang and CMake. `build-deps.sh` builds the libraries, `build.sh` the program, and `package.sh` the installer with Inno Setup.
+
 ### 🖥️ PC preview
 
 `tools/preview/` builds the same UI code for Windows against a small stand-in for libnx, with a fake SD card. It reads WAV, plus M4A and FLAC when built with FFmpeg. It runs hidden, takes scripted input, and saves screenshots: every screenshot above comes from it.
@@ -304,6 +342,7 @@ The preview is a dev build; `DEV=0` before `bash tools/preview/build.sh` builds 
 
 - **Formats:** only MP3, M4A and FLAC are supported and tested. Others may play but are untested; the background player skips ALAC, Ogg Vorbis and Opus.
 - **Firmware:** tests were only made on HOS 22.5.0 and 23.0.0, with the latest HATS pack from sthetix.
+- **Windows:** tests were only made on Windows 11. The installer isn't signed.
 - **Not ported:** Gatefold's radio, YouTube, and online cover and lyrics lookup.
 - **Scripts:** CJK text uses the console's own fonts; scripts outside them will not render.
 - **MP3 durations:** VBR MP3s without a Xing header get an estimated duration.
@@ -318,6 +357,7 @@ Songate's own code (the app, the background player and the tools) is under the *
 - 🔤 **Inter:** the typeface. © The Inter Project Authors, SIL Open Font Licence (`romfs/fonts/OFL.txt`). **Fraunces:** the Songate wordmark, SIL Open Font Licence (`tools/brand/OFL.txt`).
 - 🎞️ **FFmpeg** (LGPL 2.1), **SDL 2** with SDL_mixer, SDL_ttf and SDL_image (zlib), **libFLAC**, **mpg123**, **Opus**, **Tremor** and **libjpeg-turbo**, through devkitPro's portlibs. **stb_image** (public domain / MIT).
 - 🧰 **libnx and devkitPro:** the Switch homebrew toolchain (ISC).
+- 🪟 **On Windows:** the same libraries built by `tools/windows`, plus **curl** and **zlib**, as listed in the `licences` folder beside the program. FFmpeg and mpg123 are separate DLLs you may replace.
 - 🎧 **Background player:** the Helix fixed-point AAC decoder © RealNetworks, RPSL (`sysmodule/lib/helix-aac`). Also minimp3 (CC0) and dr_flac (public domain / MIT-0), in `sysmodule/lib/single`.
 - 🧩 **Overlay:** built on sys-tune's overlay © HookedBehemoth and ppkantorski, GPL 2 (`overlay/LICENSE-sys-tune`), with libultrahand © ppkantorski and libtesla © WerWolv (`overlay/lib/libultrahand`).
 - 🎶 **Music in the screenshots and the tour video:** from NCS (NoCopyrightSounds), [ncs.io](https://ncs.io). Among them: Rival & CADMIUM ft. Harley Bird, *Seasons*; Jim Yosef & ROY KNOX, *Sun Goes Down*; Diviners ft. Harley Bird, *Falling*; Marin Hoxha, *Endless*; K-391, *Earth*. No music is included with Songate.
